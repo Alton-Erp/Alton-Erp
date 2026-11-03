@@ -1,0 +1,134 @@
+@import "tailwindcss";
+
+/*
+ * Alton ERP theme tokens.
+ * shadcn/ui components read the semantic variables below; ERP-specific
+ * indicator colors (manufacturing, outsourced, available, pending, shortage)
+ * are exposed as Tailwind colors, e.g. `text-shortage`, `bg-available/10`.
+ */
+:root {
+  --radius: 0.625rem;
+
+  --background: #ffffff;
+  --foreground: #1f2937;
+  --surface-muted: #f3f4f6;
+
+  --card: #ffffff;
+  --card-foreground: #1f2937;
+  --popover: #ffffff;
+  --popover-foreground: #1f2937;
+
+  --primary: #2563eb;
+  --primary-foreground: #ffffff;
+  --secondary: #f3f4f6;
+  --secondary-foreground: #1f2937;
+  --muted: #f3f4f6;
+  --muted-foreground: #6b7280;
+  --accent: #eff6ff;
+  --accent-foreground: #1d4ed8;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+
+  --border: #e5e7eb;
+  --input: #e5e7eb;
+  --ring: #2563eb;
+
+  /* ERP indicators (from the brand brief) */
+  --manufacturing: #2563eb;
+  --outsourced: #8b5cf6;
+  --hybrid: #0f766e;
+  --available: #16a34a;
+  --pending: #f59e0b;
+  --shortage: #dc2626;
+
+  /*
+   * Chart series. Validated for colour-vision deficiency separation:
+   * the outsourced series uses a lighter violet step so it stays
+   * distinguishable from the in-house blue for protan/deutan viewers.
+   */
+  --chart-inhouse: #2563eb;
+  --chart-outsourced: #a78bfa;
+  --chart-inward: #2563eb;
+  --chart-outward: #0d9488;
+  --chart-grid: #e5e7eb;
+  --chart-axis: #6b7280;
+}
+
+@theme inline {
+  --font-sans: "Inter", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface-muted: var(--surface-muted);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-manufacturing: var(--manufacturing);
+  --color-outsourced: var(--outsourced);
+  --color-hybrid: var(--hybrid);
+  --color-available: var(--available);
+  --color-pending: var(--pending);
+  --color-shortage: var(--shortage);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-surface-muted text-foreground font-sans;
+    font-feature-settings: "cv11", "tnum" 0;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Printable documents (invoices, statements): only the .print-area is printed,
+   on A4 with the browser's page margins. */
+@media print {
+  @page { size: A4; margin: 12mm; @bottom-right { content: 'Page ' counter(page) ' of ' counter(pages); font-size: 9px; } }
+  body * { visibility: hidden; }
+  .print-area, .print-area * { visibility: visible; }
+  .print-area { position: absolute; left: 0; top: 0; width: 100%; padding: 0 !important; border: 0 !important; box-shadow: none !important; }
+  .print-hidden { display: none !important; }
+  .print-avoid-break { break-inside: avoid; }
+  thead { display: table-header-group; }
+}

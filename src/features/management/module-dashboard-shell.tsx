@@ -1,0 +1,51 @@
+import { RefreshCw } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
+
+import { DateRangeFilter } from '@/components/common/date-range-filter'
+import { ErrorState } from '@/components/common/error-state'
+import { LoadingState } from '@/components/common/loading-state'
+import { PageHeader } from '@/components/common/page-header'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { useAsync } from '@/hooks/use-async'
+import { getPresetRange } from '@/lib/date-range'
+import { describeDataError } from '@/lib/errors'
+import { toIsoDate } from '@/lib/format'
+import { fetchModuleDashboard, type ModuleKey } from '@/services/management'
+import type { DateRangeValue } from '@/types'
+
+/** Shared frame of the module dashboards: period filter, refresh, loading and error states. */
+export function ModuleDashboard<T>({ module, title, description, actions, children }: {
+  module: ModuleKey
+  title: string
+  description: string
+  actions?: ReactNode
+  children: (data: T, period: { from: string; to: string }) => ReactNode
+}) {
+  const [range, setRange] = useState<DateRangeValue>(() => getPresetRange('this_month'))
+  const [refresh, setRefresh] = useState(0)
+  const from = toIsoDate(range.from)
+  const to = toIsoDate(range.to)
+  const data = useAsync(() => fetchModuleDashboard<T>(module, from, to), [module, from, to, refresh])
+  return (
+    <>
+      <PageHeader title={title} description={description} actions={<>
+        <DateRangeFilter value={range} onChange={setRange} />
+        <Button variant="outline" size="icon" aria-label="Refresh" onClick={() => setRefresh((n) => n + 1)}><RefreshCw className={data.loading ? 'animate-spin' : undefined} /></Button>
+        {actions}
+      </>} />
+      {data.loading && !data.data ? <LoadingState variant="cards" rows={6} />
+        : data.error || !data.data ? <Card><ErrorState message={describeDataError(data.error)} onRetry={data.reload} /></Card>
+        : children(data.data, { from, to })}
+    </>
+  )
+}
+
+export function ListCard({ title, description, empty, children }: { title: string; description?: string; empty: boolean; children: ReactNode }) {
+  return (
+    <Card>
+      <CardHeader><div><CardTitle>{title}</CardTitle>{description && <CardDescription>{description}</CardDescription>}</div></CardHeader>
+      <CardContent>{empty ? <p className="text-sm text-muted-foreground">Nothing to show.</p> : children}</CardContent>
+    </Card>
+  )
+}
