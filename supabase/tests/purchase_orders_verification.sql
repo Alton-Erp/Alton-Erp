@@ -161,9 +161,12 @@ select rls_test.ok('schema: anon cannot read purchasing tables or call the funct
   not has_table_privilege('anon', 'public.purchase_orders', 'SELECT')
   and not has_function_privilege('anon', 'public.purchase_order_save(uuid, jsonb, jsonb, timestamptz, uuid)', 'EXECUTE')
   and not has_function_privilege('anon', 'public.purchase_receipt_post(uuid, jsonb, jsonb, uuid)', 'EXECUTE'));
+-- The purchasing migration added no roles; the 13 functional roles come from 20261116090000_user_invitations.sql.
 select rls_test.ok('permissions: 9 purchasing permissions added; no new roles',
   (select count(*) from public.permissions where code like 'purchase\_order.%' or code like 'purchase\_receipt.%' or code like 'purchase\_exception.%') = 9
-  and (select count(*) from public.roles) = 8);
+  and (select count(*) from public.roles where code not in ('ACCOUNTS_EXECUTIVE', 'SALES_EXECUTIVE', 'BILLING_MANAGER', 'PURCHASE_EXECUTIVE',
+    'WAREHOUSE_MANAGER', 'STORE_EXECUTIVE', 'PRODUCTION_EXECUTIVE', 'QUALITY_CONTROL', 'DISPATCH_MANAGER', 'DISPATCH_EXECUTIVE',
+    'LEGAL_COMPLIANCE', 'HR_MANAGER', 'REPORTS_VIEWER')) = 8);
 select rls_test.ok('permissions: role matrix (PM orders + approves; Inventory receives; Accounts export only; Viewer none; Admin approves + exceptions)',
   exists (select 1 from public.role_permissions rp join public.roles r on r.id = rp.role_id join public.permissions p on p.id = rp.permission_id where r.code = 'PURCHASE_MANAGER' and p.code = 'purchase_order.approve')
   and exists (select 1 from public.role_permissions rp join public.roles r on r.id = rp.role_id join public.permissions p on p.id = rp.permission_id where r.code = 'INVENTORY_MANAGER' and p.code = 'purchase_receipt.create')

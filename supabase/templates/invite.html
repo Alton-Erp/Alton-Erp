@@ -1,0 +1,76 @@
+<!--
+  Alton ERP invitation e-mail (Supabase Auth "Invite user" template).
+
+  Hosted project: Dashboard → Authentication → Emails → "Invite user"
+    Subject:  Invitation to Join Alton ERP – {{ .Data.company_name }}
+    Body:     paste this file.
+  Local CLI:  supabase/config.toml → [auth.email.template.invite]
+
+  The link uses token_hash so it works with the app's PKCE sign-in, in any
+  browser, and is only used when the invitee opens the page. {{ .SiteURL }}
+  must be the ERP address (Authentication → URL Configuration → Site URL).
+  The .Data values are set by the invite-user Edge Function for this e-mail
+  only; the database never trusts them for access.
+  Supabase sends this e-mail; the link and token are never stored or logged by the ERP.
+-->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Invitation to Join Alton ERP</title>
+  </head>
+  <body style="margin:0;padding:0;background:#f4f5f7;font-family:Segoe UI,Helvetica,Arial,sans-serif;color:#1f2937;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;padding:24px 12px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:8px;border:1px solid #e5e7eb;">
+            <tr>
+              <td style="padding:24px 28px;border-bottom:1px solid #e5e7eb;">
+                <p style="margin:0;font-size:18px;font-weight:600;color:#111827;">Alton ERP</p>
+                <p style="margin:4px 0 0;font-size:13px;color:#6b7280;">{{ .Data.company_name }}</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:24px 28px;font-size:15px;line-height:1.55;">
+                <p style="margin:0 0 14px;">Hello {{ .Data.full_name }},</p>
+                <p style="margin:0 0 14px;">
+                  <strong>{{ .Data.company_name }}</strong> has invited you to join <strong>Alton ERP</strong>, the company’s business management system.
+                </p>
+                <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 18px;font-size:14px;">
+                  <tr>
+                    <td style="padding:2px 12px 2px 0;color:#6b7280;">Account</td>
+                    <td style="padding:2px 0;">{{ .Email }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:2px 12px 2px 0;color:#6b7280;vertical-align:top;">Role(s)</td>
+                    <td style="padding:2px 0;">{{ .Data.roles }}</td>
+                  </tr>
+                </table>
+                <p style="margin:0 0 18px;">To activate your account, open the link below and set your password.</p>
+                <p style="margin:0 0 22px;">
+                  <a href="{{ .SiteURL }}/accept-invitation?token_hash={{ .TokenHash }}&amp;type=invite"
+                     style="display:inline-block;background:#1d4ed8;color:#ffffff;text-decoration:none;font-weight:600;padding:11px 20px;border-radius:6px;">
+                    Activate my account
+                  </a>
+                </p>
+                <p style="margin:0 0 14px;font-size:13px;color:#4b5563;">
+                  This link can be used once. The invitation is valid until <strong>{{ .Data.expires_at }}</strong>.
+                  If it has expired, ask your administrator to resend the invitation.
+                </p>
+                <p style="margin:0;font-size:13px;color:#4b5563;">
+                  If you were not expecting this invitation, you can ignore this e-mail; no account is activated unless you open the link and set a password.
+                </p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:16px 28px;border-top:1px solid #e5e7eb;font-size:12px;color:#6b7280;">
+                Need help? Contact {{ if .Data.support_email }}<a href="mailto:{{ .Data.support_email }}" style="color:#1d4ed8;">{{ .Data.support_email }}</a>{{ else }}your {{ .Data.company_name }} administrator{{ end }}.
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

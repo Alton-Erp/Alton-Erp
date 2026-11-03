@@ -114,10 +114,11 @@ select rls_test.ok('permissions: ledger.read for every role that can read custom
               where p.code in ('customers.read', 'suppliers.read')
                 and not exists (select 1 from public.role_permissions r2 join public.permissions p2 on p2.id = r2.permission_id
                                 where r2.role_id = rp.role_id and p2.code = 'ledger.read')));
-select rls_test.ok('permissions: supplier_payment.manage for Admin, Accounts, Purchase Manager and Super Admin only',
+-- ACCOUNTS_EXECUTIVE was added by 20261116090000_user_invitations.sql (records supplier payments).
+select rls_test.ok('permissions: supplier_payment.manage for Admin, Accounts (manager and executive), Purchase Manager and Super Admin only',
   (select array_agg(r.code order by r.code) from public.role_permissions rp join public.roles r on r.id = rp.role_id
    join public.permissions p on p.id = rp.permission_id where p.code = 'supplier_payment.manage')
-  = array['ACCOUNTS_MANAGER', 'ADMIN', 'PURCHASE_MANAGER', 'SUPER_ADMIN']);
+  = array['ACCOUNTS_EXECUTIVE', 'ACCOUNTS_MANAGER', 'ADMIN', 'PURCHASE_MANAGER', 'SUPER_ADMIN']);
 select rls_test.ok('existing data: a customer and a supplier created the old way each got their own party (nothing merged automatically)',
   (rls_test.party_of_customer(rls_test.id('legacy_c'))).party_code ~ '^PTY-[0-9]{6}$'
   and (rls_test.party_of_supplier(rls_test.id('legacy_s'))).party_code ~ '^PTY-[0-9]{6}$'

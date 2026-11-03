@@ -7,7 +7,16 @@ import { RequirePermission } from '@/auth/require-permission'
 import { AuthLoadingScreen } from '@/components/auth/auth-screens'
 import { AppLayout } from '@/components/layout/app-layout'
 import { NAV_ITEMS, NAV_PERMISSIONS } from '@/config/navigation'
-import { ForgotPasswordPage, LoginPage, NotFoundPage, PAGE_COMPONENTS, REDIRECTS, ResetPasswordPage, SUB_ROUTES } from '@/routes'
+import {
+  AcceptInvitationPage,
+  ForgotPasswordPage,
+  LoginPage,
+  NotFoundPage,
+  PAGE_COMPONENTS,
+  REDIRECTS,
+  ResetPasswordPage,
+  SUB_ROUTES,
+} from '@/routes'
 
 export default function App() {
   return (
@@ -18,6 +27,7 @@ export default function App() {
             <Route path="/login" element={<LoginPage />} />
             <Route path="/forgot-password" element={<ForgotPasswordPage />} />
             <Route path="/reset-password" element={<ResetPasswordPage />} />
+            <Route path="/accept-invitation" element={<AcceptInvitationPage />} />
 
             <Route
               element={

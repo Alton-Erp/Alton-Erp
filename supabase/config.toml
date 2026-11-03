@@ -244,10 +244,11 @@ otp_expiry = 3600
 # admin_email = "admin@email.com"
 # sender_name = "Admin"
 
-# Uncomment to customize email template
-# [auth.email.template.invite]
-# subject = "You have been invited"
-# content_path = "./supabase/templates/invite.html"
+# Alton ERP invitation e-mail (local CLI stack only; on the hosted project set it in
+# Dashboard → Authentication → Emails, see docs/SUPABASE_SETUP.md §5).
+[auth.email.template.invite]
+subject = "Invitation to Join Alton ERP – {{ .Data.company_name }}"
+content_path = "./supabase/templates/invite.html"
 
 # Uncomment to customize notification email template
 # [auth.email.notification.password_changed]

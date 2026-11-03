@@ -128,3 +128,4 @@ export const REDIRECTS: { from: string; to: string }[] = [
 export const LoginPage = lazy(() => import('@/pages/auth/login-page'))
 export const ForgotPasswordPage = lazy(() => import('@/pages/auth/forgot-password-page'))
 export const ResetPasswordPage = lazy(() => import('@/pages/auth/reset-password-page'))
+export const AcceptInvitationPage = lazy(() => import('@/pages/auth/accept-invitation-page'))

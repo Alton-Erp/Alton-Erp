@@ -143,10 +143,12 @@ In Dashboard → Authentication:
 4. **Password policy:** set a minimum length of 8 or more. The app also enforces 8 when setting a new password.
 5. **URL Configuration:**
    - **Site URL:** your production URL, e.g. `https://erp.example.com`.
-   - **Redirect URLs:** add `https://erp.example.com/reset-password`, and `http://localhost:5173/reset-password` for development.
-6. **SMTP (recommended for production):** configure custom SMTP under Project Settings → Authentication. The built-in email service is heavily rate-limited and meant for testing.
+   - **Redirect URLs:** add `https://erp.example.com/reset-password` and `https://erp.example.com/accept-invitation`, plus the same two paths on `http://localhost:5173` for development.
+6. **SMTP (required for invitations in production):** configure custom SMTP under Project Settings → Authentication. The built-in email service is heavily rate-limited (a few e-mails per hour) and meant for testing.
+7. **Emails → Invite user template:** subject `Invitation to Join Alton ERP – {{ .Data.company_name }}`, body = the contents of [supabase/templates/invite.html](../supabase/templates/invite.html). The template links to `{{ .SiteURL }}/accept-invitation?token_hash=…&type=invite`, so the **Site URL** must be the ERP address.
+8. **Email OTP Expiration** (Sign In / Providers → Email): `86400` (24 hours) so the link lasts as long as the invitation (`INVITE_EXPIRY_HOURS`, default 24).
 
-The app uses the **PKCE** flow, so a reset link must be opened in the same browser where it was requested. Invitation links work in any browser.
+The app uses the **PKCE** flow, so a reset link must be opened in the same browser where it was requested. Invitation links work in any browser: `/accept-invitation` verifies the `token_hash` itself (and also accepts Supabase's default `{{ .ConfirmationURL }}` redirect), then removes the token from the address bar.
 
 ## 6. Bootstrap the first Super Admin securely 🖐
 
@@ -168,15 +170,42 @@ Further Super Admins are granted in the app by an existing Super Admin.
 
 ### Invite (Edge Function) 🖐
 
-Inviting needs the Supabase Admin API, which requires the service-role key, so it runs in the `invite-user` Edge Function. That function re-checks the caller's `users.manage` permission in the database:
+Inviting needs the Supabase Auth Admin API, which requires the service-role key, so it runs in the `invite-user` Edge Function ([index.ts](../supabase/functions/invite-user/index.ts) + [handler.ts](../supabase/functions/invite-user/handler.ts)). It needs migration `20261116090000_user_invitations.sql`.
+
+How it works:
+1. The browser sends only the e-mail, name, optional employee details, role ids and a request id (idempotency key) with the user's own session token. It never sends a company or inviter id.
+2. The function calls `user_invitation_prepare` **as the caller**. The database derives the company from the caller's profile and checks, all server-side:
+   - the caller is active and holds `users.manage`;
+   - every role may be assigned by them (only a Super Admin can assign `SUPER_ADMIN` or any administrative role — one holding `users.manage`, `settings.manage`, `system.reset_data`, `approvals.manage`, `billing_settings.manage` or `amazon_integration.manage`);
+   - there is no pending invitation or existing member with that e-mail, and the address does not belong to another company;
+   - the rate limit (30 invitations per hour per admin).
+   A retry with the same request id returns the stored result instead of sending again.
+3. Only then does it use the service-role key: `auth.admin.inviteUserByEmail` sends the e-mail, and `user_invitation_finalize` links the new account to the company and its roles, **inactive**. If anything fails after the Auth user was created, that user is deleted and the invitation is marked `FAILED`. The app shows the failure and never a success.
+4. The invitee opens `/accept-invitation`, sets a password and calls `user_invitation_accept`. That activates the account using only the invitation's company and roles, then the dashboard opens. Revoked or expired invitations are refused.
+
+Existing Auth accounts:
+- An account that never signed in is replaced, so one account remains per e-mail.
+- An account that has signed in before but belongs to no company receives a password-setup link instead of a second account.
+
+Every step is audited (`user.invited`, `user.invitation_resent`, `user.invitation_failed`, `user.invitation_revoked`, `user.invitation_expired`, `user.invitation_accepted`). Invitation links and tokens are never stored or logged by the ERP; Supabase Auth holds only the hashed token.
+
+Deploy (🖐 run by an operator, not by the app):
 
 ```bash
-npx supabase functions deploy invite-user
-npx supabase secrets set INVITE_REDIRECT_URL=https://erp.example.com/reset-password
-npx supabase secrets set ALLOWED_ORIGINS=https://erp.example.com,http://localhost:5173
+npx supabase functions deploy invite-user --project-ref <project-ref>
+npx supabase secrets set --project-ref <project-ref> INVITE_REDIRECT_URL=https://erp.example.com/accept-invitation ALLOWED_ORIGINS=https://erp.example.com INVITE_EXPIRY_HOURS=24
 ```
 
-Then use **User Management → Invite User**. The invitee gets an email, opens the link and sets a password on `/reset-password`. If the function is not deployed, the app says so; it never pretends an invitation was sent.
+`SUPABASE_URL`, `SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY` are injected by Supabase; never put the service-role key in the app or a `VITE_` variable.
+
+Then use **Users & Roles → Invite User**. The **Invitations** tab lists every invitation with its status (Pending / Accepted / Expired / Revoked / Failed) and e-mail status, with **Resend** (the new link replaces the old one), **Revoke** (with a reason), **Details** and, after activation, **Edit roles**. If the function is not deployed, the app says so; it never pretends an invitation was sent.
+
+Verify after deploying:
+1. `curl -i -X OPTIONS https://<project-ref>.supabase.co/functions/v1/invite-user` returns 200 (the function is reachable).
+2. As a Super Admin, invite a test address you control with a non-admin role. The Invitations tab shows *Pending / Sent*, and the e-mail arrives with the correct subject.
+3. Open the link in a private window, set a password, and check that the dashboard opens with only that role's menus. The invitation now shows *Accepted*, and the audit log has `user.invited` and `user.invitation_accepted`.
+4. Sign in as an Admin who is not a Super Admin: Super Admin and Administrator are greyed out in the role picker.
+5. Revoke a second test invitation and open its link: it is refused.
 
 **Without the Edge Function:** in Dashboard → Authentication → Users, use **Invite user**. Then assign the user in the SQL Editor:
 
@@ -200,6 +229,7 @@ select p.id, p.company_id, r.id
 Both are enforced by RLS and recorded in the audit log. Restrictions:
 - Nobody can change their own roles or activation status.
 - Only a Super Admin can grant or revoke `SUPER_ADMIN`, or deactivate a Super Admin.
+- From migration 20261116090000, only a Super Admin can grant any administrative role (for example `ADMIN`).
 
 Deactivation takes effect on the user's next database request: every policy checks `profiles.is_active`. Their sign-in token stays technically valid until it expires (about an hour), but it no longer grants any data. To block sign-in completely as well, use **Ban user** in Dashboard → Authentication → Users.
 
@@ -552,5 +582,11 @@ Release checklist, backups, rollback, live staging scripts (`scripts/verify-supa
 | "Cannot reach the server" | A network problem, a wrong URL, or a paused Supabase project. |
 | `PGRST202` / `function get_my_access does not exist` / `relation … does not exist` | Migrations were not applied to this project. Apply them (§3). If they were just applied, reload the API schema cache (Dashboard → API → Reload schema). |
 | Reset link says "invalid or expired" | The link expired, was used twice, was opened in a different browser (PKCE), or `/reset-password` is missing from Redirect URLs. |
-| "The invitation service is not reachable" | The `invite-user` Edge Function is not deployed (§7). |
+| "The invitation service is not deployed on this Supabase project" | The `invite-user` Edge Function returns 404: deploy it (§7). Nothing was sent. |
+| "The invitation service could not be reached (network problem)" | No reply arrived. Check the connection and retry. The same request id is reused, so the retry cannot create a second invitation. |
+| "…deployed but not configured" | The function is missing its Supabase environment. Redeploy it, and check the project's secrets. |
+| `PGRST202` for `user_invitation_prepare` / "role catalogue could not be loaded" | Migration `20261116090000_user_invitations.sql` is not applied. |
+| "The invitation e-mail could not be sent" (invitation shows *Failed*) | SMTP is not configured or the e-mail rate limit was hit. Fix SMTP (§5), then use **Resend**. |
+| Invitation link says "invalid or expired" | The link was used already, is older than the Email OTP Expiration, or was replaced by a newer Resend. Resend it. Also check that `/accept-invitation` is in Redirect URLs and that the Site URL is the ERP address. |
+| Invitee sees "Account not active" after signing in | They have not completed `/accept-invitation`. The screen links to it. |
 | SQL Editor shows `RLS_VERIFICATION_RESULT … failed=N` | Read the DETAIL section for the failing checks. `failed=0` means everything passed; the error itself is intentional. |

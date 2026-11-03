@@ -1,5 +1,14 @@
 import { FunctionsHttpError } from '@supabase/supabase-js'
 
+import {
+  describeInviteFailure,
+  inviteRequestBody,
+  type InvitationLink,
+  type InvitationRow,
+  type InviteForm,
+  type MyInvitation,
+  type RoleCatalog,
+} from '@/features/users/invitation-model'
 import { describeDataError, isNetworkError } from '@/lib/errors'
 import { requireSupabase } from '@/lib/supabase'
 import type { ProfileRow, RoleRow } from '@/types/database'
@@ -77,31 +86,99 @@ export async function updateUserRoles(params: {
   }
 }
 
-/**
- * Invites a user through the `invite-user` Edge Function, which performs the
- * privileged Admin API call server-side. Returns a user-facing error message.
- */
-export async function inviteUser(input: { email: string; fullName: string; roleCodes: string[] }): Promise<void> {
-  const { error } = await requireSupabase().functions.invoke('invite-user', {
-    body: { email: input.email, full_name: input.fullName, role_codes: input.roleCodes },
-  })
-  if (!error) return
-
-  if (error instanceof FunctionsHttpError) {
-    const status = error.context instanceof Response ? error.context.status : 0
-    let message: string | undefined
-    try {
-      const body = (await (error.context as Response).json()) as { error?: unknown }
-      if (typeof body.error === 'string') message = body.error
-    } catch {
-      // ignore unreadable body
-    }
-    if (status === 404) throw new Error(INVITE_NOT_DEPLOYED)
-    throw new Error(message ?? describeDataError({ status }))
-  }
-  if (isNetworkError(error) || error.name === 'FunctionsRelayError') throw new Error(INVITE_NOT_DEPLOYED)
-  throw new Error(describeDataError(error))
+async function rpc<T>(fn: string, args: Record<string, unknown> = {}): Promise<T> {
+  const { data, error } = await (requireSupabase().rpc as unknown as (f: string, a: Record<string, unknown>) => Promise<{ data: T; error: unknown }>)(fn, args)
+  if (error) throw error
+  return data
 }
 
-export const INVITE_NOT_DEPLOYED =
-  'The invitation service is not reachable. Deploy the invite-user Edge Function (see docs/SUPABASE_SETUP.md). No invitation was sent.'
+/** Roles the signed-in admin can see for invitations, with modules, permissions and whether they may assign each. */
+export const fetchRoleCatalog = () => rpc<RoleCatalog>('invite_role_catalog')
+export const fetchInvitations = async () => (await rpc<InvitationRow[] | null>('user_invitations_list')) ?? []
+/** The signed-in invitee's own invitation (null when there is none). */
+export const fetchMyInvitation = () => rpc<MyInvitation | null>('my_invitation')
+export const acceptMyInvitation = () => rpc<{ status: string; error?: string; already_accepted?: boolean }>('user_invitation_accept')
+
+/**
+ * Turns an invitation link into a Supabase session (see parseInvitationLink).
+ * Tokens are removed from the address bar afterwards. Returns an error message or null.
+ */
+export async function establishInvitationSession(link: InvitationLink): Promise<string | null> {
+  const db = requireSupabase()
+  let error: { message: string } | null = null
+  if (link.kind === 'token_hash') ({ error } = await db.auth.verifyOtp({ token_hash: link.tokenHash, type: link.type }))
+  else if (link.kind === 'tokens') ({ error } = await db.auth.setSession({ access_token: link.accessToken, refresh_token: link.refreshToken }))
+  else return link.kind === 'error' ? link.message : null
+  window.history.replaceState(null, '', window.location.pathname)
+  return error ? 'This invitation link is invalid, has expired, or was already used.' : null
+}
+
+/** An error from the invite-user service; `message` is safe to show. */
+export class InviteServiceError extends Error {
+  readonly code: string
+  constructor(code: string, message: string) {
+    super(message)
+    this.code = code
+    this.name = 'InviteServiceError'
+  }
+}
+
+export interface InviteResult {
+  ok: true
+  duplicate?: boolean
+  resent?: boolean
+  invitation_id: string
+  email: string
+  roles: string[]
+  expires_at: string
+  email_status?: string
+  delivery?: 'AUTH_INVITE' | 'PASSWORD_LINK'
+  auth_user_deleted?: boolean
+}
+
+/**
+ * Calls the `invite-user` Edge Function, which does the privileged Supabase Auth
+ * work server-side. Resolves only on a confirmed success; every failure throws
+ * an InviteServiceError with a clear message (never a false success).
+ */
+async function callInviteService(body: Record<string, unknown>): Promise<InviteResult> {
+  let data: unknown
+  let error: unknown
+  try {
+    ;({ data, error } = await requireSupabase().functions.invoke('invite-user', { body }))
+  } catch (e) {
+    error = e
+  }
+  if (!error) {
+    const result = data as Partial<InviteResult> | null
+    if (result && result.ok === true) return result as InviteResult
+    throw new InviteServiceError('SERVER_ERROR', describeInviteFailure(500, null).message)
+  }
+  if (error instanceof FunctionsHttpError) {
+    const response = error.context instanceof Response ? error.context : null
+    let parsed: { code?: unknown; error?: unknown } | null = null
+    try {
+      parsed = response ? ((await response.json()) as typeof parsed) : null
+    } catch {
+      // unreadable body
+    }
+    const f = describeInviteFailure(response?.status ?? 500, parsed)
+    throw new InviteServiceError(f.code, f.message)
+  }
+  // FunctionsFetchError / FunctionsRelayError: the request never got a reply.
+  const name = (error as { name?: string })?.name
+  if (name === 'FunctionsFetchError' || name === 'FunctionsRelayError' || isNetworkError(error)) {
+    const f = describeInviteFailure(0, null)
+    throw new InviteServiceError(f.code, f.message)
+  }
+  throw new InviteServiceError('SERVER_ERROR', describeDataError(error))
+}
+
+/** Sends a new invitation. Reuse the same idempotency key when retrying the same form. */
+export const inviteUser = (form: InviteForm, idempotencyKey: string) => callInviteService(inviteRequestBody(form, idempotencyKey))
+
+export const resendInvitation = (invitationId: string, idempotencyKey: string = crypto.randomUUID()) =>
+  callInviteService({ action: 'resend', invitation_id: invitationId, idempotency_key: idempotencyKey })
+
+export const revokeInvitation = (invitationId: string, reason: string) =>
+  callInviteService({ action: 'revoke', invitation_id: invitationId, reason: reason.trim() })

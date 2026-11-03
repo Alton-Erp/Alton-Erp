@@ -289,6 +289,18 @@ Copy of Alton ERP being reworked so one person can run the whole business: produ
     - Fix: both are now VOLATILE.
     - Check: `npm run test:db:readonly` scans for this mistake and replays these calls read-only. The settings page logs failures (tab, operation, code, message, request id) and shows a reference code with Try again.
   - Stock register, stock accuracy and duplicate-safe production (migration `20261111090000_stock_register_reliability.sql`): see [docs/STOCK_RELIABILITY.md](docs/STOCK_RELIABILITY.md).
+  - User invitations and functional roles (migration `20261116090000_user_invitations.sql`, Edge Function `invite-user`):
+    - **Roles:** 13 new roles (21 in total), each with an explicit permission set. Access never depends on a role's name.
+      - New: Accounts Executive / Accountant, Sales Executive, Billing & Invoicing Manager, Purchase Executive, Warehouse Manager, Store Executive, Production Executive, Quality Control, Dispatch Manager, Dispatch Executive, Legal & Compliance Manager, HR Manager, Reports Viewer.
+      - They are grouped into eight categories in the role picker.
+    - **Admin roles:** only a Super Admin can assign Super Admin or any administrative role. The `user_roles` insert policy now enforces this too.
+    - **Invite User:** name and work e-mail (required); employee ID, department, designation and reporting manager (optional); searchable role cards with View Permissions; selected-role summary; confirmation step.
+    - **Users & Roles → Invitations:** status and e-mail status, with Resend / Revoke / Details / Edit roles.
+    - **Activation:** `/accept-invitation`, where the invitee sets a password and activates the account. The account stays inactive until then.
+    - **E-mail template:** [supabase/templates/invite.html](supabase/templates/invite.html).
+    - **Deploy and verification:** §5 and §7 of [docs/SUPABASE_SETUP.md](docs/SUPABASE_SETUP.md).
+    - **Tests:** `supabase/tests/user_invitations_verification.sql` (72 checks), `tests/db/user-invitations-rollback-check.mjs`, `tests/unit/invite-user-handler.test.ts` and `tests/unit/invitation-model.test.ts`. The UI smoke suite has 113 steps.
+    - **Rollback:** `supabase/rollback/20261116090000_user_invitations_down.sql`. It drops the invitation table; history stays in the audit log. Roll back 20261116 before 20261113 and 20261031.
   - Partial invoicing (migration `20261115090000_partial_invoicing.sql`):
     - **Creating invoices:** only in Billing & Invoicing (no Create Invoice / Dispatch on the Sales Order page; "From dispatches" removed).
     - **Posting:** a sales-order invoice dispatches its goods in the same transaction.
@@ -344,7 +356,9 @@ Summary:
 - **Access model:** a user can do something only when their profile is active, belongs to an active company and holds a role with the matching permission (for example `settings.manage`). This is enforced in PostgreSQL by policies that use `private.has_permission(company_id, permission)`.
 - **Frontend checks are UX only:** `useAuth`, `usePermissions`, `ProtectedRoute`, `RequirePermission` and `PermissionGate` decide what to show. The database is the security boundary.
 - **No public sign-up access:** new auth users get an inactive, company-less profile. Access is granted by an administrator, or by the one-time SQL bootstrap for the first Super Admin.
-- **Invitations** go through the `invite-user` Edge Function (`supabase/functions/`), which holds the service-role key server-side.
+- **Invitations** go through the `invite-user` Edge Function (`supabase/functions/invite-user`), which holds the service-role key server-side.
+  - Company, permission and role checks run in the database with the caller's own session.
+  - Invitees activate on `/accept-invitation`.
 - **Audit log** is append-only, written by triggers. It records provisioning, activation, role and settings changes, sign-ins and access denials.
 
 ## Product Master (Phase 3)

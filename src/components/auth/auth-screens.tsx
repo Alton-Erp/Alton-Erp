@@ -1,5 +1,6 @@
 import { Clock, Loader2, LogOut, PlugZap, RotateCw, ShieldOff, UserX } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 
 import type { AuthStatus } from '@/auth/auth-context'
 import { useAuth } from '@/auth/use-auth'
@@ -64,8 +65,13 @@ const STATUS_COPY: Partial<Record<AuthStatus, { icon: typeof Clock; title: strin
   },
   inactive: {
     icon: ShieldOff,
-    title: 'Account deactivated',
-    body: 'Your account has been deactivated. Contact your administrator if you believe this is a mistake.',
+    title: 'Account not active',
+    body: (
+      <>
+        Your account is not active. If you were invited, <Link className="font-medium text-primary underline" to="/accept-invitation">activate your invitation</Link>.
+        Otherwise it has been deactivated; contact your administrator if you believe this is a mistake.
+      </>
+    ),
   },
   company_inactive: {
     icon: ShieldOff,

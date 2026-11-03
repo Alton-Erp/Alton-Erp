@@ -74,6 +74,32 @@ USERS['owner@test.invalid'] = {
   roles: ['SUPER_ADMIN'],
   permissions: [...USERS['manager@test.invalid'].permissions, 'system.reset_data'],
 }
+// Invited employees: inactive until they accept (user invitations, migration 20261116090000).
+USERS['new.hire@test.invalid'] = { id: '55555555-5555-4555-8555-555555555555', active: false, roles: ['SALES_EXECUTIVE'], permissions: USERS['manager@test.invalid'].permissions }
+USERS['revoked.hire@test.invalid'] = { id: '66666666-6666-4666-8666-666666666666', active: false, roles: [], permissions: [] }
+const INVITE_LINKS = { validhash123: 'new.hire@test.invalid', revokedhash123: 'revoked.hire@test.invalid' }
+const perm = (code, description) => ({ code, description })
+const ROLE_CATALOG = [
+  { id: 'r-super', code: 'SUPER_ADMIN', name: 'Super Admin', description: 'Full control of the company, users and system settings.', category: 'Administration', is_admin: true,
+    modules: ['system', 'users'], permissions: [perm('system.reset_data', 'Reset ERP data'), perm('users.manage', 'Manage users and roles')] },
+  { id: 'r-admin', code: 'ADMIN', name: 'Administrator', description: 'Manages users, settings and approvals.', category: 'Administration', is_admin: true,
+    modules: ['settings', 'users'], permissions: [perm('settings.manage', 'Manage settings'), perm('users.manage', 'Manage users and roles')] },
+  { id: 'r-sales', code: 'SALES_EXECUTIVE', name: 'Sales Executive', description: 'Creates and follows up sales orders.', category: 'Sales & Commercial', is_admin: false,
+    modules: ['customers', 'sales_orders'], permissions: [perm('customers.read', 'View customers'), perm('sales_orders.create', 'Create sales orders'), perm('sales_orders.read', 'View sales orders')] },
+  { id: 'r-dispatch', code: 'DISPATCH_EXECUTIVE', name: 'Dispatch Executive', description: 'Picks, packs and dispatches orders.', category: 'Dispatch & Fulfilment', is_admin: false,
+    modules: ['fulfilment'], permissions: [perm('fulfilment.dispatch', 'Dispatch goods'), perm('fulfilment.read', 'View fulfilment')] },
+  { id: 'r-accounts', code: 'ACCOUNTS_EXECUTIVE', name: 'Accounts Executive', description: 'Records invoices and payments.', category: 'Finance & Accounts', is_admin: false,
+    modules: ['invoices', 'payments'], permissions: [perm('invoices.create', 'Create invoices'), perm('payments.read', 'View payments')] },
+]
+const inviteRow = (over) => ({ id: `inv-${over.email}`, full_name: 'X', employee_id: null, department: null, designation: null, reporting_manager: null,
+  roles: [{ id: 'r-sales', code: 'SALES_EXECUTIVE', name: 'Sales Executive' }], status: 'PENDING', email_status: 'SENT', email_error: null, delivery_method: 'AUTH_INVITE',
+  invited_at: '2026-11-01T09:00:00Z', invited_by: 'Smoke Tester', expires_at: '2026-11-02T09:00:00Z', last_sent_at: '2026-11-01T09:00:00Z', send_count: 1,
+  accepted_at: null, revoked_at: null, revoked_by: null, revoke_reason: null, user_id: null, ...over })
+const invitationRows = [
+  inviteRow({ email: 'accepted.user@test.invalid', full_name: 'Accepted User', status: 'ACCEPTED', accepted_at: '2026-11-01T10:00:00Z', user_id: '22222222-2222-4222-8222-222222222222' }),
+  inviteRow({ email: 'late.user@test.invalid', full_name: 'Late User', status: 'EXPIRED' }),
+  inviteRow({ email: 'bounce.user@test.invalid', full_name: 'Bounce User', status: 'FAILED', email_status: 'FAILED', email_error: 'Supabase Auth refused the e-mail (HTTP 500): e-mail provider error.' }),
+]
 let currentUser = null
 // ERP reset mock: preview figures and the Edge Function's verified result.
 const RESET_PREVIEW = () => ({
@@ -950,7 +976,7 @@ const api = http.createServer((req, res) => {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Headers': '*',
-      'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
+      'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
     })
     return res.end()
   }
@@ -973,6 +999,54 @@ const api = http.createServer((req, res) => {
         refresh_token: 'refresh-' + user.id,
         user: { id: user.id, aud: 'authenticated', role: 'authenticated', email: body.email, app_metadata: {}, user_metadata: {}, created_at: '2026-10-01T00:00:00Z' },
       })
+    }
+    // Invitation links (token_hash) verified by the browser with verifyOtp.
+    if (url.pathname === '/auth/v1/verify' && req.method === 'POST') {
+      const email = INVITE_LINKS[body?.token_hash]
+      if (!email || body?.type !== 'invite') return send(res, 403, { code: 'otp_expired', error_code: 'otp_expired', msg: 'Email link is invalid or has expired' })
+      delete INVITE_LINKS[body.token_hash]
+      const user = USERS[email]
+      currentUser = { email, ...user }
+      return send(res, 200, {
+        access_token: fakeJwt(user.id), token_type: 'bearer', expires_in: 3600, expires_at: Math.floor(Date.now() / 1000) + 3600, refresh_token: 'refresh-' + user.id,
+        user: { id: user.id, aud: 'authenticated', role: 'authenticated', email, app_metadata: {}, user_metadata: {}, created_at: '2026-10-01T00:00:00Z' },
+      })
+    }
+    if (url.pathname === '/functions/v1/invite-user') {
+      if (!currentUser || !has('users.manage')) return send(res, 403, { ok: false, code: 'FORBIDDEN', error: 'You do not have permission to manage users.' })
+      const action = body?.action
+      if (action === 'invite') {
+        if (String(body.email).startsWith('offline')) return req.socket.destroy()
+        if (!/^[0-9a-f-]{36}$/.test(body.idempotency_key ?? '')) return send(res, 400, { ok: false, code: 'BAD_REQUEST', error: 'A request id (idempotency key) is required.' })
+        const roles = ROLE_CATALOG.filter((r) => body.role_ids.includes(r.id))
+        if (roles.some((r) => r.is_admin) && !currentUser.roles.includes('SUPER_ADMIN')) {
+          return send(res, 403, { ok: false, code: 'FORBIDDEN', error: 'Only a Super Admin can assign administrative roles (Administrator).' })
+        }
+        if (invitationRows.some((r) => r.email === body.email && r.status === 'PENDING')) {
+          return send(res, 409, { ok: false, code: 'DUPLICATE', error: `A pending invitation for ${body.email} already exists. Resend it instead of inviting again.` })
+        }
+        if (String(body.email).startsWith('fail')) {
+          invitationRows.unshift(inviteRow({ email: body.email, full_name: body.full_name, status: 'FAILED', email_status: 'FAILED', email_error: 'Supabase Auth refused the e-mail (HTTP 500): e-mail provider error.' }))
+          return send(res, 502, { ok: false, code: 'EMAIL_FAILED', error: 'The invitation e-mail could not be sent. The invitation was recorded as failed; check the e-mail settings and use Resend.' })
+        }
+        const row = inviteRow({ email: body.email, full_name: body.full_name, invited_at: NOW, expires_at: '2026-12-31T09:00:00Z', designation: body.details?.designation ?? null,
+          employee_id: body.details?.employee_id ?? null, roles: roles.map((r) => ({ id: r.id, code: r.code, name: r.name })) })
+        invitationRows.unshift(row)
+        return send(res, 200, { ok: true, duplicate: false, status: 'PENDING', email_status: 'SENT', delivery: 'AUTH_INVITE', invitation_id: row.id, email: row.email,
+          roles: roles.map((r) => r.name), expires_at: row.expires_at })
+      }
+      const row = invitationRows.find((r) => r.id === body?.invitation_id)
+      if (!row) return send(res, 400, { ok: false, code: 'VALIDATION', error: 'Invitation not found.' })
+      if (action === 'resend') {
+        Object.assign(row, { status: 'PENDING', email_status: 'SENT', email_error: null, send_count: row.send_count + 1, expires_at: '2026-12-31T09:00:00Z' })
+        return send(res, 200, { ok: true, resent: true, status: 'PENDING', email_status: 'SENT', invitation_id: row.id, email: row.email, roles: [], expires_at: row.expires_at })
+      }
+      if (action === 'revoke') {
+        if ((body.reason ?? '').length < 3) return send(res, 400, { ok: false, code: 'VALIDATION', error: 'Give a reason for revoking (3 to 500 characters).' })
+        Object.assign(row, { status: 'REVOKED', revoked_at: NOW, revoked_by: 'Smoke Tester', revoke_reason: body.reason })
+        return send(res, 200, { ok: true, invitation_id: row.id, status: 'REVOKED', auth_user_deleted: true })
+      }
+      return send(res, 400, { ok: false, code: 'BAD_REQUEST', error: 'Unknown action.' })
     }
     if (url.pathname === '/auth/v1/logout') return send(res, 204)
     if (url.pathname === '/auth/v1/user' && currentUser) {
@@ -1057,9 +1131,32 @@ const api = http.createServer((req, res) => {
             verification: { purge_tables_empty: true, other_companies_unchanged: true, schema_unchanged: true, actor_access_valid: true },
             storage_files: [{ bucket: 'product-images', name: `${COMPANY_ID}/p1/a.jpg` }, { bucket: 'product-images', name: `${COMPANY_ID}/p2/b.jpg` },
               { bucket: 'documents', name: `${COMPANY_ID}/d1/v1.pdf` }] })
+        case 'invite_role_catalog': {
+          if (!has('users.manage')) return send(res, 403, { code: '42501', message: 'You are not allowed to perform this action (requires users.manage).' })
+          const isSuper = currentUser.roles.includes('SUPER_ADMIN')
+          return send(res, 200, { is_super_admin: isSuper, roles: ROLE_CATALOG.map((r) => ({ ...r, assignable: isSuper || !r.is_admin })) })
+        }
+        case 'user_invitations_list':
+          return has('users.manage') ? send(res, 200, invitationRows) : send(res, 403, { code: '42501', message: 'not allowed' })
+        case 'my_invitation': {
+          if (currentUser.email === 'new.hire@test.invalid') {
+            return send(res, 200, { invitation_id: 'inv-new', company_name: 'Test Co', full_name: 'New Hire', email: currentUser.email, roles: ['Sales Executive'],
+              status: currentUser.active === false ? 'PENDING' : 'ACCEPTED', expires_at: '2026-12-31T09:00:00Z', support_email: 'support@test.invalid' })
+          }
+          if (currentUser.email === 'revoked.hire@test.invalid') {
+            return send(res, 200, { invitation_id: 'inv-rev', company_name: 'Test Co', full_name: 'Revoked Hire', email: currentUser.email, roles: ['Sales Executive'],
+              status: 'REVOKED', expires_at: '2026-12-31T09:00:00Z', support_email: 'support@test.invalid' })
+          }
+          return send(res, 200, null)
+        }
+        case 'user_invitation_accept':
+          if (currentUser.email !== 'new.hire@test.invalid') return send(res, 400, { code: 'P0001', message: 'This invitation was revoked. Contact your administrator.' })
+          currentUser.active = true
+          USERS['new.hire@test.invalid'].active = true
+          return send(res, 200, { invitation_id: 'inv-new', status: 'ACCEPTED', company_id: COMPANY_ID, roles: ['Sales Executive'] })
         case 'get_my_access':
           return send(res, 200, {
-            profile: { id: currentUser.id, email: currentUser.email, full_name: 'Smoke Tester', company_id: COMPANY_ID, is_active: true },
+            profile: { id: currentUser.id, email: currentUser.email, full_name: 'Smoke Tester', company_id: COMPANY_ID, is_active: currentUser.active !== false },
             company: { id: COMPANY_ID, legal_name: 'Test Co', display_name: 'Test Co', company_code: 'TEST', currency_code: 'INR', timezone: 'Asia/Kolkata', is_active: true },
             roles: currentUser.roles,
             permissions: currentUser.permissions,
@@ -1728,6 +1825,19 @@ const api = http.createServer((req, res) => {
     }
     return send(res, 404, { message: 'not mocked: ' + url.pathname })
   })
+})
+
+// User management lists the company's profiles and their role assignments.
+Object.assign(tables, {
+  profiles: [
+    { id: '44444444-4444-4444-8444-444444444444', full_name: 'Owner Tester', email: 'owner@test.invalid', is_active: true, created_at: NOW, company_id: COMPANY_ID },
+    { id: '22222222-2222-4222-8222-222222222222', full_name: 'Smoke Tester', email: 'manager@test.invalid', is_active: true, created_at: NOW, company_id: COMPANY_ID },
+  ],
+  user_roles: [
+    { id: 'ur1', user_id: '44444444-4444-4444-8444-444444444444', role_id: 'r-super', company_id: COMPANY_ID },
+    { id: 'ur2', user_id: '22222222-2222-4222-8222-222222222222', role_id: 'r-sales', company_id: COMPANY_ID },
+  ],
+  roles: ROLE_CATALOG.map(({ id, code, name, description }) => ({ id, code, name, description, is_system: true })),
 })
 
 // ---------------------------------------------------------------------------
@@ -3908,6 +4018,171 @@ await step('Force reset: history lists standard and force attempts with results'
   await waitFor(bodyHasAll('Reset history', 'Force', 'completed', 'Standard', 'blocked', 'Stock ledger'), 'history')
   await screenshot('103-reset-history')
   await click('[role=dialog] button', 'Close')
+})
+
+const inviteCalls = () => requests.filter((r) => r.path === '/functions/v1/invite-user')
+const successNotice = () => evaluate(`[...document.querySelectorAll('[role=status]')].some((e) => e.innerText.includes('Invitation sent'))`)
+async function openInviteForm(name, email, roleIds) {
+  await goto('/users')
+  await waitFor(`[...document.querySelectorAll('main button')].some((b) => b.innerText.includes('Invite User') && !b.disabled)`, 'invite button')
+  await click('main button', 'Invite User')
+  await waitFor(`document.querySelector('#invite-name')`, 'invite form')
+  await fill('#invite-name', name)
+  await fill('#invite-email', email)
+  for (const id of roleIds) await click(`#invite-role-${id}`)
+}
+async function sendInvite() {
+  await click('[role=dialog] button', 'Review invitation')
+  await waitFor(bodyHas('Confirm invitation'), 'confirmation step')
+  await click('[role=dialog] button', 'Send invitation')
+}
+
+await step('Invite User: categorised, searchable role cards with admin flags, modules, key permissions and View Permissions; validation before anything is sent', async () => {
+  await goto('/users')
+  await waitFor(bodyHasAllCI('Users', 'Invitations', 'Administration', 'Sales & Commercial'), 'users page with role catalogue')
+  await waitFor(`[...document.querySelectorAll('main button')].some((b) => b.innerText.includes('Invite User') && !b.disabled)`, 'invite button')
+  await click('main button', 'Invite User')
+  await waitFor(bodyHasAllCI('Full name', 'Work email', 'Employee ID', 'Department', 'Designation', 'Reporting manager', 'Dispatch & Fulfilment', 'Finance & Accounts'), 'invite form')
+  assert(await evaluate(bodyHasAll('Modules: Customers, Sales orders', 'Key permissions: Create sales orders', 'No roles selected')), 'role card details missing')
+  assert(await evaluate(`document.querySelectorAll('[role=dialog] [data-role-code=SUPER_ADMIN]').length === 1 && document.querySelector('[role=dialog] [data-role-code=ADMIN]').innerText.includes('Admin')`), 'admin flag missing')
+  await click('[role=dialog] [data-role-code=SALES_EXECUTIVE] button', 'View permissions')
+  await waitFor(bodyHasAll('sales_orders.create', 'Hide permissions'), 'permissions list')
+  await fill('[role=dialog] input[aria-label="Search roles"]', 'dispatch')
+  await waitFor(`!document.querySelector('[role=dialog] [data-role-code=SALES_EXECUTIVE]') && document.querySelector('[role=dialog] [data-role-code=DISPATCH_EXECUTIVE]')`, 'search filters roles')
+  await fill('[role=dialog] input[aria-label="Search roles"]', '')
+  const before = inviteCalls().length
+  await click('[role=dialog] button', 'Review invitation')
+  await waitFor(bodyHasAll('Enter the employee’s full name.', 'Enter the work e-mail address.', 'Select at least one role.'), 'validation messages')
+  assert(inviteCalls().length === before, 'a request was sent for an invalid form')
+  await click('#invite-role-r-sales')
+  await click('#invite-role-r-dispatch')
+  await waitFor(bodyHas('Selected (2):'), 'selected summary')
+  await click('[role=dialog] button', 'Clear selection')
+  await waitFor(bodyHas('No roles selected'), 'cleared')
+  await screenshot('104-invite-form')
+  await click('[role=dialog] button', 'Cancel')
+})
+
+await step('Invite User: confirmation summary, then one call to the invite-user Edge Function (no company or inviter sent); success only after the server confirms', async () => {
+  await openInviteForm('Asha Rao', 'Asha.Rao@Test.invalid', ['r-sales', 'r-admin'])
+  await fill('#invite-designation', 'Sales Lead')
+  await fill('#invite-employee-id', 'EMP-042')
+  await click('[role=dialog] button', 'Review invitation')
+  await waitFor(bodyHasAll('Confirm invitation', 'asha.rao@test.invalid', 'Sales Lead', 'EMP-042', 'Roles (2)', 'administrative role'), 'confirmation summary')
+  await screenshot('105-invite-confirm')
+  const before = inviteCalls().length
+  await click('[role=dialog] button', 'Send invitation')
+  await waitFor(bodyHas('Invitation sent to asha.rao@test.invalid'), 'success notice')
+  assert(inviteCalls().length === before + 1, 'expected exactly one invite call')
+  const call = inviteCalls().at(-1).body
+  assert(call.action === 'invite' && call.email === 'asha.rao@test.invalid' && call.full_name === 'Asha Rao' && /^[0-9a-f-]{36}$/.test(call.idempotency_key), JSON.stringify(call))
+  assert(JSON.stringify(call.role_ids.sort()) === JSON.stringify(['r-admin', 'r-sales']), 'roles not sent')
+  assert(!('company_id' in call) && !('invited_by' in call) && !('user_id' in call), 'the browser sent a company, inviter or user id')
+  await waitFor(`location.search.includes('tab=invitations') && ${bodyHasAllCI('Employee Name', 'Assigned Roles', 'Invitation Date', 'Invited By', 'Expiry', 'Invitation Status', 'Email Status')}`, 'invitations tab')
+  await waitFor(bodyHasAll('Asha Rao', 'asha.rao@test.invalid', 'Pending', 'Sent'), 'new invitation listed')
+})
+
+await step('Invite User: duplicate, e-mail failure and network failure show clear errors and never a success message', async () => {
+  for (const [email, expected] of [
+    ['asha.rao@test.invalid', 'already exists. Resend it instead of inviting again.'],
+    ['fail.user@test.invalid', 'The invitation e-mail could not be sent.'],
+    ['offline.user@test.invalid', 'could not be reached (network problem)'],
+  ]) {
+    await openInviteForm('Some One', email, ['r-sales'])
+    await sendInvite()
+    await waitFor(`[...document.querySelectorAll('[role=dialog] [role=alert]')].some((e) => e.innerText.includes(${JSON.stringify(expected)}))`, `error for ${email}`)
+    assert(!(await successNotice()), `success shown for ${email}`)
+    assert(await evaluate(bodyHas('Confirm invitation')), 'dialog closed after a failure')
+    const key = inviteCalls().at(-1).body.idempotency_key
+    if (email.startsWith('offline')) {
+      // Retrying the same reviewed form reuses the request id, so a lost reply cannot create a second invitation.
+      await click('[role=dialog] button', 'Send invitation')
+      await waitFor(`[...document.querySelectorAll('[role=dialog] [role=alert]')].length > 0`, 'retry error')
+      assert(inviteCalls().at(-1).body.idempotency_key === key, 'retry used a new idempotency key')
+      await screenshot('106-invite-network-error')
+    }
+    await click('[role=dialog] button', 'Back')
+    await click('[role=dialog] button', 'Cancel')
+  }
+})
+
+await step('Invitations: statuses, e-mail status, Resend, Revoke with a reason, View Details and Edit roles after activation', async () => {
+  await goto('/users?tab=invitations')
+  await waitFor(bodyHasAll('Accepted User', 'Late User', 'Bounce User', 'Expired', 'Failed', 'Accepted'), 'invitation list')
+  await click('[role=group][aria-label="Invitation status"] button', 'Failed')
+  await waitFor(`${bodyHas('Bounce User')} && !(${bodyHas('Late User')})`, 'status filter')
+  await click('[role=group][aria-label="Invitation status"] button', 'All')
+  const row = (name) => `[...document.querySelectorAll('tbody tr')].find((r) => r.innerText.includes(${JSON.stringify(name)}))`
+  assert(await evaluate(`!${row('Accepted User')}.innerText.includes('Resend') && ${row('Accepted User')}.innerText.includes('Edit roles')`), 'accepted row actions wrong')
+  await evaluate(`${row('Late User')}.querySelectorAll('button').forEach((b) => b.innerText.includes('Resend') && b.setAttribute('data-test', 'resend-late'))`)
+  await click('[data-test=resend-late]')
+  await waitFor(bodyHas('Invitation resent to late.user@test.invalid'), 'resent')
+  const resend = inviteCalls().at(-1).body
+  assert(resend.action === 'resend' && resend.invitation_id === 'inv-late.user@test.invalid' && /^[0-9a-f-]{36}$/.test(resend.idempotency_key), JSON.stringify(resend))
+  await evaluate(`${row('Bounce User')}.querySelectorAll('button').forEach((b) => b.innerText.includes('Revoke') && b.setAttribute('data-test', 'revoke-bounce'))`)
+  await click('[data-test=revoke-bounce]')
+  await waitFor(bodyHas('Revoke invitation?'), 'revoke dialog')
+  await click('[role=dialog] button', 'Revoke invitation')
+  await waitFor(bodyHas('Give a short reason'), 'reason required')
+  await fill('#revoke-reason', 'Wrong e-mail address')
+  await click('[role=dialog] button', 'Revoke invitation')
+  await waitFor(bodyHas('The invitation to bounce.user@test.invalid was revoked.'), 'revoked')
+  assert(inviteCalls().at(-1).body.reason === 'Wrong e-mail address', 'reason not sent')
+  await waitFor(`${row('Bounce User')} && ${row('Bounce User')}.innerText.includes('Revoked')`, 'revoked status')
+  await evaluate(`${row('Bounce User')}.querySelectorAll('button').forEach((b) => b.innerText.includes('Details') && b.setAttribute('data-test', 'details-bounce'))`)
+  await click('[data-test=details-bounce]')
+  await waitFor(bodyHasAll('Invitation details', 'Wrong e-mail address', 'Invitation links are never stored or shown'), 'details')
+  await click('[role=dialog] button', 'Close')
+  await evaluate(`${row('Accepted User')}.querySelectorAll('button').forEach((b) => b.innerText.includes('Edit roles') && b.setAttribute('data-test', 'edit-accepted'))`)
+  await click('[data-test=edit-accepted]')
+  await waitFor(bodyHasAll('Roles for Smoke Tester', 'Save roles'), 'role editor for the activated user')
+  await screenshot('107-invitations')
+  await click('[role=dialog] button', 'Cancel')
+})
+
+await step('Invite User: an Admin who is not a Super Admin cannot select Super Admin or other administrative roles', async () => {
+  await signOut()
+  await login('manager@test.invalid')
+  await waitFor(`location.pathname !== '/login'`, 'manager signed in')
+  await goto('/users')
+  await waitFor(`[...document.querySelectorAll('main button')].some((b) => b.innerText.includes('Invite User') && !b.disabled)`, 'invite button')
+  await click('main button', 'Invite User')
+  await waitFor(`document.querySelector('#invite-role-r-super')`, 'role cards')
+  assert(await evaluate(`document.querySelector('#invite-role-r-super').disabled && document.querySelector('#invite-role-r-admin').disabled && !document.querySelector('#invite-role-r-sales').disabled`), 'admin roles selectable')
+  assert(await evaluate(bodyHas('Only a Super Admin can assign this role.')), 'reason not shown')
+  await click('[role=dialog] button', 'Cancel')
+  await signOut()
+})
+
+await step('Accept invitation: invalid or used links and revoked invitations are refused with a clear message; nothing is activated', async () => {
+  await goto('/accept-invitation#error=access_denied&error_code=otp_expired&error_description=Email+link+is+invalid+or+has+expired')
+  await waitFor(bodyHasAll('Invitation link invalid or expired', 'Email link is invalid or has expired', 'Ask your administrator to resend'), 'invalid link')
+  await goto('/accept-invitation?token_hash=revokedhash123&type=invite')
+  await waitFor(bodyHasAll('Invitation not available', 'This invitation was revoked', 'support@test.invalid'), 'revoked invitation')
+  assert(rpcCalls('user_invitation_accept').length === 0, 'accept called for a revoked invitation')
+  assert(await evaluate(`!location.search.includes('token_hash')`), 'token left in the address bar')
+  await click('button', 'Sign out')
+  await waitFor(`location.pathname === '/login'`, 'signed out')
+  await goto('/accept-invitation?token_hash=revokedhash123&type=invite')
+  await waitFor(bodyHas('Invitation link invalid or expired'), 'a used link does not work twice')
+})
+
+await step('Accept invitation: link verified, password set, account activated and the dashboard opens with the invited roles', async () => {
+  await goto('/accept-invitation?token_hash=validhash123&type=invite')
+  await waitFor(bodyHasAll('Join Test Co', 'Welcome, New Hire', 'new.hire@test.invalid', 'Sales Executive', 'Set password & activate'), 'invitation page')
+  assert(!(await evaluate(bodyHas('Keep my current password'))), 'password step can be skipped from an e-mail link')
+  await screenshot('108-accept-invitation')
+  await fill('#invite-password', 'short')
+  await click('button', 'Set password & activate')
+  await waitFor(bodyHas('Use at least 8 characters.'), 'password rule')
+  assert(rpcCalls('user_invitation_accept').length === 0, 'accepted before a valid password')
+  await fill('#invite-password', 'a-strong-password')
+  await fill('#invite-password-confirm', 'a-strong-password')
+  await click('button', 'Set password & activate')
+  await waitFor(`location.pathname === '/'`, 'dashboard opened')
+  assert(rpcCalls('user_invitation_accept').length === 1, 'accept not called exactly once')
+  assert(requests.some((r) => r.path === '/auth/v1/user' && r.method === 'PUT' && r.body?.password === 'a-strong-password'), 'password not set through Supabase Auth')
+  assert(Object.keys(rpcCalls('user_invitation_accept')[0].body ?? {}).length === 0, 'the browser sent data to the accept call')
 })
 
 await step('read-only user sees no write controls and cannot open the add form', async () => {

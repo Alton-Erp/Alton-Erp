@@ -108,6 +108,9 @@ for (const [fn, sql] of [
   ['invoice_dispatch_exceptions', 'select public.invoice_dispatch_exceptions()'],
   ['product_group_head_options', 'select public.product_group_head_options()'],
   ['sales_invoice_tracking', `select public.sales_invoice_tracking('{"pending_only": false}'::jsonb)`],
+  ['invite_role_catalog', 'select public.invite_role_catalog()'],
+  ['user_invitations_list', 'select public.user_invitations_list()'],
+  ['my_invitation', 'select public.my_invitation()'],
 ]) {
   // Volatile functions get a read-write transaction from PostgREST; only read-only ones are run read-only here.
   if ((await volatility(fn)) === 'v') { check(`runtime: ${fn} is VOLATILE (PostgREST runs it read-write)`, true); continue }
