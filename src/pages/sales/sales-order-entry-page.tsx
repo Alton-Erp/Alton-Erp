@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 
 import { usePermissions } from '@/auth/use-permissions'
 import { ErrorState } from '@/components/common/error-state'
+import { FormDraftBar } from '@/components/common/form-draft-bar'
 import { LoadingState } from '@/components/common/loading-state'
 import { PageHeader } from '@/components/common/page-header'
 import { Button } from '@/components/ui/button'
@@ -22,6 +23,7 @@ import { useErpPreferences } from '@/features/management/erp-preferences'
 import { QuickAddProductDialog } from '@/features/products/quick-add-product'
 import { isInterState, priceOrder, validateSoForm } from '@/features/sales/sales-v2-model'
 import { useAsync } from '@/hooks/use-async'
+import { usePersistentFormDraft } from '@/hooks/use-persistent-form-draft'
 import { useRequestKey } from '@/hooks/use-request-key'
 import { describeDataError } from '@/lib/errors'
 import { toIsoDate } from '@/lib/format'
@@ -114,6 +116,19 @@ function EntryForm({ customers, companyGstin, header: so, lines: soLines, crumbs
   const [error, setError] = useState<string | null>(null)
   const dispatchedAny = lines.some((l) => l.dispatched > 0)
 
+  // Auto-saved working copy: restored when the user comes back to this form.
+  const formDraft = usePersistentFormDraft({
+    formKey: 'sales.order', recordId: so?.id ?? null, baseVersion: so?.updated_at ?? null,
+    enabled: has(so ? 'sales_orders.update' : 'sales_orders.create'),
+    value: { customerId, h, lines: lines.map(({ key: _key, ...l }) => l) },
+    onRestore: (d) => {
+      setCustomerId(d.customerId)
+      setH((x) => ({ ...x, ...d.h }))
+      setLines(d.lines.length ? d.lines.map((l) => ({ ...l, key: l.lineId ?? crypto.randomUUID() })) : [blank()])
+      setError(null)
+    },
+  })
+
   const update = (key: string, p: Partial<Line>) => setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...p } : l)))
   const pickProduct = async (key: string, p: ProductOption | null) => {
     update(key, { product: p })
@@ -164,6 +179,7 @@ function EntryForm({ customers, companyGstin, header: so, lines: soLines, crumbs
         discount_amount: l.discountMode === 'AMOUNT' ? (l.discount.trim() || null) : null, gst_rate: l.gstRate.trim() || null,
       })), so ? null : request.key)
       request.renew()
+      void formDraft.markSubmitted()
       navigate(`/sales/orders/${res.sales_order_id}`, { replace: Boolean(so), state: {
         message: draft ? `${res.sales_order_number} saved as a draft. Nothing is reserved until it is saved as an open order.`
           : `${res.sales_order_number} ${so ? 'saved' : 'created'}. Available stock was reserved automatically; nothing has left the warehouse.`,
@@ -180,6 +196,7 @@ function EntryForm({ customers, companyGstin, header: so, lines: soLines, crumbs
         description={so ? 'Change customer, products, quantities, prices, discounts or dates. Reservations are recalculated when you save; every change is kept in the history.'
           : 'One order, any number of products. On saving, available finished goods are reserved and the materials for anything still to be made are checked.'}
         breadcrumbs={crumbs} />
+      <FormDraftBar draft={formDraft} showSave={false} />
       <form noValidate onSubmit={(e) => { e.preventDefault(); void save(false) }} className="space-y-6">
         <Card>
           <CardHeader><div><CardTitle>Basic information</CardTitle><CardDescription>Sales order number: {so?.sales_order_number ?? 'assigned automatically when saved'}</CardDescription></div></CardHeader>

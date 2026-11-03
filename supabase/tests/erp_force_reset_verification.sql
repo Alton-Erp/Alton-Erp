@@ -258,8 +258,8 @@ select rls_test.ok('catalogue: every public table is purge, retained, or has no 
      and c.relname not in (select table_name from private.erp_force_reset_retained_tables())));
 select rls_test.ok('catalogue: no table is both purged and retained',
   not exists (select 1 from private.erp_force_reset_tables() f join private.erp_force_reset_retained_tables() k using (table_name)));
-select rls_test.ok('catalogue: purge list = the 79 standard tables + products, categories, warehouses, locations, documents, versions',
-  (select count(*) from private.erp_force_reset_tables()) = 85 and (select count(distinct table_name) from private.erp_force_reset_tables()) = 85
+select rls_test.ok('catalogue: purge list = the 80 standard tables + products, categories, warehouses, locations, documents, versions',
+  (select count(*) from private.erp_force_reset_tables()) = 86 and (select count(distinct table_name) from private.erp_force_reset_tables()) = 86
   and (select count(*) from private.erp_reset_tables() t where t.table_name not in (select table_name from private.erp_force_reset_tables())) = 0);
 select rls_test.ok('catalogue: every purge table exists and is company-scoped',
   not exists (select 1 from private.erp_force_reset_tables() f where to_regclass('public.' || f.table_name) is null
@@ -271,7 +271,7 @@ select rls_test.ok('catalogue: users, roles, permissions, audit log, reset histo
 select rls_test.ok('catalogue: the standard reset classifies the new backup-record table as kept',
   exists (select 1 from private.erp_reset_kept_tables() where table_name = 'erp_reset_backup_attestations'));
 select rls_test.ok('order: computed for every purge table, no cycle',
-  (select count(*) from private.erp_force_reset_order()) = 85 and (select max(ord) from private.erp_force_reset_order()) < 100);
+  (select count(*) from private.erp_force_reset_order()) = 86 and (select max(ord) from private.erp_force_reset_order()) < 100);
 select rls_test.ok('order: every foreign key child is deleted before its parent',
   not exists (
     select 1 from pg_constraint con

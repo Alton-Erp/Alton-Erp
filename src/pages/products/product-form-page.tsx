@@ -5,6 +5,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '@/auth/use-auth'
 import { usePermissions } from '@/auth/use-permissions'
 import { ErrorState } from '@/components/common/error-state'
+import { FormDraftBar } from '@/components/common/form-draft-bar'
 import { LoadingState } from '@/components/common/loading-state'
 import { PageHeader } from '@/components/common/page-header'
 import { Button } from '@/components/ui/button'
@@ -31,6 +32,7 @@ import {
 import { useErpPreferences } from '@/features/management/erp-preferences'
 import { EMPTY_PRODUCT_FORM, validateProduct, type ProductField, type ProductFormValues } from '@/features/products/product-validation'
 import { useAsync } from '@/hooks/use-async'
+import { usePersistentFormDraft } from '@/hooks/use-persistent-form-draft'
 import { describeProductError } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import {
@@ -161,6 +163,14 @@ function ProductForm({ existing, categories, suppliers }: { existing: ProductRow
   const [imageError, setImageError] = useState<string | null>(null)
   const [saved, setSaved] = useState<{ id: string; sku: string; imageWarning: string | null; bomExpected: boolean; gaps: number } | null>(null)
 
+  // Auto-saved working copy. The chosen image file cannot be kept (browsers do not allow it) and must be picked again.
+  const draft = usePersistentFormDraft({
+    formKey: 'product.form', recordId: existing?.id ?? null, baseVersion: existing?.updated_at ?? null,
+    enabled: has(existing ? 'products.update' : 'products.create') && !saved,
+    value: values,
+    onRestore: (d) => setValues((v) => ({ ...v, ...d })),
+  })
+
   const validation = validateProduct(values)
   const errors = submitted ? validation.errors : {}
   const canChangeStatus = existing ? has('products.archive') : true
@@ -211,6 +221,8 @@ function ProductForm({ existing, categories, suppliers }: { existing: ProductRow
         id = created.id
         sku = created.sku || input.sku || ''
       }
+      // The product is saved in the database: the working copy is no longer needed.
+      void draft.markSubmitted()
 
       let imageWarning: string | null = null
       if (imageFile) {
@@ -294,6 +306,7 @@ function ProductForm({ existing, categories, suppliers }: { existing: ProductRow
   return (
     <>
       <FormHeader isEdit={Boolean(existing)} sku={existing?.sku ?? null} />
+      <FormDraftBar draft={draft} />
       <form
         noValidate
         onSubmit={(e) => {

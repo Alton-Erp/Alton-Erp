@@ -2,6 +2,7 @@ import { Loader2 } from 'lucide-react'
 import { useState } from 'react'
 
 import { usePermissions } from '@/auth/use-permissions'
+import { FormDraftBar } from '@/components/common/form-draft-bar'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -11,6 +12,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { formatQty } from '@/features/inventory/inventory-model'
 import { isWholeUnit } from '@/features/inventory/whole-units'
 import { useStorage } from '@/features/inventory/use-storage'
+import { usePersistentFormDraft } from '@/hooks/use-persistent-form-draft'
 import { useRequestKey } from '@/hooks/use-request-key'
 import { describeDataError } from '@/lib/errors'
 import { toIsoDate } from '@/lib/format'
@@ -91,6 +93,23 @@ export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, corr
   const [correctionReason, setCorrectionReason] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // Auto-saved working copy (entered quantities only; PO quantities always come fresh from the server).
+  const draft = usePersistentFormDraft({
+    formKey: 'purchase.receipt', recordId: correction ? correction.receipt.id : po.id, scope: correction ? 'correction' : 'receipt',
+    baseVersion: correction ? null : po.updated_at,
+    enabled: has('purchase_receipt.create'),
+    value: { header, correctionReason, rows: rows.map(({ line, ...r }) => ({ lineId: line.id, ...r })) },
+    onRestore: (d) => {
+      setHeader((h) => ({ ...h, ...d.header }))
+      setCorrectionReason(d.correctionReason)
+      setRows((rs) => rs.map((r) => {
+        const saved = d.rows.find((x) => x.lineId === r.line.id)
+        if (!saved) return r
+        const { lineId: _lineId, ...fields } = saved
+        return { ...r, ...fields }
+      }))
+    },
+  })
   const update = (i: number, p: Partial<Row>) => setRows((rs) => rs.map((r, j) => {
     if (j !== i) return r
     const next = { ...r, ...p }
@@ -142,11 +161,13 @@ export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, corr
       if (correction) {
         const res = await correctGoodsReceipt(correction.receipt.id, correctionReason.trim(), head, payload, request.key)
         request.renew()
+        void draft.markSubmitted()
         onPosted(`${correction.receipt.receipt_number} reversed and corrected as ${res.receipt_number}. Stock now reflects the corrected quantities.`)
         return
       }
       const res = await postGoodsReceipt(po.id, head, payload, request.key)
       request.renew()
+      void draft.markSubmitted()
       onPosted(`${res.receipt_number} posted${res.transaction_numbers.length ? `: stock transactions ${res.transaction_numbers.join(', ')}` : ' (no stock postings)'}.${res.duplicate ? ' (This receipt had already been posted.)' : ''}`)
     } catch (e) {
       setError(describeDataError(e))
@@ -165,6 +186,7 @@ export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, corr
               : `${po.supplier_name} · deliver to ${po.warehouse_code ?? '(warehouse not set)'}. Enter only the lines delivered now. Accepted goods are added to stock; rejected goods are never available stock. A posted receipt can be corrected or reversed later.`}
           </DialogDescription>
         </DialogHeader>
+        <FormDraftBar draft={draft} className="mb-0" />
         <form noValidate onSubmit={(e) => { e.preventDefault(); void submit() }} className="space-y-4">
           {correction && (
             <div className="space-y-1"><Label htmlFor="gr-correction">Reason for the correction</Label>

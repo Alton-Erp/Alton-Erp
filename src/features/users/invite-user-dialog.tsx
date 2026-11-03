@@ -1,6 +1,7 @@
 import { ArrowLeft, ChevronDown, ChevronUp, Loader2, Search, Send, ShieldAlert, X } from 'lucide-react'
 import { useMemo, useState, type ReactNode } from 'react'
 
+import { FormDraftBar } from '@/components/common/form-draft-bar'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -18,6 +19,7 @@ import {
   type InviteErrors,
   type InviteForm,
 } from '@/features/users/invitation-model'
+import { usePersistentFormDraft } from '@/hooks/use-persistent-form-draft'
 import { inviteUser, InviteServiceError, type InviteResult } from '@/services/users'
 
 const NO_MANAGER = 'none'
@@ -41,6 +43,12 @@ export function InviteUserDialog({
   // One key per reviewed form: retrying the same send never creates a second invitation.
   const [requestKey, setRequestKey] = useState('')
 
+  // Auto-saved working copy: the entered details and roles come back when the dialog is opened again.
+  const draft = usePersistentFormDraft({
+    formKey: 'users.invite', value: form,
+    onRestore: (d) => { setForm({ ...EMPTY_INVITE, ...d, roleIds: d.roleIds.filter((id) => catalog.some((r) => r.id === id && r.assignable)) }); setErrors({}) },
+  })
+
   const byId = useMemo(() => new Map(catalog.map((r) => [r.id, r])), [catalog])
   const selectedRoles = form.roleIds.map((id) => byId.get(id)).filter((r): r is CatalogRole => Boolean(r))
   const set = <K extends keyof InviteForm>(key: K, value: InviteForm[K]) => setForm((f) => ({ ...f, [key]: value }))
@@ -61,6 +69,7 @@ export function InviteUserDialog({
     setSendError(null)
     try {
       const result = await inviteUser(form, requestKey)
+      void draft.markSubmitted()
       onInvited(result, form)
     } catch (err) {
       setSendError(err instanceof InviteServiceError ? err.message : 'The invitation could not be sent. No invitation was confirmed.')
@@ -82,6 +91,7 @@ export function InviteUserDialog({
               : 'Check the details. The invitation e-mail is sent when you confirm.'}
           </DialogDescription>
         </DialogHeader>
+        {step === 'form' && <FormDraftBar draft={draft} className="mb-0" />}
 
         {step === 'form' ? (
           <form

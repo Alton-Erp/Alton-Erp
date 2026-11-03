@@ -1,6 +1,8 @@
 import { Loader2 } from 'lucide-react'
 import { useState } from 'react'
 
+import { usePermissions } from '@/auth/use-permissions'
+import { FormDraftBar } from '@/components/common/form-draft-bar'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -10,6 +12,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { PAYMENT_METHOD_LABELS, isAmount, money } from '@/features/billing/billing-model'
 import { CustomerSelect } from '@/features/billing/billing-pickers'
 import { useAsync } from '@/hooks/use-async'
+import { usePersistentFormDraft } from '@/hooks/use-persistent-form-draft'
 import { useRequestKey } from '@/hooks/use-request-key'
 import { describeDataError } from '@/lib/errors'
 import { formatDate, toIsoDate } from '@/lib/format'
@@ -81,6 +84,14 @@ export function RecordPaymentDialog({ initialCustomer, initialInvoice, onClose, 
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const { key, renew } = useRequestKey()
+  const { has } = usePermissions()
+  // Auto-saved working copy: restored when the dialog is opened again for the same customer / invoice.
+  const draft = usePersistentFormDraft({
+    formKey: 'billing.payment', scope: initialInvoice ? `invoice:${initialInvoice}` : initialCustomer ? `customer:${initialCustomer}` : '',
+    enabled: has('payments.manage'),
+    value: { customer, f, amounts },
+    onRestore: (d) => { setCustomer(d.customer); setF((x) => ({ ...x, ...d.f })); setAmounts(d.amounts ?? {}) },
+  })
   const alloc = collect(amounts)
   const remaining = isAmount(f.amount) ? paise(f.amount) - alloc.total : null
 
@@ -99,6 +110,7 @@ export function RecordPaymentDialog({ initialCustomer, initialInvoice, onClose, 
         transaction_reference: f.transaction_reference.trim() || null, bank_reference: f.bank_reference.trim() || null, notes: f.notes.trim() || null,
       }, alloc.list, key)
       renew()
+      void draft.markSubmitted()
       onDone(`Receipt ${r.receipt_number} recorded${r.allocations ? ` and allocated to ${r.allocations} invoice(s)` : ''}${Number(r.unallocated) > 0 ? `; ${money(r.unallocated)} unallocated` : ''}.`)
     } catch (e) { setError(describeDataError(e)) } finally { setBusy(false) }
   }
@@ -110,6 +122,7 @@ export function RecordPaymentDialog({ initialCustomer, initialInvoice, onClose, 
           <DialogTitle>Record customer payment</DialogTitle>
           <DialogDescription>Records money the customer paid, as entered here. It is not a bank or gateway confirmation; the receipt stays "unverified". Stock is not affected.</DialogDescription>
         </DialogHeader>
+        <FormDraftBar draft={draft} className="mb-0" />
         {error && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</p>}
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1 sm:col-span-2"><Label htmlFor="rp-cust">Customer</Label><CustomerSelect id="rp-cust" className="w-full" value={customer} onChange={(v) => { setCustomer(v); setAmounts({}) }} /></div>

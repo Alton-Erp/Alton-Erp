@@ -6,6 +6,7 @@ import { useAuth } from '@/auth/use-auth'
 import { usePermissions } from '@/auth/use-permissions'
 import { EmptyState } from '@/components/common/empty-state'
 import { ErrorState } from '@/components/common/error-state'
+import { FormDraftBar } from '@/components/common/form-draft-bar'
 import { LoadingState } from '@/components/common/loading-state'
 import { PageHeader } from '@/components/common/page-header'
 import { Button } from '@/components/ui/button'
@@ -22,6 +23,7 @@ import { parseUnitQty, qtyInputMode, quantityRule } from '@/features/inventory/w
 import { LocationSelect, ProductPicker } from '@/features/inventory/pickers'
 import { useStorage } from '@/features/inventory/use-storage'
 import { useAsync } from '@/hooks/use-async'
+import { usePersistentFormDraft } from '@/hooks/use-persistent-form-draft'
 import { useRequestKey } from '@/hooks/use-request-key'
 import { describeDataError } from '@/lib/errors'
 import { formatCurrency, formatDateTime } from '@/lib/format'
@@ -223,6 +225,27 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [serverErrors, setServerErrors] = useState<{ line_no: number; message: string }[]>([])
+  const { has } = usePermissions()
+  // Auto-saved working copy, including the lines entered so far and the step (edit / review).
+  const draft = usePersistentFormDraft({
+    formKey: 'inventory.opening', scope: 'manual', enabled: has('inventory_opening.create'),
+    value: { lines, product, chosenLocationId, source, qty, batch, mfg, expiry, cost, effective, reference, notes, step },
+    onRestore: (d) => {
+      setLines(d.lines)
+      setProduct(d.product)
+      setLocationId(d.chosenLocationId)
+      setSource(d.source)
+      setQty(d.qty)
+      setBatch(d.batch)
+      setMfg(d.mfg)
+      setExpiry(d.expiry)
+      setCost(d.cost)
+      setEffective(d.effective)
+      setReference(d.reference)
+      setNotes(d.notes)
+      setStep(d.step === 'review' && d.lines.length ? 'review' : 'edit')
+    },
+  })
 
   const addLine = () => {
     setError(null)
@@ -272,6 +295,7 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
             ? (canPost ? 'Check the lines. Confirming posts them to stock in one transaction: if any line cannot be posted, nothing is posted.' : 'These lines will be submitted for approval. Stock changes only after approval.')
             : 'Add one line per product, location, batch and source as physically counted.'}</DialogDescription>
         </DialogHeader>
+        <FormDraftBar draft={draft} className="mb-0" />
         {error && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</p>}
         {serverErrors.length > 0 && (
           <ul role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
@@ -350,8 +374,10 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
                     renew()
                     setStep('edit')
                   } else if (canPost) {
+                    void draft.markSubmitted()
                     onDone(`${r.document_number} posted with ${r.line_count} line(s). Stock is updated.`)
                   } else {
+                    void draft.markSubmitted()
                     onDone(`${r.document_number} submitted with ${r.line_count} line(s). It now awaits approval; stock has not changed yet.`)
                   }
                 } catch (e) {

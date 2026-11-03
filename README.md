@@ -289,6 +289,13 @@ Copy of Alton ERP being reworked so one person can run the whole business: produ
     - Fix: both are now VOLATILE.
     - Check: `npm run test:db:readonly` scans for this mistake and replays these calls read-only. The settings page logs failures (tab, operation, code, message, request id) and shows a reference code with Try again.
   - Stock register, stock accuracy and duplicate-safe production (migration `20261111090000_stock_register_reliability.sql`): see [docs/STOCK_RELIABILITY.md](docs/STOCK_RELIABILITY.md).
+  - Persistent form drafts / auto-save (migration `20261117090000_form_drafts.sql`):
+    - **What it does:** entries in the main forms survive switching modules, refresh, closing the browser and signing in again.
+    - **Forms:** purchase orders, goods receipts, sales orders, invoices, payments, production orders, BOMs, opening stock, products, parties and the invite dialog.
+    - **How:** one table `erp_form_drafts` (owner-only RLS, a per-form permission registry, versioned conflict detection, no secrets, no files), the hook `usePersistentFormDraft` and the status bar `FormDraftBar`.
+    - **Documentation:** [docs/FORM_DRAFTS.md](docs/FORM_DRAFTS.md), including the lifecycle, coverage and the forms not covered.
+    - **Tests:** `supabase/tests/form_drafts_verification.sql` (55 checks), `tests/db/form-drafts-rollback-check.mjs`, `tests/unit/form-drafts.test.ts` and 7 UI smoke steps. The UI smoke suite has 121 steps.
+    - **Rollback:** roll back 20261117 first.
   - User invitations and functional roles (migration `20261116090000_user_invitations.sql`, Edge Function `invite-user`):
     - **Roles:** 13 new roles (21 in total), each with an explicit permission set. Access never depends on a role's name.
       - New: Accounts Executive / Accountant, Sales Executive, Billing & Invoicing Manager, Purchase Executive, Warehouse Manager, Store Executive, Production Executive, Quality Control, Dispatch Manager, Dispatch Executive, Legal & Compliance Manager, HR Manager, Reports Viewer.

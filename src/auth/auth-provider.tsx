@@ -2,6 +2,8 @@ import type { Session } from '@supabase/supabase-js'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import { AuthContext, AuthFlowError, type AuthContextValue, type AuthStatus } from '@/auth/auth-context'
+import { browserStorage, flushAllDrafts } from '@/features/drafts/draft-flush'
+import { clearLocalDrafts } from '@/features/drafts/draft-model'
 import { describeAuthError, describeDataError, isNetworkError } from '@/lib/errors'
 import { supabase } from '@/lib/supabase'
 import { fetchMyAccess, logSecurityEvent, type MyAccess } from '@/services/access'
@@ -107,6 +109,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signOut = useCallback(async () => {
     if (!supabase) return
     userSignedOut.current = true
+    // Open forms save their pending drafts first; then this browser keeps only copies the server does not have yet.
+    await flushAllDrafts()
+    const signedOutUser = (await supabase.auth.getSession()).data.session?.user.id
+    if (signedOutUser) clearLocalDrafts(browserStorage(), signedOutUser)
     await logSecurityEvent('auth.sign_out')
     const { error } = await supabase.auth.signOut()
     // If the server call fails, still drop the local session.

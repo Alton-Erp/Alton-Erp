@@ -100,6 +100,11 @@ const invitationRows = [
   inviteRow({ email: 'late.user@test.invalid', full_name: 'Late User', status: 'EXPIRED' }),
   inviteRow({ email: 'bounce.user@test.invalid', full_name: 'Bounce User', status: 'FAILED', email_status: 'FAILED', email_error: 'Supabase Auth refused the e-mail (HTTP 500): e-mail provider error.' }),
 ]
+// Form drafts per user, form, record and scope (mock of erp_form_drafts).
+const formDrafts = new Map()
+let draftFailures = 0
+const draftKeyOf = (b) => `${currentUser?.id}|${b?.p_form_key}|${b?.p_record_id ?? ''}|${b?.p_scope ?? ''}`
+const draftJson = (row) => ({ ...row, data: row.status === 'draft' ? row.data : null })
 let currentUser = null
 // ERP reset mock: preview figures and the Edge Function's verified result.
 const RESET_PREVIEW = () => ({
@@ -1131,6 +1136,30 @@ const api = http.createServer((req, res) => {
             verification: { purge_tables_empty: true, other_companies_unchanged: true, schema_unchanged: true, actor_access_valid: true },
             storage_files: [{ bucket: 'product-images', name: `${COMPANY_ID}/p1/a.jpg` }, { bucket: 'product-images', name: `${COMPANY_ID}/p2/b.jpg` },
               { bucket: 'documents', name: `${COMPANY_ID}/d1/v1.pdf` }] })
+        // Persistent form drafts (20261117090000): same versioning rules as the database.
+        case 'erp_form_draft_get': {
+          const row = formDrafts.get(draftKeyOf(body))
+          return send(res, 200, row ? draftJson(row) : null)
+        }
+        case 'erp_form_draft_save': {
+          if (draftFailures > 0) { draftFailures--; return send(res, 500, { code: 'XX000', message: 'simulated draft save failure (test only)' }) }
+          const k = draftKeyOf(body)
+          const row = formDrafts.get(k)
+          const expected = body.p_expected_version ?? 0
+          if (row && row.version !== expected && !(row.status !== 'draft' && expected === 0)) return send(res, 200, { status: 'CONFLICT', draft: draftJson(row) })
+          const next = { id: row?.id ?? `draft-${formDrafts.size + 1}`, version: (row?.version ?? 0) + 1, status: 'draft', data: body.p_data,
+            base_version: body.p_base_version ?? null, last_saved_at: new Date().toISOString(), form_key: body.p_form_key }
+          formDrafts.set(k, next)
+          return send(res, 200, { status: 'SAVED', draft: draftJson(next) })
+        }
+        case 'erp_form_draft_close': {
+          const k = draftKeyOf(body)
+          const row = formDrafts.get(k)
+          if (!row || row.status !== 'draft') return send(res, 200, { status: body.p_status, version: 0 })
+          const closed = { ...row, status: body.p_status, data: {}, version: row.version + 1 }
+          formDrafts.set(k, closed)
+          return send(res, 200, draftJson(closed))
+        }
         case 'invite_role_catalog': {
           if (!has('users.manage')) return send(res, 403, { code: '42501', message: 'You are not allowed to perform this action (requires users.manage).' })
           const isSuper = currentUser.roles.includes('SUPER_ADMIN')
@@ -3912,6 +3941,149 @@ const signOut = async () => {
   await waitFor(`location.pathname === '/login'`, 'signed out')
 }
 
+// ---------------------------------------------------------------------------
+// Persistent form drafts (auto-save) — numbers refer to section 11 of the request
+// ---------------------------------------------------------------------------
+const draftStatusIs = (s) => `document.querySelector('[data-draft-status]')?.dataset.draftStatus === ${JSON.stringify(s)}`
+const val = (sel) => `document.querySelector(${JSON.stringify(sel)})?.value`
+const draftSaves = (form) => rpcCalls('erp_form_draft_save').filter((r) => r.body.p_form_key === form)
+const draftCloses = (form) => rpcCalls('erp_form_draft_close').filter((r) => r.body.p_form_key === form)
+const PO_QTY = '[id^="ln-"][id$="-qty"]'
+async function openNewPo() {
+  await goto('/purchase-orders/new')
+  await waitFor(`!!document.querySelector('#po-ref') && document.querySelector('[data-draft-status]')?.dataset.draftStatus !== 'loading'`, 'po form ready')
+}
+
+await step('Drafts 1/2/8: entries on a new purchase order (header and line items) survive switching modules and come back with the restore notice', async () => {
+  // Earlier steps used this form too: start from no draft at all.
+  formDrafts.clear()
+  await evaluate(`Object.keys(localStorage).filter((k) => k.startsWith('alton:draft:')).forEach((k) => localStorage.removeItem(k))`)
+  await openNewPo()
+  assert(!(await evaluate(bodyHas('An unsaved draft was found'))), 'notice without a draft')
+  await fill('#po-ref', 'DRAFT-REF-17')
+  await fill('#po-notes', 'Keep this note')
+  await fill(PO_QTY, '7')
+  await waitFor(draftStatusIs('saved'), 'auto-saved after the pause', 8000)
+  const saved = draftSaves('purchase.order').at(-1).body
+  assert(saved.p_data.h.reference_number === 'DRAFT-REF-17' && saved.p_data.lines[0].quantity === '7' && !('key' in saved.p_data.lines[0])
+    && saved.p_record_id === null && saved.p_scope === '' && saved.p_expected_version === 0, JSON.stringify(saved))
+  assert(!JSON.stringify(saved).includes(COMPANY_ID) && !('p_company_id' in saved) && !('p_user_id' in saved), 'company or user sent by the browser')
+  assert(await evaluate(bodyHas('All changes saved')), 'status text missing')
+  await screenshot('109-draft-saved')
+  await goto('/inventory')
+  await waitFor(bodyHas('Inventory'), 'inventory')
+  await openNewPo()
+  await waitFor(`${bodyHas('An unsaved draft was found. Your previous entries have been restored.')} && ${val('#po-ref')} === 'DRAFT-REF-17'`, 'restored')
+  assert(await evaluate(`${val('#po-notes')} === 'Keep this note' && ${val(PO_QTY)} === '7'`), 'notes or line quantity not restored')
+  await screenshot('110-draft-restored')
+})
+
+await step('Drafts: leaving through the menu saves at once (no waiting for the pause); a full page change keeps a browser copy', async () => {
+  await fill('#po-ref', 'LEFT-QUICKLY')
+  const before = draftSaves('purchase.order').length
+  await click('aside a[href="/inventory"]')
+  await waitFor(`location.pathname === '/inventory'`, 'menu navigation')
+  await waitFor(`true`, 'tick')
+  const start = Date.now()
+  while (draftSaves('purchase.order').length === before && Date.now() - start < 3000) await sleep(100)
+  assert(draftSaves('purchase.order').at(-1)?.body.p_data.h.reference_number === 'LEFT-QUICKLY', 'pending change not saved when leaving the form')
+  await openNewPo()
+  await waitFor(`${val('#po-ref')} === 'LEFT-QUICKLY'`, 'restored after menu navigation')
+  await fill('#po-ref', 'FULL-RELOAD')
+  await goto('/products')
+  await openNewPo()
+  await waitFor(`${val('#po-ref')} === 'FULL-RELOAD'`, 'restored after a full page change (browser copy, then saved)')
+})
+
+await step('Drafts 3/12: refresh, browser back and forward restore the entries', async () => {
+  await waitFor(draftStatusIs('saved'), 'saved', 8000)
+  await cdp('Page.reload')
+  await sleep(300)
+  await waitFor(`location.pathname === '/purchase-orders/new' && ${val('#po-ref')} === 'FULL-RELOAD' && ${val(PO_QTY)} === '7'`, 'restored after refresh')
+  await goto('/products')
+  await waitFor(`location.pathname === '/products'`, 'products')
+  await evaluate('history.back()')
+  await waitFor(`location.pathname === '/purchase-orders/new' && ${val('#po-ref')} === 'FULL-RELOAD'`, 'restored after Back')
+  await evaluate('history.forward()')
+  await waitFor(`location.pathname === '/products'`, 'forward')
+  await evaluate('history.back()')
+  await waitFor(`location.pathname === '/purchase-orders/new' && ${val('#po-ref')} === 'FULL-RELOAD'`, 'restored after Back again')
+})
+
+await step('Drafts 11: a change saved from another window is never overwritten; the user chooses', async () => {
+  await waitFor(`location.pathname === '/purchase-orders/new' && document.querySelector('[data-draft-status]')?.dataset.draftStatus !== 'loading'`, 'form ready')
+  const k = `${USERS['manager@test.invalid'].id}|purchase.order||`
+  const row = formDrafts.get(k)
+  formDrafts.set(k, { ...row, version: row.version + 1, data: { ...row.data, h: { ...row.data.h, reference_number: 'OTHER-WINDOW' } } })
+  await fill('#po-ref', 'THIS-WINDOW')
+  await waitFor(`document.querySelector('[data-draft-notice=conflict]')`, 'conflict notice', 8000)
+  assert(formDrafts.get(k).data.h.reference_number === 'OTHER-WINDOW', 'the other window\'s draft was overwritten')
+  assert(await evaluate(`${draftStatusIs('conflict')} && ${val('#po-ref')} === 'THIS-WINDOW'`), 'entries changed before the user chose')
+  await screenshot('111-draft-conflict')
+  await click('[data-draft-notice=conflict] button', 'Load the other version')
+  await waitFor(`${val('#po-ref')} === 'OTHER-WINDOW' && !document.querySelector('[data-draft-notice=conflict]')`, 'other version loaded')
+  await fill('#po-ref', 'AFTER-CONFLICT')
+  await waitFor(draftStatusIs('saved'), 'saving works again', 8000)
+  assert(formDrafts.get(k).data.h.reference_number === 'AFTER-CONFLICT', 'not saved after resolving')
+})
+
+await step('Drafts: a failed save shows "Unable to save — Retry", keeps the entries, and Retry saves them', async () => {
+  draftFailures = 1
+  await fill('#po-ref', 'OFFLINE-EDIT')
+  await waitFor(`${draftStatusIs('error')} && ${bodyHas('Unable to save')}`, 'save failed shown', 8000)
+  assert(await evaluate(`${val('#po-ref')} === 'OFFLINE-EDIT'`), 'entries lost after a failed save')
+  await screenshot('112-draft-save-failed')
+  await click('[data-testid=form-draft-bar] button', 'Retry')
+  await waitFor(draftStatusIs('saved'), 'saved after Retry', 8000)
+  assert(formDrafts.get(`${USERS['manager@test.invalid'].id}|purchase.order||`).data.h.reference_number === 'OFFLINE-EDIT', 'retry did not save')
+})
+
+await step('Drafts: Discard Draft resets the form and closes the draft; Restore Draft brings it back', async () => {
+  await click('[data-testid=form-draft-bar] button', 'Discard Draft')
+  await waitFor(`${val('#po-ref')} === '' && ${bodyHas('Draft discarded.')}`, 'discarded')
+  assert(draftCloses('purchase.order').at(-1).body.p_status === 'discarded', 'draft not closed as discarded')
+  await click('[data-draft-notice=discarded] button', 'Restore Draft')
+  await waitFor(`${val('#po-ref')} === 'OFFLINE-EDIT'`, 'restored')
+  await waitFor(draftStatusIs('saved'), 'saved again', 8000)
+})
+
+await step('Drafts 5/6: signing out and in again restores the same user\'s draft; another user never sees it', async () => {
+  await signOut()
+  assert(await evaluate(`!Object.keys(localStorage).some((k) => k.startsWith('alton:draft:v1:${USERS['manager@test.invalid'].id}:') && !JSON.parse(localStorage.getItem(k)).dirty)`), 'synced browser copies kept after sign-out')
+  await login('owner@test.invalid')
+  await waitFor(`location.pathname !== '/login'`, 'owner signed in')
+  await openNewPo()
+  assert(await evaluate(`${val('#po-ref')} === '' && !(${bodyHas('An unsaved draft was found')})`), 'another user saw the draft')
+  await signOut()
+  await login('manager@test.invalid')
+  await waitFor(`location.pathname !== '/login'`, 'manager signed in')
+  await openNewPo()
+  await waitFor(`${val('#po-ref')} === 'OFFLINE-EDIT' && ${bodyHas('An unsaved draft was found')}`, 'restored after signing in again')
+})
+
+await step('Drafts 10: a failed submission keeps the draft; a successful one closes it', async () => {
+  await goto('/ledger/new?type=CUSTOMER')
+  await waitFor(`!!document.querySelector('#pt-name') && document.querySelector('[data-draft-status]')?.dataset.draftStatus !== 'loading'`, 'party form')
+  await fill('#pt-name', 'Draft Customer Pvt Ltd')
+  await waitFor(draftStatusIs('saved'), 'party draft saved', 8000)
+  failNext.add('party_save')
+  await click('button[type=submit]', 'Save party')
+  await waitFor(`!!document.querySelector('[role=alert]')`, 'submission error')
+  assert(draftCloses('ledger.party').length === 0, 'draft closed after a failed submission')
+  await goto('/inventory')
+  await goto('/ledger/new?type=CUSTOMER')
+  await waitFor(`${val('#pt-name')} === 'Draft Customer Pvt Ltd'`, 'draft kept after the failure')
+  await click('button[type=submit]', 'Save party')
+  await waitFor(`location.pathname === '/ledger/pty-new'`, 'saved')
+  const close = draftCloses('ledger.party').at(-1)?.body
+  assert(close?.p_status === 'submitted' && close.p_scope === 'CUSTOMER', JSON.stringify(close))
+  await goto('/ledger/new?type=CUSTOMER')
+  await waitFor(`!!document.querySelector('#pt-name') && document.querySelector('[data-draft-status]')?.dataset.draftStatus !== 'loading'`, 'party form again')
+  assert(await evaluate(`${val('#pt-name')} === '' && !(${bodyHas('An unsaved draft was found')})`), 'submitted draft came back')
+  formDrafts.clear()
+  await evaluate(`Object.keys(localStorage).filter((k) => k.startsWith('alton:draft:')).forEach((k) => localStorage.removeItem(k))`)
+})
+
 await step('ERP reset: hidden from an administrator who is not a Super Admin', async () => {
   const previews = rpcCalls('erp_reset_preview').length
   await goto('/admin/erp-settings?tab=system')
@@ -4027,6 +4199,12 @@ async function openInviteForm(name, email, roleIds) {
   await waitFor(`[...document.querySelectorAll('main button')].some((b) => b.innerText.includes('Invite User') && !b.disabled)`, 'invite button')
   await click('main button', 'Invite User')
   await waitFor(`document.querySelector('#invite-name')`, 'invite form')
+  // The previous attempt is auto-saved and restored on reopening; start from a clean form.
+  await waitFor(`document.querySelector('[data-draft-status]') && document.querySelector('[data-draft-status]').dataset.draftStatus !== 'loading'`, 'draft check')
+  if (await evaluate(`[...document.querySelectorAll('[role=dialog] button')].some((b) => b.innerText.includes('Discard Draft'))`)) {
+    await click('[role=dialog] button', 'Discard Draft')
+    await waitFor(`document.querySelector('#invite-name').value === ''`, 'draft discarded')
+  }
   await fill('#invite-name', name)
   await fill('#invite-email', email)
   for (const id of roleIds) await click(`#invite-role-${id}`)

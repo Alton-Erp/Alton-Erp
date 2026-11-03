@@ -5,6 +5,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/auth/use-auth'
 import { usePermissions } from '@/auth/use-permissions'
 import { ErrorState } from '@/components/common/error-state'
+import { FormDraftBar } from '@/components/common/form-draft-bar'
 import { LoadingState } from '@/components/common/loading-state'
 import { PageHeader } from '@/components/common/page-header'
 import { Button } from '@/components/ui/button'
@@ -24,6 +25,7 @@ import { useStorage } from '@/features/inventory/use-storage'
 import { QuickAddPartyDialog } from '@/features/ledger/party-form'
 import { useErpPreferences } from '@/features/management/erp-preferences'
 import { useAsync } from '@/hooks/use-async'
+import { usePersistentFormDraft } from '@/hooks/use-persistent-form-draft'
 import { useRequestKey } from '@/hooks/use-request-key'
 import { describeDataError } from '@/lib/errors'
 import { requireSupabase } from '@/lib/supabase'
@@ -111,12 +113,12 @@ export default function PoFormPage() {
       </>
     )
   }
-  return <PoForm key={copyId ?? fromSo ?? poId ?? 'new'} {...data.data} />
+  return <PoForm key={copyId ?? fromSo ?? poId ?? 'new'} {...data.data} draftScope={copyId ? `copy:${copyId}` : fromSo ? `so:${fromSo}` : ''} />
 }
 
-function PoForm({ suppliers, po, copyFrom, lines: initialLines, companyGstin, prefill }: {
+function PoForm({ suppliers, po, copyFrom, lines: initialLines, companyGstin, prefill, draftScope }: {
   suppliers: PoSupplierOption[]; po: PurchaseOrderListRow | null; copyFrom: PurchaseOrderListRow | null; lines: PurchaseOrderLineListRow[]; companyGstin: string | null
-  prefill: SoPrefill | null
+  prefill: SoPrefill | null; draftScope: string
 }) {
   const navigate = useNavigate()
   const { access } = useAuth()
@@ -175,6 +177,19 @@ function PoForm({ suppliers, po, copyFrom, lines: initialLines, companyGstin, pr
   const [warehouseTouched, setWarehouseTouched] = useState(Boolean(src?.warehouse_id))
   const warehouseId = warehouseTouched ? h.warehouse_id : (h.warehouse_id || storage.warehouses.find((w) => w.is_default && w.status === 'ACTIVE')?.id || '')
 
+  // Auto-saved working copy: restored when the user comes back to this form.
+  const draft = usePersistentFormDraft({
+    formKey: 'purchase.order', recordId: po?.id ?? null, scope: draftScope, baseVersion: po?.updated_at ?? null,
+    enabled: has('purchase_order.create') || has('purchase_order.update'),
+    value: { h, lines: lines.map(({ key: _key, ...l }) => l), warehouseTouched },
+    onRestore: (d) => {
+      setH((x) => ({ ...x, ...d.h }))
+      setLines(d.lines.map((l) => ({ ...l, key: newKey() })))
+      setWarehouseTouched(Boolean(d.warehouseTouched))
+      setErrors(new Map())
+    },
+  })
+
   const chooseSupplier = (id: string, list: PoSupplierOption[] = supplierList) => {
     const s = list.find((x) => x.id === id)
     // Suppliers without their own terms get the default purchase terms from ERP Settings.
@@ -224,6 +239,8 @@ function PoForm({ suppliers, po, copyFrom, lines: initialLines, companyGstin, pr
       }, linesPayload(lines), po?.updated_at ?? null, po ? null : request.key,
       { supplier_invoice_number: h.supplier_invoice_number.trim() || null, supplier_challan_number: h.supplier_challan_number.trim() || null })
       request.renew()
+      // The order is saved in the database: the working copy is no longer needed.
+      void draft.markSubmitted()
       let message = `${res.po_number} ${po ? 'saved' : 'created'} as a draft.`
       if (submit) {
         try {
@@ -254,6 +271,8 @@ function PoForm({ suppliers, po, copyFrom, lines: initialLines, companyGstin, pr
     <>
       <PageHeader title={title} description="Draft orders can be changed freely. Amounts are recalculated by the server on every save."
         breadcrumbs={[{ label: 'Orders' }, { label: 'Supplier Purchase Orders', to: '/purchase-orders' }, { label: po ? po.po_number : 'New' }]} />
+      {/* "Save draft" below already creates a draft purchase order, so the auto-save bar has no button of its own. */}
+      <FormDraftBar draft={draft} showSave={false} />
       {po?.rejection_reason && (
         <p role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-900">Rejected: {po.rejection_reason}</p>
       )}

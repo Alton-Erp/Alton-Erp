@@ -2,7 +2,9 @@ import { Info, Loader2, Save } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
+import { usePermissions } from '@/auth/use-permissions'
 import { ErrorState } from '@/components/common/error-state'
+import { FormDraftBar } from '@/components/common/form-draft-bar'
 import { LoadingState } from '@/components/common/loading-state'
 import { PageHeader } from '@/components/common/page-header'
 import { Button } from '@/components/ui/button'
@@ -10,6 +12,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { EMPTY_PARTY, partyToForm, validateParty, type PartyFormValues, type PartyRow } from '@/features/ledger/ledger-model'
 import { DuplicatePanel, PartyFields } from '@/features/ledger/party-form'
 import { useAsync } from '@/hooks/use-async'
+import { usePersistentFormDraft } from '@/hooks/use-persistent-form-draft'
 import { useRequestKey } from '@/hooks/use-request-key'
 import { describeDataError } from '@/lib/errors'
 import { fetchParty, saveParty, type DuplicateParty } from '@/services/ledger'
@@ -35,6 +38,15 @@ function PartyForm({ existing }: { existing: PartyRow | null }) {
   const [error, setError] = useState<string | null>(null)
   const [duplicates, setDuplicates] = useState<DuplicateParty[] | null>(null)
   const { key, renew } = useRequestKey()
+  const { has } = usePermissions()
+  // Auto-saved working copy: restored when the user comes back to this form.
+  const draft = usePersistentFormDraft({
+    formKey: 'ledger.party', recordId: existing?.party_id ?? null, scope: existing ? '' : (presetType ?? ''),
+    baseVersion: existing?.updated_at ?? null,
+    enabled: has('customers.manage') || has('suppliers.manage'),
+    value: values,
+    onRestore: (d) => { setValues((v) => ({ ...v, ...d })); setDuplicates(null) },
+  })
   const validation = validateParty(values)
   const errors = submitted ? validation.errors : {}
   // A role the party had and no longer has after saving (it is deactivated, never deleted).
@@ -55,6 +67,7 @@ function PartyForm({ existing }: { existing: PartyRow | null }) {
         window.scrollTo({ top: 0, behavior: 'smooth' })
         return
       }
+      void draft.markSubmitted()
       navigate(`/ledger/${r.party_id}`, { replace: true, state: { message: `${r.party_code} ${existing ? 'updated' : 'created'}.` } })
     } catch (e) {
       setError(describeDataError(e))
@@ -71,6 +84,7 @@ function PartyForm({ existing }: { existing: PartyRow | null }) {
         description={existing ? `${existing.party_code} · changes apply to its customer and supplier records together.` : 'A customer, a supplier or both. Only the name and type are required.'}
         breadcrumbs={[{ label: 'Master Data' }, { label: 'Ledger (Parties)', to: '/ledger' }, { label: existing ? existing.party_code : 'Add party' }]}
       />
+      <FormDraftBar draft={draft} />
       <form noValidate onSubmit={(e) => { e.preventDefault(); void save(false) }} className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
         <div className="space-y-4">
           {error && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-800">{error}</p>}

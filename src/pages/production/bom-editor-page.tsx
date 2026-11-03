@@ -5,6 +5,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/auth/use-auth'
 import { usePermissions } from '@/auth/use-permissions'
 import { ErrorState } from '@/components/common/error-state'
+import { FormDraftBar } from '@/components/common/form-draft-bar'
 import { LoadingState } from '@/components/common/loading-state'
 import { PageHeader } from '@/components/common/page-header'
 import { Button } from '@/components/ui/button'
@@ -27,6 +28,7 @@ import { BomStatusBadge } from '@/features/production/production-badges'
 import { validateBomLine } from '@/features/production/production-model'
 import { useErpPreferences } from '@/features/management/erp-preferences'
 import { useAsync } from '@/hooks/use-async'
+import { usePersistentFormDraft } from '@/hooks/use-persistent-form-draft'
 import { useRequestKey } from '@/hooks/use-request-key'
 import { describeDataError, describeProductError } from '@/lib/errors'
 import { formatDate, formatDateTime, toIsoDate } from '@/lib/format'
@@ -148,10 +150,12 @@ export default function BomEditorPage() {
   const canEdit = editableStatus && (bom ? has('production_bom.update') || (has('production_bom.create') && bom.created_by === user?.id) : has('production_bom.create'))
 
   // Load the stored BOM into the form once per fetch.
+  const [formLoaded, setFormLoaded] = useState<string | null>(null)
   useEffect(() => {
     const data = loaded.data
     if (!data) return
     void Promise.resolve().then(() => {
+      setFormLoaded(`${data.bom.id}:${data.bom.updated_at}`)
       setProduct({ product_id: data.bom.finished_product_id, sku: data.bom.sku, product_name: data.bom.product_name, base_unit: data.bom.output_unit, track_batches: false, track_expiry: false })
       setFrom(data.bom.effective_from)
       setTo(data.bom.effective_to ?? '')
@@ -178,6 +182,22 @@ export default function BomEditorPage() {
     void Promise.resolve().then(() =>
       setProduct((cur) => cur ?? { product_id: p.id, sku: p.sku, product_name: p.product_name, base_unit: p.base_unit, track_batches: p.track_batches, track_expiry: p.track_expiry }))
   }, [preset.data])
+
+  // Auto-saved working copy of the header and components (the planning fields are the product's own values and are saved with it).
+  const draft = usePersistentFormDraft({
+    formKey: 'bom.editor', recordId: bom?.id ?? null, baseVersion: bom?.updated_at ?? null,
+    scope: bom ? '' : presetProductId ? `product:${presetProductId}` : '',
+    enabled: canEdit && (!bomId || (bom !== undefined && formLoaded === `${bom.id}:${bom.updated_at}`)),
+    value: { product, from, to, output, notes, lines: lines.map(({ key: _key, ...l }) => l) },
+    onRestore: (d) => {
+      if (!bom) setProduct(d.product)
+      setFrom(d.from)
+      setTo(d.to)
+      setOutput(d.output)
+      setNotes(d.notes)
+      setLines(d.lines.length ? d.lines.map((l) => ({ ...l, key: crypto.randomUUID() })) : [blankLine(defaultWastage)])
+    },
+  })
 
   const updateLine = (k: string, patch: Partial<Line>) => setLines((ls) => ls.map((l) => (l.key === k ? { ...l, ...patch } : l)))
 
@@ -229,6 +249,7 @@ export default function BomEditorPage() {
         key,
       )
       renew()
+      void draft.markSubmitted()
       if (!bom) navigate(`/production/boms/${result.bom_id}`, { replace: true })
       else {
         setMessage(filled.length === 0
@@ -318,8 +339,9 @@ export default function BomEditorPage() {
           </>
         }
       />
+      <FormDraftBar draft={draft} />
       {error && <p role="alert" className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-800">{error}</p>}
-      {message && <p role="status" className="mb-4 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-sm text-green-800">{message}</p>}
+      {message &&<p role="status" className="mb-4 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-sm text-green-800">{message}</p>}
       {fractional.length > 0 && (
         <p role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-900">
           Needs correction: {fractional.join('; ')} {fractional.length === 1 ? 'is' : 'are'} not whole pieces.{' '}

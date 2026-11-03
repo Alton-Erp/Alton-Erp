@@ -49,6 +49,7 @@ const SUITES = [
   { file: 'bom_planning_ean_verification.sql', tag: 'BOM_PLANNING_EAN_RESULT', label: 'V2: BOM planning fields & Product Master EAN', companies: ['BPA', 'BPB'] },
   { file: 'partial_invoicing_verification.sql', tag: 'PARTIAL_INVOICING_RESULT', label: 'V2: Partial invoicing, pending-invoice tracking & release', companies: ['PIA', 'PIB'] },
   { file: 'user_invitations_verification.sql', tag: 'USER_INVITATIONS_RESULT', label: 'V2: User invitations & functional roles', companies: ['INVA', 'INVB'] },
+  { file: 'form_drafts_verification.sql', tag: 'FORM_DRAFTS_RESULT', label: 'V2: Persistent form drafts (auto-save)', companies: ['DFA', 'DFB'] },
   { file: 'force_reset_direct_verification.sql', tag: 'FORCE_RESET_DIRECT_RESULT', label: 'V2: Force Reset / Delete Everything (direct)', companies: ['DRA', 'DRB'] },
 ]
 

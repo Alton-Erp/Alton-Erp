@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
 import { usePermissions } from '@/auth/use-permissions'
 import { ErrorState } from '@/components/common/error-state'
+import { FormDraftBar } from '@/components/common/form-draft-bar'
 import { LoadingState } from '@/components/common/loading-state'
 import { PageHeader } from '@/components/common/page-header'
 import { Button } from '@/components/ui/button'
@@ -21,6 +22,7 @@ import { qtyInputMode } from '@/features/inventory/whole-units'
 import { QuickAddPartyDialog } from '@/features/ledger/party-form'
 import { QuickAddProductDialog } from '@/features/products/quick-add-product'
 import { useAsync } from '@/hooks/use-async'
+import { usePersistentFormDraft } from '@/hooks/use-persistent-form-draft'
 import { useRequestKey } from '@/hooks/use-request-key'
 import { describeDataError } from '@/lib/errors'
 import { formatDate, toIsoDate } from '@/lib/format'
@@ -174,6 +176,22 @@ function EntryForm({ settings, customers, orders, invoice, lines: invLines, soLi
   const customer = customerList.find((c) => c.id === customerId) ?? null
   const fromSo = mode === 'so'
 
+  // Auto-saved working copy (separately for "from sales order" and "manual"): restored when the user comes back.
+  const draft = usePersistentFormDraft({
+    formKey: 'billing.invoice', recordId: invoice?.id ?? null, baseVersion: invoice?.updated_at ?? null,
+    scope: invoice ? '' : `${mode}${fromSo && soParam ? `:${soParam}` : ''}`,
+    enabled: has('invoices.create'),
+    value: { customerId, soId, so, h, lines: lines.map(({ key: _key, ...l }) => l) },
+    onRestore: (d) => {
+      setCustomerId(d.customerId)
+      setSoId(d.soId)
+      setSo(d.so)
+      setH((x) => ({ ...x, ...d.h }))
+      setLines(d.lines.map((l) => ({ ...l, key: l.soLineId ?? crypto.randomUUID() })))
+      setError(null)
+    },
+  })
+
   const chooseCustomer = (id: string, list: CustomerRow[] = customerList) => {
     const c = list.find((x) => x.id === id)
     setCustomerId(id)
@@ -286,6 +304,8 @@ function EntryForm({ settings, customers, orders, invoice, lines: invLines, soLi
         gst_rate: l.gstRate.trim() || null,
       })), { freight: h.freight.trim() || '0', packing: h.packing.trim() || '0', other: h.other.trim() || '0' }, invoice ? null : request.key)
       request.renew()
+      // The invoice is saved in the database: the working copy is no longer needed.
+      void draft.markSubmitted()
       if (andIssue) {
         try {
           // Lines that cannot be dispatched on posting (manual stock lines) block posting (the server checks again).
@@ -335,6 +355,7 @@ function EntryForm({ settings, customers, orders, invoice, lines: invLines, soLi
           : 'Any customer and products, with line and invoice discounts, GST, freight and packing. Stock items can be posted only after they are dispatched; services and charges post straight away.'}
         breadcrumbs={crumbs} />
       {switcher}
+      <FormDraftBar draft={draft} showSave={false} />
       <form noValidate onSubmit={(e) => { e.preventDefault(); void save(false) }} className="space-y-6">
         <Card>
           <CardHeader><div><CardTitle>Invoice details</CardTitle>

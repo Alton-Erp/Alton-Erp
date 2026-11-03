@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 
 import { usePermissions } from '@/auth/use-permissions'
 import { ErrorState } from '@/components/common/error-state'
+import { FormDraftBar } from '@/components/common/form-draft-bar'
 import { LoadingState } from '@/components/common/loading-state'
 import { PageHeader } from '@/components/common/page-header'
 import { Button } from '@/components/ui/button'
@@ -18,6 +19,7 @@ import { parseUnitQty, qtyInputMode } from '@/features/inventory/whole-units'
 import { AddComponentsDialog, RequirementsTable, WarningList } from '@/features/production/production-v2-components'
 import { useAsync } from '@/hooks/use-async'
 import { useDebouncedValue } from '@/hooks/use-debounced-value'
+import { usePersistentFormDraft } from '@/hooks/use-persistent-form-draft'
 import { useRequestKey } from '@/hooks/use-request-key'
 import { describeDataError } from '@/lib/errors'
 import { toIsoDate } from '@/lib/format'
@@ -58,6 +60,24 @@ function EntryForm({ order, crumbs }: { order: ProductionOrderListRow | null; cr
   const [busy, setBusy] = useState<null | 'save' | 'complete'>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // Auto-saved working copy: restored when the user comes back to this form.
+  const draft = usePersistentFormDraft({
+    formKey: 'production.order', recordId: order?.id ?? null, baseVersion: order?.updated_at ?? null,
+    enabled: has('production_order.create') || has('production_order.update'),
+    value: { product, date, planned, warehouse, remarks, actual, rejected, wastage },
+    onRestore: (d) => {
+      setProduct(d.product)
+      setDate(d.date)
+      setPlanned(d.planned)
+      setWarehouse(d.warehouse)
+      setRemarks(d.remarks)
+      setActual(d.actual)
+      setRejected(d.rejected)
+      setWastage(d.wastage)
+      setError(null)
+    },
+  })
+
   const whId = warehouse || storage.warehouses.find((w) => w.is_default && w.status === 'ACTIVE')?.id || ''
   const unit = product?.base_unit ?? ''
   const plannedQty = product ? parseUnitQty(planned, unit) : null
@@ -91,6 +111,7 @@ function EntryForm({ order, crumbs }: { order: ProductionOrderListRow | null; cr
         ...(complete ? { complete: true, actual_quantity: actual.trim(), rejected_quantity: rejected.trim() || '0', wastage_quantity: wastage.trim() || '0', production_date: date } : {}),
       }, order ? null : request.key)
       request.renew()
+      void draft.markSubmitted()
       const msg = res.completion
         ? `${res.production_order_number} recorded and completed: ${res.completion.accepted} ${unit} accepted into stock (${res.completion.receipt_number}).`
         : `${res.production_order_number} ${order ? 'saved and recalculated' : 'created'} (BOM ${res.bom_code} v${res.bom_version}). Available materials are reserved; nothing has been deducted yet.`
@@ -108,7 +129,8 @@ function EntryForm({ order, crumbs }: { order: ProductionOrderListRow | null; cr
         description={order ? 'Change the product, quantity, date, location or remarks. Reservations are released and the materials recalculated from the current BOM.' : 'Create a production order. Materials are calculated from the active BOM and available stock is reserved; stock changes only when production is completed.'}
         breadcrumbs={crumbs}
       />
-      {notice && <p role="status" className="mb-4 flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-sm text-green-800"><CheckCircle2 className="size-4" /> {notice}</p>}
+      <FormDraftBar draft={draft} />
+      {notice &&<p role="status" className="mb-4 flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-sm text-green-800"><CheckCircle2 className="size-4" /> {notice}</p>}
       {p && <WarningList warnings={p.warnings} showPurchase />}
 
       <form noValidate onSubmit={(e) => { e.preventDefault(); void save(false) }} className="space-y-6">

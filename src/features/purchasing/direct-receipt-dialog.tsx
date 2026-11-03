@@ -1,6 +1,8 @@
 import { AlertTriangle, Loader2, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 
+import { usePermissions } from '@/auth/use-permissions'
+import { FormDraftBar } from '@/components/common/form-draft-bar'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -10,6 +12,7 @@ import { ProductPicker } from '@/features/inventory/pickers'
 import { useStorage } from '@/features/inventory/use-storage'
 import { isWholeUnit } from '@/features/inventory/whole-units'
 import { useAsync } from '@/hooks/use-async'
+import { usePersistentFormDraft } from '@/hooks/use-persistent-form-draft'
 import { useRequestKey } from '@/hooks/use-request-key'
 import { describeDataError } from '@/lib/errors'
 import { toIsoDate } from '@/lib/format'
@@ -75,6 +78,18 @@ export function DirectReceiptDialog({ onClose, onPosted, correction }: {
   const rejectLocations = storage.activeLocations.filter((o) => o.usage === 'REJECTED' || o.usage === 'QUARANTINE')
   const defaultLoc = locations.find((o) => o.isDefault)?.id ?? locations[0]?.id ?? ''
   const update = (key: string, p: Partial<Row>) => setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...p } : r)))
+  const { has } = usePermissions()
+  // Auto-saved working copy: restored when the dialog is opened again.
+  const draft = usePersistentFormDraft({
+    formKey: 'purchase.receipt', recordId: correction?.receipt.id ?? null, scope: correction ? 'direct-correction' : 'direct',
+    enabled: has('purchase_receipt.create'),
+    value: { header, reason, rows: rows.map(({ key: _key, ...r }) => r) },
+    onRestore: (d) => {
+      setHeader((h) => ({ ...h, ...d.header }))
+      setReason(d.reason)
+      setRows(d.rows.length ? d.rows.map((r) => ({ ...r, key: crypto.randomUUID() })) : [blank()])
+    },
+  })
 
   const submit = async () => {
     setError(null)
@@ -122,6 +137,7 @@ export function DirectReceiptDialog({ onClose, onPosted, correction }: {
         ? await correctGoodsReceipt(correction.receipt.id, reason.trim(), head, lines, request.key)
         : await postDirectGoodsReceipt(head, lines, request.key)
       request.renew()
+      void draft.markSubmitted()
       const extra = (res.warnings ?? []).filter((w) => !w.includes('not linked'))
       onPosted(`${correction ? `${correction.receipt.receipt_number} reversed and corrected as ${res.receipt_number}` : `${res.receipt_number} posted without a purchase order`}.${extra.length ? ` Note: ${extra.join(' ')}` : ''}`, res.receipt_id)
     } catch (e) {
@@ -141,6 +157,7 @@ export function DirectReceiptDialog({ onClose, onPosted, correction }: {
               : 'Use this when goods arrive with no order in the system. Accepted goods are added to stock; rejected goods are never available.'}
           </DialogDescription>
         </DialogHeader>
+        <FormDraftBar draft={draft} className="mb-0" />
         <p className="flex gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
           <AlertTriangle className="mt-0.5 size-4 shrink-0" />
           This is an unlinked receipt: it is not matched to any purchase order, so ordered and pending quantities are not tracked for it. Prefer receiving against the order when there is one.
