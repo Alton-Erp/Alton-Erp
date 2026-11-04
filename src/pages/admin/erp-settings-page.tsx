@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 
 import { useAuth } from '@/auth/use-auth'
 import { usePermissions } from '@/auth/use-permissions'
+import { DepartmentDataSection } from '@/features/admin/department-data-section'
 import { ErpForceResetSection } from '@/features/admin/erp-force-reset-section'
 import { ErpResetCard } from '@/features/admin/erp-reset-card'
 import { ConfirmDialog } from '@/components/common/confirm-dialog'
@@ -138,6 +139,11 @@ export function ErpSystemSettings() {
         <div className="mt-6">
           <ErpForceResetSection companyId={access.company.id} companyCode={access.company.company_code}
             companyName={access.company.display_name || access.company.legal_name} />
+        </div>
+      )}
+      {canReset && access?.company && (
+        <div className="mt-6">
+          <DepartmentDataSection companyId={access.company.id} />
         </div>
       )}
       <ConfirmDialog open={confirm} onOpenChange={setConfirm} title="Save these settings?" confirmLabel="Save" description={changes.map((c) => c.label).join('. ') + '.'} onConfirm={() => void save()} />

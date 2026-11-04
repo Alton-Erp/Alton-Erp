@@ -97,9 +97,11 @@ export const fetchForcePreview = (companyId: string) => rpc<ForcePreview>('erp_f
 
 /** Standard and force reset attempts of the company, newest first (RLS: system.reset_data holders only). */
 export async function fetchResetHistory(): Promise<ResetRun[]> {
-  type Q = PromiseLike<{ data: ResetRun[] | null; error: unknown }> & { order(c: string, o: { ascending: boolean }): Q; limit(n: number): Q }
+  type Q = PromiseLike<{ data: ResetRun[] | null; error: unknown }> & { order(c: string, o: { ascending: boolean }): Q; limit(n: number): Q; in(c: string, v: string[]): Q }
   const q = (requireSupabase().from('erp_reset_runs' as 'profiles') as unknown as { select(c: string): Q })
     .select('id, mode, status, started_at, finished_at, requested_by, deleted_total, deleted_counts, blockers, error_message, backup_id, approval_id')
+    // Department data operations have their own history (Data Management).
+    .in('mode', ['STANDARD', 'FORCE'])
     .order('started_at', { ascending: false })
     .limit(50)
   const { data, error } = await q
