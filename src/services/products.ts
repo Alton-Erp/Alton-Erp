@@ -1,3 +1,4 @@
+import { applyConditions, type Condition, type FilterBuilder } from '@/features/drilldown/drill-conditions'
 import { categoryCodeFor, type ProductInput, type ProductType, type SourceType } from '@/features/products/product-model'
 import { describeProductError } from '@/lib/errors'
 import { requireSupabase } from '@/lib/supabase'
@@ -22,6 +23,8 @@ export interface ProductListParams {
   sort: { column: ProductSortColumn; ascending: boolean }
   page: number
   pageSize: number
+  /** Dashboard figure the list was opened from (drill-down): its conditions are applied as well. */
+  drill?: readonly Condition[] | null
 }
 
 export interface ProductKpis {
@@ -67,6 +70,7 @@ function buildQuery(params: Omit<ProductListParams, 'page' | 'pageSize' | 'sort'
   if (params.manufacturable !== null) query = query.eq('is_manufacturable', params.manufacturable)
   if (params.hasBom !== null) query = query.eq('has_bom', params.hasBom)
 
+  if (params.drill?.length) query = applyConditions(query as unknown as FilterBuilder<never>, params.drill) as unknown as typeof query
   switch (params.status) {
     case 'current':
       query = query.is('archived_at', null)

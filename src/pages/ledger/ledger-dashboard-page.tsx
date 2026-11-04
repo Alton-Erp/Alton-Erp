@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { KpiCard } from '@/components/common/kpi-card'
 import { Button } from '@/components/ui/button'
 import { money } from '@/features/billing/billing-model'
+import { useDrill } from '@/features/drilldown/use-drill'
 import { ListCard, ModuleDashboard } from '@/features/management/module-dashboard-shell'
 import { formatNumber } from '@/lib/format'
 
@@ -23,21 +24,22 @@ interface Data {
 
 /** /ledger/dashboard */
 export default function LedgerDashboardPage() {
+  const { href } = useDrill('ledger')
   return (
     <ModuleDashboard<Data> module="LEDGER" title="Ledger Dashboard" description="Customers and suppliers, what they owe you and what you owe them. Payables come from goods received, not purchase orders."
       actions={<Button asChild><Link to="/ledger/new"><UserPlus /> Add party</Link></Button>}>
-      {(d) => (
+      {(d, p) => (
         <div className="space-y-6">
           <section aria-label="Ledger figures" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <KpiCard label="Total Customers" value={formatNumber(d.customers)} icon={Users} />
-            <KpiCard label="Total Suppliers" value={formatNumber(d.suppliers)} icon={Users} />
-            <KpiCard label="Customer and Supplier" value={formatNumber(d.both)} hint="One party in both roles" icon={BookUser} />
-            <KpiCard label="Outstanding Balances" value={formatNumber(d.with_balance)} hint="Parties with a balance" icon={HandCoins} />
-            <KpiCard label="Customer Receivables" value={money(d.receivables)} hint={d.customer_advances ? `Advances ${money(d.customer_advances)} not netted` : 'Incl. opening balances'} icon={HandCoins} accent="available" />
-            <KpiCard label="Supplier Payables" value={money(d.payables)} hint="Goods received − payments, incl. opening" icon={HandCoins} accent="shortage" />
+            <KpiCard to={href('ledger.customers', p)} label="Total Customers" value={formatNumber(d.customers)} icon={Users} />
+            <KpiCard to={href('ledger.suppliers', p)} label="Total Suppliers" value={formatNumber(d.suppliers)} icon={Users} />
+            <KpiCard to={href('ledger.both', p)} label="Customer and Supplier" value={formatNumber(d.both)} hint="One party in both roles" icon={BookUser} />
+            <KpiCard to={href('ledger.with_balance', p)} label="Outstanding Balances" value={formatNumber(d.with_balance)} hint="Parties with a balance" icon={HandCoins} />
+            <KpiCard to={href('ledger.receivables', p)} label="Customer Receivables" value={money(d.receivables)} hint={d.customer_advances ? `Advances ${money(d.customer_advances)} not netted` : 'Incl. opening balances'} icon={HandCoins} accent="available" />
+            <KpiCard to={href('ledger.payables', p)} label="Supplier Payables" value={money(d.payables)} hint="Goods received − payments, incl. opening" icon={HandCoins} accent="shortage" />
           </section>
           <div className="grid gap-6 xl:grid-cols-3">
-            <ListCard title="Outstanding balances" empty={d.outstanding.length === 0}>
+            <ListCard title="Outstanding balances" empty={d.outstanding.length === 0} viewAll={href('ledger.with_balance', p)}>
               <ul className="divide-y text-sm">{d.outstanding.map((p) => (
                 <li key={p.party_id} className="flex justify-between gap-2 py-1.5"><Link className="truncate text-primary hover:underline" to={`/ledger/${p.party_id}`}>{p.name}</Link>
                   <span className="shrink-0 text-right tabular-nums">{Number(p.receivable) ? `Receivable ${money(p.receivable)}` : ''}{Number(p.receivable) && Number(p.payable) ? ' · ' : ''}{Number(p.payable) ? `Payable ${money(p.payable)}` : ''}</span></li>

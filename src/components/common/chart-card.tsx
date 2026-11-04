@@ -1,5 +1,6 @@
 import { ChartColumn, Table2 } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 
 import { EmptyState } from '@/components/common/empty-state'
 import { ErrorState } from '@/components/common/error-state'
@@ -11,6 +12,8 @@ import { cn } from '@/lib/utils'
 export interface ChartTableView {
   headers: string[]
   rows: (string | number)[][]
+  /** Drill-down link of each row (first cell becomes a link; keyboard alternative to clicking the chart). */
+  links?: (string | null)[]
 }
 
 interface ChartCardProps {
@@ -24,6 +27,8 @@ interface ChartCardProps {
   emptyMessage?: string
   /** Accessible tabular alternative to the chart. */
   table?: ChartTableView
+  /** Shown under the chart when its bars or segments open records. */
+  drillHint?: string
   height?: number
   className?: string
   children: ReactNode
@@ -40,6 +45,7 @@ export function ChartCard({
   isEmpty = false,
   emptyMessage = 'No data is available for this period yet.',
   table,
+  drillHint,
   height = 280,
   className,
   children,
@@ -69,7 +75,7 @@ export function ChartCard({
               <tr key={r} className="border-t">
                 {row.map((cell, c) => (
                   <td key={c} className={cn('px-3 py-2', c === 0 ? 'text-left' : 'text-right tabular-nums')}>
-                    {cell}
+                    {c === 0 && table.links?.[r] ? <Link className="text-primary hover:underline" to={table.links[r]!}>{cell}</Link> : cell}
                   </td>
                 ))}
               </tr>
@@ -115,6 +121,7 @@ export function ChartCard({
       </CardHeader>
       <CardContent className="pt-4">
         <div style={{ height }}>{content}</div>
+        {drillHint && ready && <p className="mt-2 text-xs text-muted-foreground">{drillHint}</p>}
       </CardContent>
     </Card>
   )

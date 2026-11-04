@@ -1,7 +1,6 @@
 import {
   AlertTriangle, Ban, CalendarDays, CalendarRange, CheckCircle2, ClipboardList, Factory, Hourglass, IndianRupee, Lock, PackageCheck, Plus, ShoppingCart, Truck, Upload,
 } from 'lucide-react'
-import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
 import { usePermissions } from '@/auth/use-permissions'
@@ -19,26 +18,29 @@ import { money } from '@/features/billing/billing-model'
 import { formatQty } from '@/features/inventory/inventory-model'
 import { formatByUnit } from '@/features/production/production-v2-model'
 import { SO_V2_STATUS, soStatusMeta, type SoV2Status } from '@/features/sales/sales-v2-model'
+import { useDrill, useUrlDateRange, useUrlParam } from '@/features/drilldown/use-drill'
 import { useAsync } from '@/hooks/use-async'
-import { getPresetRange } from '@/lib/date-range'
 import { describeDataError } from '@/lib/errors'
 import { formatDate, formatNumber, toIsoDate } from '@/lib/format'
 import { fetchCustomers } from '@/services/customer-po'
 import { fetchSalesDashboard, type SalesDashboard } from '@/services/sales-v2'
-import type { DateRangeValue } from '@/types'
 
 /** /sales/dashboard — orders, value, reservations, production need, shortages and fulfilment. */
 export default function SalesDashboardPage() {
   const navigate = useNavigate()
   const { has } = usePermissions()
-  const [period, setPeriod] = useState<DateRangeValue>(() => getPresetRange('this_month'))
-  const [customer, setCustomer] = useState('all')
-  const [status, setStatus] = useState('all')
+  // Filters kept in the address, so Back from a drill-down page keeps them.
+  const [period, setPeriod] = useUrlDateRange('this_month')
+  const [customer, setCustomer] = useUrlParam('customer', 'all')
+  const [status, setStatus] = useUrlParam('status', 'all')
+  const { href } = useDrill('sales')
   const customers = useAsync(() => fetchCustomers(true).catch(() => []), [])
   const dash = useAsync(() => fetchSalesDashboard(toIsoDate(period.from), toIsoDate(period.to), customer === 'all' ? null : customer, status === 'all' ? null : status),
     [period.from.getTime(), period.to.getTime(), customer, status])
   const d = dash.data
   const v = (fn: (x: SalesDashboard) => string) => (d ? fn(d) : null)
+  const ctx = { from: toIsoDate(period.from), to: toIsoDate(period.to), customer: customer === 'all' ? null : customer, status: status === 'all' ? null : status, ...(d?.today ? { today: d.today } : {}) }
+  const to = (key: string) => href(key, ctx)
 
   return (
     <>
@@ -67,24 +69,24 @@ export default function SalesDashboardPage() {
       {dash.error && <Card className="mb-6"><ErrorState message={describeDataError(dash.error)} onRetry={dash.reload} /></Card>}
 
       <section aria-label="Sales summary" className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-        <KpiCard label="Total Sales Orders" value={v((x) => formatNumber(x.total_orders))} hint="Ordered in the period" icon={ClipboardList} />
-        <KpiCard label="Orders Created Today" value={v((x) => formatNumber(x.created_today))} icon={CalendarDays} accent="manufacturing" />
-        <KpiCard label="Orders This Month" value={v((x) => formatNumber(x.this_month))} icon={CalendarRange} />
-        <KpiCard label="Total Sales Order Value" value={v((x) => money(x.total_value))} hint="Grand totals, cancelled orders excluded" icon={IndianRupee} accent="available" />
-        <KpiCard label="Pending Orders" value={v((x) => formatNumber(x.pending))} hint="Nothing dispatched yet" icon={Hourglass} accent="pending" />
-        <KpiCard label="Partially Fulfilled Orders" value={v((x) => formatNumber(x.partially_fulfilled))} icon={Truck} accent="pending" />
-        <KpiCard label="Fully Fulfilled Orders" value={v((x) => formatNumber(x.fully_fulfilled))} icon={CheckCircle2} accent="available" />
-        <KpiCard label="Cancelled Orders" value={v((x) => formatNumber(x.cancelled))} icon={Ban} />
-        <KpiCard label="Finished Goods Reserved" value={v((x) => formatByUnit(x.finished_goods_reserved))} hint="For open orders (still in the warehouse)" icon={Lock} accent="available" />
-        <KpiCard label="Production Required" value={v((x) => formatByUnit(x.production_required))} hint={d ? `Not yet ordered · in production ${formatByUnit(d.production_required.map((p) => ({ unit: p.unit, quantity: p.in_production })))}` : undefined} icon={Factory} accent="manufacturing" />
-        <KpiCard label="Raw Material Shortages" value={v((x) => formatNumber(x.shortages.length))} hint="Materials short for open orders" icon={AlertTriangle} accent={d && d.shortages.length > 0 ? 'shortage' : 'neutral'} />
-        <KpiCard label="Orders Awaiting Dispatch" value={v((x) => formatNumber(x.awaiting_dispatch))} hint="With reserved goods ready to go" icon={PackageCheck} accent="pending" />
+        <KpiCard to={to('sales.total')} label="Total Sales Orders" value={v((x) => formatNumber(x.total_orders))} hint="Ordered in the period" icon={ClipboardList} />
+        <KpiCard to={to('sales.today')} label="Orders Created Today" value={v((x) => formatNumber(x.created_today))} icon={CalendarDays} accent="manufacturing" />
+        <KpiCard to={to('sales.month')} label="Orders This Month" value={v((x) => formatNumber(x.this_month))} icon={CalendarRange} />
+        <KpiCard to={to('sales.value')} label="Total Sales Order Value" value={v((x) => money(x.total_value))} hint="Grand totals, cancelled orders excluded" icon={IndianRupee} accent="available" />
+        <KpiCard to={to('sales.pending')} label="Pending Orders" value={v((x) => formatNumber(x.pending))} hint="Nothing dispatched yet" icon={Hourglass} accent="pending" />
+        <KpiCard to={to('sales.partial')} label="Partially Fulfilled Orders" value={v((x) => formatNumber(x.partially_fulfilled))} icon={Truck} accent="pending" />
+        <KpiCard to={to('sales.fulfilled')} label="Fully Fulfilled Orders" value={v((x) => formatNumber(x.fully_fulfilled))} icon={CheckCircle2} accent="available" />
+        <KpiCard to={to('sales.cancelled')} label="Cancelled Orders" value={v((x) => formatNumber(x.cancelled))} icon={Ban} />
+        <KpiCard to={to('sales.reserved')} label="Finished Goods Reserved" value={v((x) => formatByUnit(x.finished_goods_reserved))} hint="For open orders (still in the warehouse)" icon={Lock} accent="available" />
+        <KpiCard to={has('manufacturing.read') ? '/production/planning' : null} label="Production Required" value={v((x) => formatByUnit(x.production_required))} hint={d ? `Not yet ordered · in production ${formatByUnit(d.production_required.map((p) => ({ unit: p.unit, quantity: p.in_production })))}` : undefined} icon={Factory} accent="manufacturing" />
+        <KpiCard to={to('sales.shortages')} label="Raw Material Shortages" value={v((x) => formatNumber(x.shortages.length))} hint="Materials short for open orders" icon={AlertTriangle} accent={d && d.shortages.length > 0 ? 'shortage' : 'neutral'} />
+        <KpiCard to={to('sales.awaiting')} label="Orders Awaiting Dispatch" value={v((x) => formatNumber(x.awaiting_dispatch))} hint="With reserved goods ready to go" icon={PackageCheck} accent="pending" />
       </section>
 
       <div className="grid gap-6 xl:grid-cols-2">
         <Card className="overflow-hidden">
           <CardHeader><div><CardTitle>Recent sales orders</CardTitle><CardDescription>Latest orders matching the filters.</CardDescription></div>
-            <Button size="sm" variant="outline" asChild><Link to="/sales/orders">All orders</Link></Button></CardHeader>
+            <Button size="sm" variant="outline" asChild><Link to={to('sales.total') ?? '/sales/orders'}>All orders</Link></Button></CardHeader>
           {!d ? <CardContent><p className="text-sm text-muted-foreground">{dash.loading ? 'Loading…' : '—'}</p></CardContent>
             : d.recent.length === 0 ? <CardContent><p className="text-sm text-muted-foreground">No sales orders in this period.</p></CardContent> : (
               <Table>
@@ -122,7 +124,10 @@ export default function SalesDashboardPage() {
         </Card>
         <Card className="overflow-hidden xl:col-span-2">
           <CardHeader><div><CardTitle>Stock shortages</CardTitle><CardDescription>Materials needed by open orders for what is still to be produced, after reservations and free stock. Incoming purchases count only once received.</CardDescription></div>
-            {d && d.shortages.length > 0 && has('purchase_order.create') && <Button size="sm" variant="outline" asChild><Link to="/purchase-orders/new"><ShoppingCart /> Create purchase order</Link></Button>}</CardHeader>
+            <div className="flex gap-2">
+              {d && d.shortages.length > 0 && to('sales.shortages') && <Button size="sm" variant="ghost" asChild><Link to={to('sales.shortages')!}>View all</Link></Button>}
+              {d && d.shortages.length > 0 && has('purchase_order.create') && <Button size="sm" variant="outline" asChild><Link to="/purchase-orders/new"><ShoppingCart /> Create purchase order</Link></Button>}
+            </div></CardHeader>
           {!d ? <CardContent><p className="text-sm text-muted-foreground">{dash.loading ? 'Loading…' : '—'}</p></CardContent>
             : d.shortages.length === 0 ? <CardContent><p className="text-sm text-muted-foreground">No material shortages for open orders.</p></CardContent> : (
               <Table>
@@ -130,7 +135,7 @@ export default function SalesDashboardPage() {
                   <TableHead className="text-right">Available</TableHead><TableHead className="text-right">Shortage</TableHead><TableHead>Preferred supplier</TableHead><TableHead className="text-right">Orders</TableHead></TableRow></TableHeader>
                 <TableBody>{d.shortages.map((s) => (
                   <TableRow key={s.product_id}>
-                    <TableCell><span className="font-medium">{s.sku}</span> <span className="text-xs text-muted-foreground">{s.product_name}</span></TableCell>
+                    <TableCell><Link className="font-medium text-primary hover:underline" to={`/inventory/stock/${s.product_id}`}>{s.sku}</Link> <span className="text-xs text-muted-foreground">{s.product_name}</span></TableCell>
                     <TableCell className="text-right tabular-nums">{formatQty(s.required, s.unit)}</TableCell><TableCell className="text-right tabular-nums">{formatQty(s.reserved)}</TableCell>
                     <TableCell className="text-right tabular-nums">{formatQty(s.available)}</TableCell>
                     <TableCell className="text-right font-medium tabular-nums text-shortage">{formatQty(s.shortage, s.unit)}</TableCell>

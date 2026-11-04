@@ -15,6 +15,8 @@ interface HorizontalBarChartProps {
   seriesName: string
   valueFormatter?: (value: number) => string
   labelWidth?: number
+  /** Opens the records behind a bar. */
+  onSelect?: (index: number) => void
 }
 
 /** Single-series ranked bar chart with category labels on the axis and values at the bar end. */
@@ -23,6 +25,7 @@ export function HorizontalBarChart({
   seriesName,
   valueFormatter = String,
   labelWidth = 120,
+  onSelect,
 }: HorizontalBarChartProps) {
   return (
     <ResponsiveContainer width="100%" height="100%">
@@ -47,7 +50,8 @@ export function HorizontalBarChart({
             />
           }
         />
-        <Bar dataKey="value" name={seriesName} fill={CHART_COLORS.single} radius={[0, 4, 4, 0]} maxBarSize={22} isAnimationActive={false}>
+        <Bar dataKey="value" name={seriesName} fill={CHART_COLORS.single} radius={[0, 4, 4, 0]} maxBarSize={22} isAnimationActive={false}
+          onClick={onSelect ? (_: unknown, index: number) => onSelect(index) : undefined} style={onSelect ? { cursor: 'pointer' } : undefined}>
           {data.map((d) => (
             <Cell key={d.label} fill={d.color ?? CHART_COLORS.single} />
           ))}

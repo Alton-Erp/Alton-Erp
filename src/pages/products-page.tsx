@@ -22,7 +22,7 @@ import {
   X,
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 
 import { PermissionGate } from '@/auth/permission-gate'
 import { usePermissions } from '@/auth/use-permissions'
@@ -51,6 +51,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { ProductSourceBadge, ProductStatusBadge } from '@/features/products/product-badges'
 import { productExportRows } from '@/features/products/product-export'
 import { PRODUCT_TYPES, PRODUCT_TYPE_LABELS, SOURCE_TYPES, SOURCE_TYPE_LABELS, type ProductType, type SourceType } from '@/features/products/product-model'
+import { DrillBanner } from '@/features/drilldown/drill-banner'
+import { contextFromParams, DASHBOARDS, METRICS, type DashboardKey } from '@/features/drilldown/drill-registry'
+import { useCompanyClock } from '@/features/drilldown/use-drill'
 import { useAsync } from '@/hooks/use-async'
 import { useDebouncedValue } from '@/hooks/use-debounced-value'
 import { describeDataError } from '@/lib/errors'
@@ -111,6 +114,16 @@ export default function ProductsPage() {
   const [notice, setNotice] = useState<{ tone: 'success' | 'error'; text: string } | null>(null)
   const [exporting, setExporting] = useState(false)
 
+  // Opened from a dashboard figure (?drill=…): that figure's rule is applied on top of the filters below.
+  const [urlParams, setUrlParams] = useSearchParams()
+  const clock = useCompanyClock()
+  const drillKey = urlParams.get('drill')
+  const drillMetric = drillKey && METRICS[drillKey]?.target === 'products' ? METRICS[drillKey] : null
+  const drillCtx = useMemo(() => contextFromParams(urlParams, clock), [urlParams, clock])
+  const drill = useMemo(() => (drillMetric ? drillMetric.conditions(drillCtx) : null), [drillMetric, drillCtx])
+  const via = urlParams.get('via') as DashboardKey | null
+  const clearDrill = () => setUrlParams(new URLSearchParams(), { replace: true })
+
   const filters = useMemo<Omit<ProductListParams, 'page' | 'pageSize'>>(
     () => ({
       search: debouncedSearch,
@@ -121,8 +134,9 @@ export default function ProductsPage() {
       manufacturable: toBool(manufacturable),
       hasBom: toBool(hasBom),
       sort,
+      drill,
     }),
-    [debouncedSearch, categoryId, sourceType, productType, status, manufacturable, hasBom, sort],
+    [debouncedSearch, categoryId, sourceType, productType, status, manufacturable, hasBom, sort, drill],
   )
 
   // Any filter change returns to the first page.
@@ -243,6 +257,7 @@ export default function ProductsPage() {
           </>
         }
       />
+      {drillMetric && <DrillBanner metric={drillMetric} ctx={drillCtx} via={via && via in DASHBOARDS ? via : null} total={list.data ? total : null} onClear={clearDrill} />}
 
       {notice && (
         <div

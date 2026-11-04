@@ -66,6 +66,8 @@ export const NotFoundPage = lazy(() => import('@/pages/not-found-page'))
  */
 export const SUB_ROUTES: { path: string; permission: PermissionCode | null; component: LazyExoticComponent<ComponentType> }[] = [
   { path: '/reports/view/:reportKey', permission: 'reports.read', component: lazy(() => import('@/pages/reports/report-view-page')) },
+  // Records behind a dashboard figure; the page checks the figure's own permissions.
+  { path: '/drilldown/:metric', permission: null, component: lazy(() => import('@/pages/drilldown-page')) },
   { path: '/products/new', permission: 'products.create', component: lazy(() => import('@/pages/products/product-form-page')) },
   { path: '/products/import', permission: 'products.import', component: lazy(() => import('@/pages/products/product-import-page')) },
   { path: '/products/categories', permission: 'products.read', component: lazy(() => import('@/pages/products/product-categories-page')) },

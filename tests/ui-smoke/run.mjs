@@ -3542,8 +3542,8 @@ await step('management dashboard: nine figures, period filter (today / week / mo
   await waitFor(`location.pathname === '/purchase-orders'`, 'alert opens purchase orders')
   await goto('/')
   await waitFor(bodyHas('Pending GRNs'), 'dashboard again')
-  await click('[data-testid=kpi-pending-grns] a')
-  await waitFor(`location.pathname === '/goods-receipts/dashboard'`, 'pending GRNs opens the GRN dashboard')
+  await click('[data-testid=kpi-pending-grns]')
+  await waitFor(`location.pathname === '/drilldown/purchase.open' && location.search.includes('via=management')`, 'pending GRNs opens the open purchase orders behind it')
   // Phone width: no horizontal scroll.
   await setViewport(390, 844)
   await goto('/')
@@ -4677,6 +4677,126 @@ await step('read-only user: administration pages denied', async () => {
     await goto(p)
     await waitFor(bodyHas("You don't have permission to view this page"), `${p} denied`)
   }
+})
+
+// ---------------------------------------------------------------------------
+// Dashboard drill-down: every figure opens the records behind it
+// ---------------------------------------------------------------------------
+const lastQuery = (path) => decodeURIComponent((requests.filter((r) => r.path === path).at(-1)?.query ?? '').split('+').join(' '))
+const kpiLink = (label) => `[...document.querySelectorAll('a[data-drill=kpi]')].find((a) => a.innerText.includes(${JSON.stringify(label)}))`
+
+await step('Drill-down 1: a dashboard figure is a link (mouse and keyboard) to its records; the list has the same count and is filtered on the server', async () => {
+  await signOut()
+  await login('manager@test.invalid')
+  await waitFor(`location.pathname !== '/login'`, 'manager signed in')
+  await goto('/purchase-orders/dashboard?from=2026-11-01&to=2026-11-30&range=custom')
+  await waitFor(`!!${kpiLink('Open POs')} && !!${kpiLink('Overdue Deliveries')}`, 'clickable figures')
+  assert(await evaluate(`document.querySelectorAll('a[data-drill=kpi]').length === 7`), 'not every purchase figure is clickable')
+  const shown = await evaluate(`${kpiLink('Open POs')}.innerText.match(/Open POs\\s+(\\d+)/)[1]`)
+  await screenshot('130-drill-kpis')
+  // Keyboard: the card is a focusable link; Enter opens it.
+  await evaluate(`${kpiLink('Open POs')}.focus()`)
+  for (const type of ['keyDown', 'keyUp']) await cdp('Input.dispatchKeyEvent', { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+  await waitFor(`location.pathname === '/drilldown/purchase.open'`, 'drill-down page')
+  await waitFor(`document.querySelector('[data-testid=drill-count]')?.innerText.startsWith('${shown} ')`, 'same count as the card')
+  assert(lastQuery('/rest/v1/purchase_order_list_v2').includes('status=in.(APPROVED,SENT,PARTIALLY_RECEIVED)'), lastQuery('/rest/v1/purchase_order_list_v2'))
+  await waitFor(`${bodyHasAll('Open POs', 'Purchase Dashboard', 'PO-000003', 'Rule: status in Approved, Sent, Partially received')} && !document.querySelector('[data-testid=drill-table]').innerText.includes('PO-000001')`, 'records and rule')
+  assert(await evaluate(`[...document.querySelectorAll('nav[aria-label=Breadcrumb] a')].some((a) => a.innerText.includes('Purchase Dashboard') && a.getAttribute('href').includes('from=2026-11-01'))`), 'breadcrumb back to the dashboard with its period')
+  await screenshot('131-drill-page')
+})
+
+await step('Drill-down 2: search, sort and columns run on the server; a record opens and Back returns to the same list', async () => {
+  await fill('input[aria-label="Search records"]', 'PO-0000')
+  await waitFor(`location.search.includes('q=PO-0000')`, 'search in the address')
+  for (let i = 0; i < 30 && !lastQuery('/rest/v1/purchase_order_list_v2').includes('po_number.ilike.%PO-0000%'); i++) await sleep(100)
+  assert(lastQuery('/rest/v1/purchase_order_list_v2').includes('or=(po_number.ilike.%PO-0000%'), lastQuery('/rest/v1/purchase_order_list_v2'))
+  await click('[data-testid=drill-table] th button', 'Value')
+  await waitFor(`location.search.includes('sort=grand_total')`, 'sorted')
+  for (let i = 0; i < 30 && !lastQuery('/rest/v1/purchase_order_list_v2').includes('order=grand_total.asc'); i++) await sleep(100)
+  assert(lastQuery('/rest/v1/purchase_order_list_v2').includes('order=grand_total.asc'), 'sort not sent to the server')
+  await click('button', 'Columns')
+  await waitFor(bodyHas('Pending value'), 'column picker')
+  await click('[role=dialog] label', 'Warehouse')
+  await waitFor(`[...document.querySelectorAll('[data-testid=drill-table] th')].some((th) => th.innerText === 'Warehouse')`, 'column shown')
+  await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' })
+  await click('[data-testid=drill-table] a', 'PO-000003')
+  await waitFor(`location.pathname === '/purchase-orders/po3'`, 'original record')
+  await evaluate('history.back()')
+  await waitFor(`location.pathname === '/drilldown/purchase.open' && location.search.includes('q=PO-0000') && ${bodyHas('PO-000003')}`, 'back to the same list')
+  await click('[data-testid=drill-table] ~ * button, button', 'Clear filters')
+  await waitFor(`!location.search.includes('q=') && document.querySelector('input[aria-label="Search records"]').value === ''`, 'filters cleared')
+  await click('nav[aria-label=Breadcrumb] a', 'Purchase Dashboard')
+  await waitFor(`location.pathname === '/purchase-orders/dashboard' && location.search.includes('from=2026-11-01') && location.search.includes('to=2026-11-30')`, 'dashboard with the same period')
+})
+
+await step('Drill-down 3: chart bars and their table view open the records of that bar', async () => {
+  await waitFor(`!!document.querySelector('.recharts-bar-rectangle path')`, 'supplier chart')
+  await click('.recharts-bar-rectangle path')
+  await waitFor(`location.pathname === '/drilldown/purchase.supplier' && new URLSearchParams(location.search).get('seg') === 'Shree Clay Works Pvt Ltd'`, 'bar opens that supplier')
+  await waitFor(bodyHasAll('Orders by Supplier', 'supplier name = Shree Clay Works Pvt Ltd'), 'supplier rule')
+  assert(lastQuery('/rest/v1/purchase_order_list_v2').includes('supplier_name=eq.Shree Clay Works Pvt Ltd') && lastQuery('/rest/v1/purchase_order_list_v2').includes('po_date=gte.2026-11-01'), lastQuery('/rest/v1/purchase_order_list_v2'))
+  await evaluate('history.back()')
+  await waitFor(`location.pathname === '/purchase-orders/dashboard'`, 'back')
+  await click('button[aria-label="Table view"]')
+  await waitFor(`[...document.querySelectorAll('table a')].some((a) => a.innerText.includes('Shree Clay Works'))`, 'table view links (keyboard alternative)')
+  assert(await evaluate(`[...document.querySelectorAll('table a')].find((a) => a.innerText.includes('Shree Clay Works')).getAttribute('href').startsWith('/drilldown/purchase.supplier?')`), 'table link')
+  await goto('/')
+  await waitFor(bodyHas('Pending GRNs'), 'management dashboard')
+  assert(await evaluate(`document.querySelectorAll('a[data-drill=kpi]').length === 9`), 'not every management figure is clickable')
+  assert(await evaluate(`document.querySelector('[data-testid=kpi-invoiced-sales]').getAttribute('href').startsWith('/drilldown/billing.issued_period?')`), 'invoiced sales link')
+})
+
+await step('Drill-down 4: Product Master figures open the Product Master list with the figure applied; Clear filters shows every product again', async () => {
+  await goto('/products/dashboard')
+  await waitFor(`!!${kpiLink('Total Products')}`, 'products dashboard')
+  await click('a[data-drill=kpi]', 'Components')
+  await waitFor(`location.pathname === '/products' && location.search.includes('drill=products.components') && !!document.querySelector('[data-testid=drill-banner]')`, 'Product Master with the figure')
+  await waitFor(bodyHasAll('Components from the Product Dashboard', 'Components and subassemblies, not archived.'), 'banner text')
+  assert(lastQuery('/rest/v1/products').includes('product_type=in.(COMPONENT,SUBASSEMBLY)') && lastQuery('/rest/v1/products').includes('archived_at=is.null'), lastQuery('/rest/v1/products'))
+  await screenshot('132-drill-product-master')
+  await click('[data-testid=drill-banner] button', 'Clear filters')
+  await waitFor(`!document.querySelector('[data-testid=drill-banner]') && !location.search.includes('drill=')`, 'cleared')
+  await goto('/products/dashboard')
+  await waitFor(`!!${kpiLink('Low Stock Products')}`, 'products dashboard again')
+  await click('a[data-drill=kpi]', 'Low Stock Products')
+  await waitFor(`location.pathname === '/drilldown/products.low_stock'`, 'stock figure opens the stock list')
+  assert(lastQuery('/rest/v1/inventory_product_stock').includes('or=(stock_status.eq.LOW_STOCK,and(stock_status.eq.OUT_OF_STOCK,has_history.is.true))'), lastQuery('/rest/v1/inventory_product_stock'))
+})
+
+await step('Drill-down 5: the other dashboards link their figures; the period and filters travel with the link', async () => {
+  for (const [path, label, key] of [['/inventory', 'Low-Stock Products', 'inventory.low_stock'], ['/production', 'Total Production Orders', 'production.orders'],
+    ['/sales/dashboard', 'Pending Orders', 'sales.pending'], ['/billing/dashboard', 'Outstanding', 'billing.outstanding'], ['/goods-receipts/dashboard', 'Unlinked GRNs', 'grn.unlinked'],
+    ['/ledger/dashboard', 'Customer Receivables', 'ledger.receivables']]) {
+    await goto(path)
+    await waitFor(`!!${kpiLink(label)}`, `${path}: ${label} is a link`)
+    assert(await evaluate(`${kpiLink(label)}.getAttribute('href').startsWith('/drilldown/${key}?')`), `${path}: ${label} → ${key}`)
+  }
+  await goto('/billing/dashboard?from=2026-10-01&to=2026-10-31&range=custom&payment=OVERDUE')
+  await waitFor(`!!${kpiLink('Total invoices')}`, 'filtered invoice dashboard')
+  const href = await evaluate(`${kpiLink('Total invoices')}.getAttribute('href')`)
+  assert(href.includes('from=2026-10-01') && href.includes('to=2026-10-31') && href.includes('payment=OVERDUE'), href)
+  await click('a[data-drill=kpi]', 'Total invoices')
+  await waitFor(`location.pathname === '/drilldown/billing.total' && !!document.querySelector('[data-testid=drill-chip]')`, 'filter chip')
+  assert(lastQuery('/rest/v1/sales_invoice_list').includes('display_status=eq.OVERDUE') && lastQuery('/rest/v1/sales_invoice_list').includes('invoice_date=gte.2026-10-01'), lastQuery('/rest/v1/sales_invoice_list'))
+  await click('button[aria-label^="Remove Payment"]')
+  await waitFor(`!location.search.includes('payment=') && !document.querySelector('[data-testid=drill-chip]')`, 'chip removed')
+  await goto('/sales/dashboard')
+  await waitFor(`!!${kpiLink('Pending Orders')}`, 'sales dashboard')
+  await click('a[data-drill=kpi]', 'Pending Orders')
+  await waitFor(`location.pathname === '/drilldown/sales.pending' && !!document.querySelector('[data-testid=drill-count]')`, 'sales records (status computed by the database)')
+  assert(rpcCalls('sales_orders_v2_list').length > 0, 'sales list not read from the database function')
+})
+
+await step('Drill-down 6: records stay behind permissions; unknown figures are refused', async () => {
+  await signOut()
+  await login('viewer@test.invalid')
+  await waitFor(`location.pathname !== '/login'`, 'viewer signed in')
+  const before = requests.filter((r) => r.path === '/rpc/ledger_parties' || r.path === '/rest/v1/rpc/ledger_parties').length
+  await goto('/drilldown/ledger.receivables')
+  await waitFor(bodyHas("You don't have permission to view these records"), 'denied')
+  assert(requests.filter((r) => r.path === '/rest/v1/rpc/ledger_parties').length === before, 'records requested without permission')
+  await goto('/drilldown/not.a.figure')
+  await waitFor(bodyHas('This dashboard figure does not exist'), 'unknown figure')
 })
 
 // ---------------------------------------------------------------------------

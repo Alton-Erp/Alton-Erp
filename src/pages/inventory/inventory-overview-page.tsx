@@ -12,7 +12,7 @@ import {
   Warehouse,
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 
 import { PermissionGate } from '@/auth/permission-gate'
 import { usePermissions } from '@/auth/use-permissions'
@@ -31,12 +31,13 @@ import { Card } from '@/components/ui/card'
 import { formatQty } from '@/features/inventory/inventory-model'
 import { isFractionalForUnit } from '@/features/inventory/whole-units'
 import { useAsync } from '@/hooks/use-async'
-import { EXTENDED_DATE_RANGE_PRESETS, bucketForRange, getPresetRange } from '@/lib/date-range'
+import { EXTENDED_DATE_RANGE_PRESETS, bucketForRange } from '@/lib/date-range'
 import { describeDataError } from '@/lib/errors'
 import { formatDateTime, formatNumber, toIsoDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { fetchInventoryOverview, fetchMovementTrend, type UnitTotals } from '@/services/inventory'
-import type { DateRangeValue } from '@/types'
+import { bucketRange, STOCK_HEALTH } from '@/features/drilldown/drill-registry'
+import { useDrill, useUrlDateRange } from '@/features/drilldown/use-drill'
 
 const BUCKET_LABEL = new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short' })
 const MONTH_LABEL = new Intl.DateTimeFormat('en-IN', { month: 'short', year: '2-digit' })
@@ -45,7 +46,10 @@ export default function InventoryOverviewPage() {
   const { has } = usePermissions()
   const [refresh, setRefresh] = useState(0)
   const [unit, setUnit] = useState<string | null>(null)
-  const [range, setRange] = useState<DateRangeValue>(() => getPresetRange('last_7_days'))
+  // Movement period kept in the address, so Back from a drill-down page keeps it.
+  const [range, setRange] = useUrlDateRange('last_7_days')
+  const { href } = useDrill('inventory')
+  const navigate = useNavigate()
   const overview = useAsync(fetchInventoryOverview, [refresh])
   const bucket = bucketForRange(range)
   const trend = useAsync(() => fetchMovementTrend(toIsoDate(range.from), toIsoDate(range.to), bucket), [range, refresh])
@@ -68,6 +72,7 @@ export default function InventoryOverviewPage() {
     return rows.map((r) => {
       const d = new Date(`${r.bucket}T00:00:00`)
       return {
+        bucket: String(r.bucket).slice(0, 10),
         label: bucket === 'month' ? MONTH_LABEL.format(d) : bucket === 'year' ? String(d.getFullYear()) : BUCKET_LABEL.format(d),
         inward: Number(r.quantity_in),
         outward: Number(r.quantity_out),
@@ -98,6 +103,14 @@ export default function InventoryOverviewPage() {
   const noLedger = !data.first_transaction_at
   const byCategory = data.by_category.filter((c) => c.unit === selectedUnit)
   const byWarehouse = data.by_warehouse.filter((w) => w.unit === selectedUnit)
+  // Drill-down: figures of the selected unit open the records behind them.
+  const u = { unit: selectedUnit }
+  const drillable = Boolean(href('inventory.active_products'))
+  const go = (to: string | null) => { if (to) navigate(to) }
+  const SOURCE_KEYS = ['inventory.in_house', 'inventory.outsourced', 'inventory.unknown'] as const
+  const movementHref = (start: string | undefined) => (start
+    ? href('inventory.movements', { from: toIsoDate(range.from), to: toIsoDate(range.to), unit: selectedUnit, ...bucketRange(start, bucket, { from: toIsoDate(range.from), to: toIsoDate(range.to) }) })
+    : null)
 
   return (
     <>
@@ -201,14 +214,15 @@ export default function InventoryOverviewPage() {
           )}
         </div>
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <KpiCard label="Total Active Products" value={formatNumber(data.active_products)} hint={`${formatNumber(data.products_with_stock)} with stock on hand`} icon={Boxes} />
-          <KpiCard label="Total Units on Hand" value={qty('on_hand')} unit={selectedUnit ?? undefined} hint={others('on_hand') ?? 'Physical quantity in stock'} icon={Warehouse} accent="manufacturing" />
-          <KpiCard label="Total Reserved Units" value={qty('reserved')} unit={selectedUnit ?? undefined} hint={others('reserved') ?? 'Allocated, not yet issued'} icon={Lock} accent="pending" />
-          <KpiCard label="Total Available Units" value={qty('available')} unit={selectedUnit ?? undefined} hint={others('available') ?? 'On hand minus reserved'} icon={PackageCheck} accent="available" />
-          <KpiCard label="Low-Stock Products" value={formatNumber(data.low_stock + data.fully_reserved)} hint={`${formatNumber(data.fully_reserved)} with no available stock`} icon={AlertTriangle} accent="pending" />
-          <KpiCard label="Out-of-Stock Products" value={formatNumber(data.out_of_stock)} hint={`${formatNumber(data.never_stocked)} active products never stocked`} icon={CircleSlash} accent="shortage" />
-          <KpiCard label="In-House Stock" value={qty('in_house')} unit={selectedUnit ?? undefined} hint="Manufactured, per receipt / lot" icon={Factory} accent="manufacturing" />
+          <KpiCard to={href('inventory.active_products')} label="Total Active Products" value={formatNumber(data.active_products)} hint={`${formatNumber(data.products_with_stock)} with stock on hand`} icon={Boxes} />
+          <KpiCard to={href('inventory.on_hand', u)} label="Total Units on Hand" value={qty('on_hand')} unit={selectedUnit ?? undefined} hint={others('on_hand') ?? 'Physical quantity in stock'} icon={Warehouse} accent="manufacturing" />
+          <KpiCard to={href('inventory.reserved', u)} label="Total Reserved Units" value={qty('reserved')} unit={selectedUnit ?? undefined} hint={others('reserved') ?? 'Allocated, not yet issued'} icon={Lock} accent="pending" />
+          <KpiCard to={href('inventory.available', u)} label="Total Available Units" value={qty('available')} unit={selectedUnit ?? undefined} hint={others('available') ?? 'On hand minus reserved'} icon={PackageCheck} accent="available" />
+          <KpiCard to={href('inventory.low_stock')} label="Low-Stock Products" value={formatNumber(data.low_stock + data.fully_reserved)} hint={`${formatNumber(data.fully_reserved)} with no available stock`} icon={AlertTriangle} accent="pending" />
+          <KpiCard to={href('inventory.out_of_stock')} label="Out-of-Stock Products" value={formatNumber(data.out_of_stock)} hint={`${formatNumber(data.never_stocked)} active products never stocked`} icon={CircleSlash} accent="shortage" />
+          <KpiCard to={href('inventory.in_house', u)} label="In-House Stock" value={qty('in_house')} unit={selectedUnit ?? undefined} hint="Manufactured, per receipt / lot" icon={Factory} accent="manufacturing" />
           <KpiCard
+            to={href('inventory.outsourced', u)}
             label="Outsourced Stock"
             value={qty('outsourced')}
             unit={selectedUnit ?? undefined}
@@ -225,9 +239,12 @@ export default function InventoryOverviewPage() {
           description={`Current on-hand quantity${selectedUnit ? ` (${selectedUnit})` : ''}`}
           isEmpty={byCategory.length === 0}
           emptyMessage="No stock on hand."
-          table={{ headers: ['Category', `On hand (${selectedUnit ?? ''})`], rows: byCategory.map((c) => [c.category, formatQty(Number(c.on_hand))]) }}
+          table={{ headers: ['Category', `On hand (${selectedUnit ?? ''})`], rows: byCategory.map((c) => [c.category, formatQty(Number(c.on_hand))]),
+            links: byCategory.map((c) => href('inventory.category', { ...u, segment: c.category })) }}
+          drillHint={drillable ? 'Click a category to open its products.' : undefined}
         >
-          <HorizontalBarChart seriesName="On hand" valueFormatter={(v) => formatQty(v)} data={byCategory.map((c) => ({ label: c.category, value: Number(c.on_hand) }))} />
+          <HorizontalBarChart seriesName="On hand" valueFormatter={(v) => formatQty(v)} data={byCategory.map((c) => ({ label: c.category, value: Number(c.on_hand) }))}
+            onSelect={drillable ? (i) => go(href('inventory.category', { ...u, segment: byCategory[i]?.category })) : undefined} />
         </ChartCard>
         <ChartCard
           title="In-house vs outsourced"
@@ -242,7 +259,9 @@ export default function InventoryOverviewPage() {
               ['Outsourced', formatQty(Number(totals?.outsourced ?? 0))],
               ['Unverified source', formatQty(Number(totals?.unknown ?? 0))],
             ],
+            links: SOURCE_KEYS.map((k) => href(k, u)),
           }}
+          drillHint={drillable ? 'Click a source to open its stock.' : undefined}
         >
           <HorizontalBarChart
             seriesName="On hand"
@@ -252,6 +271,7 @@ export default function InventoryOverviewPage() {
               { label: 'Outsourced', value: Number(totals?.outsourced ?? 0), color: CHART_COLORS.outsourced },
               { label: 'Unverified', value: Number(totals?.unknown ?? 0), color: TONE_FILL.neutral },
             ]}
+            onSelect={drillable ? (i) => go(href(SOURCE_KEYS[i], u)) : undefined}
           />
         </ChartCard>
       </div>
@@ -265,9 +285,10 @@ export default function InventoryOverviewPage() {
           onRetry={trend.reload}
           isEmpty={trendPoints.length === 0}
           emptyMessage="No stock movements in this period."
-          table={{ headers: ['Period', 'In', 'Out'], rows: trendPoints.map((p) => [p.label, formatQty(p.inward), formatQty(p.outward)]) }}
+          table={{ headers: ['Period', 'In', 'Out'], rows: trendPoints.map((p) => [p.label, formatQty(p.inward), formatQty(p.outward)]), links: trendPoints.map((p) => movementHref(p.bucket)) }}
+          drillHint={drillable ? 'Click a point to open the movements of that period.' : undefined}
         >
-          <InventoryMovementChart data={trendPoints} />
+          <InventoryMovementChart data={trendPoints} onSelect={drillable ? (i) => go(movementHref(trendPoints[i]?.bucket)) : undefined} />
         </ChartCard>
         <div className="mt-3 flex justify-end">
           <DateRangeFilter value={range} onChange={setRange} presets={EXTENDED_DATE_RANGE_PRESETS} />
@@ -292,7 +313,9 @@ export default function InventoryOverviewPage() {
               ['In stock, no reorder level', data.no_threshold],
               ['Never stocked', data.never_stocked],
             ],
+            links: STOCK_HEALTH.map((s) => href('inventory.health', { segment: s })),
           }}
+          drillHint={drillable ? 'Click a bar to open those products.' : undefined}
         >
           <HorizontalBarChart
             seriesName="Products"
@@ -305,6 +328,7 @@ export default function InventoryOverviewPage() {
               { label: 'No reorder level', value: data.no_threshold, color: TONE_FILL.neutral },
               { label: 'Never stocked', value: data.never_stocked, color: TONE_FILL.neutral },
             ]}
+            onSelect={drillable ? (i) => go(href('inventory.health', { segment: STOCK_HEALTH[i] })) : undefined}
           />
         </ChartCard>
         <ChartCard
@@ -313,9 +337,12 @@ export default function InventoryOverviewPage() {
           height={240}
           isEmpty={byWarehouse.length === 0}
           emptyMessage="No stock on hand."
-          table={{ headers: ['Warehouse', `On hand (${selectedUnit ?? ''})`], rows: byWarehouse.map((w) => [`${w.warehouse_code} — ${w.warehouse_name}`, formatQty(Number(w.on_hand))]) }}
+          table={{ headers: ['Warehouse', `On hand (${selectedUnit ?? ''})`], rows: byWarehouse.map((w) => [`${w.warehouse_code} — ${w.warehouse_name}`, formatQty(Number(w.on_hand))]),
+            links: byWarehouse.map((w) => href('inventory.warehouse', { ...u, segment: w.warehouse_code })) }}
+          drillHint={drillable ? 'Click a warehouse to open its stock.' : undefined}
         >
-          <HorizontalBarChart seriesName="On hand" valueFormatter={(v) => formatQty(v)} data={byWarehouse.map((w) => ({ label: w.warehouse_code, value: Number(w.on_hand) }))} />
+          <HorizontalBarChart seriesName="On hand" valueFormatter={(v) => formatQty(v)} data={byWarehouse.map((w) => ({ label: w.warehouse_code, value: Number(w.on_hand) }))}
+            onSelect={drillable ? (i) => go(href('inventory.warehouse', { ...u, segment: byWarehouse[i]?.warehouse_code })) : undefined} />
         </ChartCard>
       </div>
     </>

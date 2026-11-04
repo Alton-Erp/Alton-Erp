@@ -1,7 +1,6 @@
 import {
   AlertTriangle, Boxes, CalendarDays, CalendarRange, ClipboardList, Factory, Hourglass, PackageCheck, PackageMinus, Plus, ShoppingCart, Upload, XCircle,
 } from 'lucide-react'
-import { useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { usePermissions } from '@/auth/use-permissions'
@@ -15,12 +14,11 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { formatQty } from '@/features/inventory/inventory-model'
 import { EVENT_LABELS } from '@/features/production/production-model'
 import { V2_EVENT_LABELS, formatByUnit } from '@/features/production/production-v2-model'
+import { useDrill, useUrlDateRange } from '@/features/drilldown/use-drill'
 import { useAsync } from '@/hooks/use-async'
-import { getPresetRange } from '@/lib/date-range'
 import { describeDataError } from '@/lib/errors'
 import { formatDateTime, formatNumber, toIsoDate } from '@/lib/format'
 import { fetchProductionDashboard, type ProductionDashboard } from '@/services/production-v2'
-import type { DateRangeValue } from '@/types'
 
 const eventLabel = (t: string) => V2_EVENT_LABELS[t] ?? EVENT_LABELS[t] ?? t.replace(/_/g, ' ').toLowerCase()
 
@@ -34,10 +32,15 @@ function eventDetail(e: ProductionDashboard['recent'][number]): string {
 /** /production — production at a glance: output, consumption, shortages and recent activity. */
 export default function ProductionDashboardPage() {
   const { has } = usePermissions()
-  const [period, setPeriod] = useState<DateRangeValue>(() => getPresetRange('this_month'))
+  // Period kept in the address, so Back from a drill-down page keeps it.
+  const [period, setPeriod] = useUrlDateRange('this_month')
+  const { href } = useDrill('production')
   const dash = useAsync(() => fetchProductionDashboard(toIsoDate(period.from), toIsoDate(period.to)), [period.from.getTime(), period.to.getTime()])
   const d = dash.data
   const v = (fn: (x: ProductionDashboard) => string) => (d ? fn(d) : null)
+  // The dashboard's own period and company date.
+  const ctx = { from: toIsoDate(period.from), to: toIsoDate(period.to), ...(d?.today ? { today: d.today } : {}) }
+  const to = (key: string) => href(key, ctx)
 
   return (
     <>
@@ -57,22 +60,25 @@ export default function ProductionDashboardPage() {
       {dash.error && <Card className="mb-6"><ErrorState message={describeDataError(dash.error)} onRetry={dash.reload} /></Card>}
 
       <section aria-label="Production summary" className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <KpiCard label="Total Production Orders" value={v((x) => formatNumber(x.orders))} hint={d ? `${d.orders_completed} completed in the period · ${d.open_orders} open` : 'In the period'} icon={ClipboardList} />
-        <KpiCard label="Production Today" value={v((x) => formatByUnit(x.produced_today))} hint="Accepted into stock today" icon={CalendarDays} accent="manufacturing" />
-        <KpiCard label="Monthly Production" value={v((x) => formatByUnit(x.produced_month))} hint="Accepted this month" icon={CalendarRange} accent="manufacturing" />
-        <KpiCard label="Finished Goods Produced" value={v((x) => formatByUnit(x.finished_goods))} hint="Finished goods accepted in the period" icon={PackageCheck} accent="available" />
-        <KpiCard label="Raw Materials Consumed" value={v((x) => formatByUnit(x.raw_materials))} hint="Actual consumption in the period" icon={PackageMinus} />
-        <KpiCard label="Components Consumed" value={v((x) => formatByUnit(x.components))} hint="Components, sub-assemblies, outsourced parts, packing" icon={Boxes} />
-        <KpiCard label="Production Shortages" value={v((x) => formatNumber(x.shortages.length))} hint="Materials short for open orders" icon={AlertTriangle} accent={d && d.shortages.length > 0 ? 'shortage' : 'neutral'} />
-        <KpiCard label="Rejected Quantity" value={v((x) => formatByUnit(x.rejected))} hint={d ? `Wastage ${formatByUnit(d.wastage)}` : 'In the period'} icon={XCircle} accent={d && d.rejected.length > 0 ? 'shortage' : 'neutral'} />
-        <KpiCard label="Pending Production" value={v((x) => formatByUnit(x.pending))} hint={d ? `${d.open_orders} open order(s) still to produce` : undefined} icon={Hourglass} accent="pending" />
+        <KpiCard to={to('production.orders')} label="Total Production Orders" value={v((x) => formatNumber(x.orders))} hint={d ? `${d.orders_completed} completed in the period · ${d.open_orders} open` : 'In the period'} icon={ClipboardList} />
+        <KpiCard to={to('production.today')} label="Production Today" value={v((x) => formatByUnit(x.produced_today))} hint="Accepted into stock today" icon={CalendarDays} accent="manufacturing" />
+        <KpiCard to={to('production.month')} label="Monthly Production" value={v((x) => formatByUnit(x.produced_month))} hint="Accepted this month" icon={CalendarRange} accent="manufacturing" />
+        <KpiCard to={to('production.finished_goods')} label="Finished Goods Produced" value={v((x) => formatByUnit(x.finished_goods))} hint="Finished goods accepted in the period" icon={PackageCheck} accent="available" />
+        <KpiCard to={to('production.raw_materials')} label="Raw Materials Consumed" value={v((x) => formatByUnit(x.raw_materials))} hint="Actual consumption in the period" icon={PackageMinus} />
+        <KpiCard to={to('production.components')} label="Components Consumed" value={v((x) => formatByUnit(x.components))} hint="Components, sub-assemblies, outsourced parts, packing" icon={Boxes} />
+        <KpiCard to={to('production.shortages')} label="Production Shortages" value={v((x) => formatNumber(x.shortages.length))} hint="Materials short for open orders" icon={AlertTriangle} accent={d && d.shortages.length > 0 ? 'shortage' : 'neutral'} />
+        <KpiCard to={to('production.rejected')} label="Rejected Quantity" value={v((x) => formatByUnit(x.rejected))} hint={d ? `Wastage ${formatByUnit(d.wastage)}` : 'In the period'} icon={XCircle} accent={d && d.rejected.length > 0 ? 'shortage' : 'neutral'} />
+        <KpiCard to={to('production.open')} label="Pending Production" value={v((x) => formatByUnit(x.pending))} hint={d ? `${d.open_orders} open order(s) still to produce` : undefined} icon={Hourglass} accent="pending" />
       </section>
 
       <div className="grid gap-6 xl:grid-cols-5">
         <Card className="overflow-hidden xl:col-span-3">
           <CardHeader>
             <div><CardTitle>Material shortages</CardTitle><CardDescription>Still needed by open orders, minus what is reserved for them and free stock. Purchase the shortage quantity.</CardDescription></div>
-            {d && d.shortages.length > 0 && has('purchase_order.create') && <Button size="sm" variant="outline" asChild><Link to="/purchase-orders/new"><ShoppingCart /> Create purchase order</Link></Button>}
+            <div className="flex gap-2">
+              {d && d.shortages.length > 0 && to('production.shortages') && <Button size="sm" variant="ghost" asChild><Link to={to('production.shortages')!}>View all</Link></Button>}
+              {d && d.shortages.length > 0 && has('purchase_order.create') && <Button size="sm" variant="outline" asChild><Link to="/purchase-orders/new"><ShoppingCart /> Create purchase order</Link></Button>}
+            </div>
           </CardHeader>
           {!d ? <CardContent><p className="text-sm text-muted-foreground">{dash.loading ? 'Loading…' : '—'}</p></CardContent>
             : d.shortages.length === 0 ? <CardContent><p className="text-sm text-muted-foreground">No shortages: every open order has its materials reserved or available.</p></CardContent>
@@ -84,7 +90,7 @@ export default function ProductionDashboardPage() {
                 </TableRow></TableHeader>
                 <TableBody>{d.shortages.map((s) => (
                   <TableRow key={s.component_product_id}>
-                    <TableCell><span className="font-medium">{s.sku}</span><span className="block text-xs text-muted-foreground">{s.product_name}</span></TableCell>
+                    <TableCell><Link className="font-medium text-primary hover:underline" to={`/inventory/stock/${s.component_product_id}`}>{s.sku}</Link><span className="block text-xs text-muted-foreground">{s.product_name}</span></TableCell>
                     <TableCell className="text-right tabular-nums">{formatQty(s.needed, s.unit)}</TableCell>
                     <TableCell className="text-right tabular-nums">{formatQty(s.reserved)}</TableCell>
                     <TableCell className="text-right tabular-nums">{formatQty(s.available)}</TableCell>

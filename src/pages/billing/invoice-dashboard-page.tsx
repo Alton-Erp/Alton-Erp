@@ -1,6 +1,6 @@
 import { AlarmClock, Ban, CalendarDays, CheckCircle2, FilePen, FilePlus, FileSpreadsheet, FileText, HandCoins, IndianRupee, Percent, Receipt, RefreshCw, Wallet } from 'lucide-react'
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 
 import { usePermissions } from '@/auth/use-permissions'
 import { TONE_FILL } from '@/components/charts/chart-theme'
@@ -19,12 +19,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { money } from '@/features/billing/billing-model'
 import { CustomerSelect } from '@/features/billing/billing-pickers'
 import { PAYMENT_STATUS_META, type PaymentStatusKey } from '@/features/billing/invoicing-v2-model'
+import { bucketRange } from '@/features/drilldown/drill-registry'
+import { useDrill, useUrlDateRange, useUrlParam } from '@/features/drilldown/use-drill'
 import { useAsync } from '@/hooks/use-async'
-import { EXTENDED_DATE_RANGE_PRESETS, getPresetRange } from '@/lib/date-range'
+import { EXTENDED_DATE_RANGE_PRESETS } from '@/lib/date-range'
 import { describeDataError } from '@/lib/errors'
 import { formatDate, formatNumber, toIsoDate } from '@/lib/format'
 import { fetchInvoiceDashboard } from '@/services/invoicing-v2'
-import type { DateRangeValue } from '@/types'
 
 const MONTH = new Intl.DateTimeFormat('en-IN', { month: 'short', year: '2-digit' })
 const INVOICE_STATUS: Record<string, { label: string; tone: 'neutral' | 'info' | 'success' | 'warning' | 'danger' }> = {
@@ -37,16 +38,22 @@ const INVOICE_STATUS: Record<string, { label: string; tone: 'neutral' | 'info' |
 /** /billing/dashboard — Stage 6 invoice dashboard (invoice_dashboard RPC). */
 export default function InvoiceDashboardPage() {
   const { has } = usePermissions()
-  const [range, setRange] = useState<DateRangeValue>(() => getPresetRange('this_month'))
-  const [customer, setCustomer] = useState('all')
-  const [status, setStatus] = useState('all')
-  const [payment, setPayment] = useState('all')
+  // Filters kept in the address, so Back from a drill-down page keeps them.
+  const [range, setRange] = useUrlDateRange('this_month')
+  const [customer, setCustomer] = useUrlParam('customer', 'all')
+  const [status, setStatus] = useUrlParam('status', 'all')
+  const [payment, setPayment] = useUrlParam('payment', 'all')
+  const { href } = useDrill('billing')
+  const navigate = useNavigate()
   const [refresh, setRefresh] = useState(0)
   const from = toIsoDate(range.from)
   const to = toIsoDate(range.to)
   const dash = useAsync(() => fetchInvoiceDashboard(from, to, customer === 'all' ? null : customer, status === 'all' ? null : status, payment === 'all' ? null : payment),
     [from, to, customer, status, payment, refresh])
   const d = dash.data
+  const ctx = { from, to, customer: customer === 'all' ? null : customer, status: status === 'all' ? null : status, payment: payment === 'all' ? null : payment,
+    ...(d?.today ? { today: d.today } : {}) }
+  const drill = (key: string) => href(key, ctx)
 
   const header = <PageHeader title="Invoice Dashboard" description="Issued invoices, GST, payments received and what is still outstanding. Drafts and proforma invoices are counted separately; cancelled invoices are excluded from values."
     actions={<>
@@ -71,6 +78,11 @@ export default function InvoiceDashboardPage() {
   if (dash.loading && !d) return (<>{header}{filters}<LoadingState variant="cards" rows={8} /></>)
   if (dash.error || !d) return (<>{header}{filters}<Card><ErrorState message={describeDataError(dash.error)} onRetry={dash.reload} /></Card></>)
   const monthly = d.monthly.map((m) => ({ label: MONTH.format(new Date(`${m.month}T00:00:00`)), a: Number(m.invoiced), b: Number(m.received) }))
+  // A month of the trend: invoices issued in it, or payments received in it (whole month, as the chart counts it).
+  const monthHref = (i: number, series: 'a' | 'b') => {
+    const m = d.monthly[i]
+    return m ? href(series === 'a' ? 'billing.month_invoiced' : 'billing.month_received', { ...ctx, ...bucketRange(m.month, 'month') }) : null
+  }
   const gstTotal = d.gst_summary.reduce((s, g) => ({ taxable: s.taxable + Number(g.taxable), cgst: s.cgst + Number(g.cgst), sgst: s.sgst + Number(g.sgst), igst: s.igst + Number(g.igst) }), { taxable: 0, cgst: 0, sgst: 0, igst: 0 })
 
   return (
@@ -78,25 +90,27 @@ export default function InvoiceDashboardPage() {
       {header}
       {filters}
       <section aria-label="Invoice figures" className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <KpiCard label="Total invoices" value={formatNumber(d.total_invoices)} hint={`Issued ${formatDate(from)} – ${formatDate(to)}`} icon={FileText} accent="manufacturing" />
-        <KpiCard label="Created today" value={formatNumber(d.created_today)} hint="Drafts, proforma and issued" icon={CalendarDays} />
-        <KpiCard label="Issued this month" value={formatNumber(d.this_month)} hint="By invoice date" icon={Receipt} />
-        <KpiCard label="Invoice value" value={money(d.total_value)} hint="Grand total of issued invoices" icon={IndianRupee} accent="manufacturing" />
-        <KpiCard label="Taxable value" value={money(d.taxable_value)} hint="Before GST" icon={Receipt} />
-        <KpiCard label="GST" value={money(d.gst_collected)} hint="CGST + SGST + IGST on issued invoices" icon={Percent} />
-        <KpiCard label="Amount received" value={money(d.amount_received)} hint="Allocated to these invoices" icon={Wallet} accent="available" />
-        <KpiCard label="Outstanding" value={money(d.outstanding)} hint="Balance still due" icon={HandCoins} accent="pending" />
-        <KpiCard label="Overdue" value={money(d.overdue_amount)} hint="Past the due date" icon={AlarmClock} accent="shortage" />
-        <KpiCard label="Partially paid" value={formatNumber(d.partially_paid)} icon={HandCoins} accent="pending" />
-        <KpiCard label="Fully paid" value={formatNumber(d.fully_paid)} icon={CheckCircle2} accent="available" />
-        <KpiCard label="Drafts" value={formatNumber(d.drafts)} hint={`${d.proforma} proforma`} icon={FilePen} />
-        <KpiCard label="Cancelled" value={formatNumber(d.cancelled)} icon={Ban} />
+        <KpiCard to={drill('billing.total')} label="Total invoices" value={formatNumber(d.total_invoices)} hint={`Issued ${formatDate(from)} – ${formatDate(to)}`} icon={FileText} accent="manufacturing" />
+        <KpiCard to={drill('billing.today')} label="Created today" value={formatNumber(d.created_today)} hint="Drafts, proforma and issued" icon={CalendarDays} />
+        <KpiCard to={drill('billing.month')} label="Issued this month" value={formatNumber(d.this_month)} hint="By invoice date" icon={Receipt} />
+        <KpiCard to={drill('billing.value')} label="Invoice value" value={money(d.total_value)} hint="Grand total of issued invoices" icon={IndianRupee} accent="manufacturing" />
+        <KpiCard to={drill('billing.taxable')} label="Taxable value" value={money(d.taxable_value)} hint="Before GST" icon={Receipt} />
+        <KpiCard to={drill('billing.gst')} label="GST" value={money(d.gst_collected)} hint="CGST + SGST + IGST on issued invoices" icon={Percent} />
+        <KpiCard to={drill('billing.received')} label="Amount received" value={money(d.amount_received)} hint="Allocated to these invoices" icon={Wallet} accent="available" />
+        <KpiCard to={drill('billing.outstanding')} label="Outstanding" value={money(d.outstanding)} hint="Balance still due" icon={HandCoins} accent="pending" />
+        <KpiCard to={drill('billing.overdue')} label="Overdue" value={money(d.overdue_amount)} hint="Past the due date" icon={AlarmClock} accent="shortage" />
+        <KpiCard to={drill('billing.partially_paid')} label="Partially paid" value={formatNumber(d.partially_paid)} icon={HandCoins} accent="pending" />
+        <KpiCard to={drill('billing.fully_paid')} label="Fully paid" value={formatNumber(d.fully_paid)} icon={CheckCircle2} accent="available" />
+        <KpiCard to={drill('billing.drafts')} label="Drafts" value={formatNumber(d.drafts)} hint={`${d.proforma} proforma`} icon={FilePen} />
+        <KpiCard to={drill('billing.cancelled')} label="Cancelled" value={formatNumber(d.cancelled)} icon={Ban} />
       </section>
 
       <div className="grid gap-6 xl:grid-cols-2">
         <ChartCard title="Monthly trend" description="Invoiced and received over the last 12 months" isEmpty={monthly.every((m) => !m.a && !m.b)} emptyMessage="No invoices or receipts yet."
-          table={{ headers: ['Month', 'Invoiced', 'Received'], rows: monthly.map((m) => [m.label, money(m.a), money(m.b)]) }}>
-          <PairedBarChart aName="Invoiced" bName="Received" aColor={TONE_FILL.info} bColor={TONE_FILL.success} valueFormatter={(v) => money(v)} data={monthly} />
+          table={{ headers: ['Month', 'Invoiced', 'Received'], rows: monthly.map((m) => [m.label, money(m.a), money(m.b)]), links: monthly.map((_, i) => monthHref(i, 'a')) }}
+          drillHint={drill('billing.month_invoiced') ? 'Click a bar to open the invoices or payments of that month.' : undefined}>
+          <PairedBarChart aName="Invoiced" bName="Received" aColor={TONE_FILL.info} bColor={TONE_FILL.success} valueFormatter={(v) => money(v)} data={monthly}
+            onSelect={drill('billing.month_invoiced') ? (i, s) => { const h = monthHref(i, s); if (h) navigate(h) } : undefined} />
         </ChartCard>
         <Card>
           <CardHeader><CardTitle>GST summary</CardTitle></CardHeader>
