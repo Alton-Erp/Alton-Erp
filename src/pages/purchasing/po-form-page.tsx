@@ -5,6 +5,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/auth/use-auth'
 import { usePermissions } from '@/auth/use-permissions'
 import { ErrorState } from '@/components/common/error-state'
+import { DraftVersionNotice } from '@/components/common/draft-version-notice'
 import { FormDraftBar } from '@/components/common/form-draft-bar'
 import { LoadingState } from '@/components/common/loading-state'
 import { PageHeader } from '@/components/common/page-header'
@@ -273,6 +274,7 @@ function PoForm({ suppliers, po, copyFrom, lines: initialLines, companyGstin, pr
         breadcrumbs={[{ label: 'Orders' }, { label: 'Supplier Purchase Orders', to: '/purchase-orders' }, { label: po ? po.po_number : 'New' }]} />
       {/* "Save draft" below already creates a draft purchase order, so the auto-save bar has no button of its own. */}
       <FormDraftBar draft={draft} showSave={false} />
+      {po?.status === 'DRAFT' && <DraftVersionNotice kind="PURCHASE_ORDER" id={po.id} onRefreshed={() => void draft.discard().then(() => window.location.reload())} />}
       {po?.rejection_reason && (
         <p role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-900">Rejected: {po.rejection_reason}</p>
       )}

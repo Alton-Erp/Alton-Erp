@@ -289,6 +289,14 @@ Copy of Alton ERP being reworked so one person can run the whole business: produ
     - Fix: both are now VOLATILE.
     - Check: `npm run test:db:readonly` scans for this mistake and replays these calls read-only. The settings page logs failures (tab, operation, code, message, request id) and shows a reference code with Try again.
   - Stock register, stock accuracy and duplicate-safe production (migration `20261111090000_stock_register_reliability.sql`): see [docs/STOCK_RELIABILITY.md](docs/STOCK_RELIABILITY.md).
+  - Immutable product, component and BOM versions (migration `20261118090000_master_versioning.sql`):
+    - **Versions:** every product / component edit creates a read-only version (`product_versions`): who, when, reason, and previous → new values. Existing products start from a legacy baseline.
+    - **Snapshots:** stock ledger entries, production orders, their material plans (incl. standard cost) and approved BOM lines record the versions they used. Released orders change only through Edit, which keeps revisions.
+    - **Reports:** history reports, list views and Excel exports show transaction-time values with version columns. The production cost estimate no longer uses today's costs.
+    - **Screens:** Product → Version history; BOM → Versions & compare. BOMs gain a reason for change, process instructions and a lifecycle, and approved periods never overlap.
+    - **Documentation:** [docs/MASTER_VERSIONING.md](docs/MASTER_VERSIONING.md) (audit, architecture, lifecycle, reports audited, compatibility, risks).
+    - **Tests:** `supabase/tests/master_versioning_verification.sql` (64 checks), `tests/db/master-versioning-rollback-check.mjs`, `tests/unit/master-versioning.test.ts`, 4 UI smoke steps (125 in total).
+    - **Rollback:** roll back 20261118 first.
   - Persistent form drafts / auto-save (migration `20261117090000_form_drafts.sql`):
     - **What it does:** entries in the main forms survive switching modules, refresh, closing the browser and signing in again.
     - **Forms:** purchase orders, goods receipts, sales orders, invoices, payments, production orders, BOMs, opening stock, products, parties and the invite dialog.

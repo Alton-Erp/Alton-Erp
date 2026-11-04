@@ -78,7 +78,9 @@ await db.exec(`
   insert into public.companies (id, legal_name, display_name, company_code, gstin) values ('${COMPANY}', 'Read Only Check Pvt Ltd', 'ROC', 'ROCK', '27AAACP1234A1Z5');
   insert into auth.users (id, email) values ('${USER}', 'roc@example.invalid');
   update public.profiles set company_id = '${COMPANY}', is_active = true where id = '${USER}';
-  insert into public.user_roles (user_id, company_id, role_id) select '${USER}', '${COMPANY}', id from public.roles where code = 'SUPER_ADMIN';`)
+  insert into public.user_roles (user_id, company_id, role_id) select '${USER}', '${COMPANY}', id from public.roles where code = 'SUPER_ADMIN';
+  insert into public.products (company_id, sku, product_name, product_type, default_source_type, base_unit, status)
+  values ('${COMPANY}', 'ROC-1', 'Read-only check product', 'COMPONENT', 'IN_HOUSE', 'PCS', 'ACTIVE');`)
 check('fixture: the company has no invoice settings row yet (first visit to ERP Settings)',
   (await db.query(`select count(*)::int n from public.invoice_settings where company_id = '${COMPANY}'`)).rows[0].n === 0)
 
@@ -113,6 +115,10 @@ for (const [fn, sql] of [
   ['my_invitation', 'select public.my_invitation()'],
   ['erp_form_draft_get', `select public.erp_form_draft_get('purchase.order', null, '')`],
   ['erp_form_drafts_mine', 'select public.erp_form_drafts_mine()'],
+  ['product_version_history', `select public.product_version_history((select id from public.products where company_id = '${COMPANY}' limit 1))`],
+  ['erp_report_v2 STOCK_MOVEMENTS', `select public.erp_report_v2('STOCK_MOVEMENTS', '{}'::jsonb)`],
+  ['erp_report_v2 MATERIAL_CONSUMPTION', `select public.erp_report_v2('MATERIAL_CONSUMPTION', '{}'::jsonb)`],
+  ['production_report', `select count(*) from public.production_report('COST_SUMMARY', current_date - 30, current_date)`],
 ]) {
   // Volatile functions get a read-write transaction from PostgREST; only read-only ones are run read-only here.
   if ((await volatility(fn)) === 'v') { check(`runtime: ${fn} is VOLATILE (PostgREST runs it read-write)`, true); continue }

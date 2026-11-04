@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 
 import { usePermissions } from '@/auth/use-permissions'
 import { ErrorState } from '@/components/common/error-state'
+import { DraftVersionNotice } from '@/components/common/draft-version-notice'
 import { FormDraftBar } from '@/components/common/form-draft-bar'
 import { LoadingState } from '@/components/common/loading-state'
 import { PageHeader } from '@/components/common/page-header'
@@ -57,6 +58,8 @@ function EntryForm({ order, crumbs }: { order: ProductionOrderListRow | null; cr
   const [addOpen, setAddOpen] = useState(false)
   const [bomVersion, setBomVersion] = useState(0)
   const [notice, setNotice] = useState<string | null>(null)
+  // Editing never switches the order to newer BOM / component versions unless the user chooses to.
+  const [useLatest, setUseLatest] = useState(false)
   const [busy, setBusy] = useState<null | 'save' | 'complete'>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -107,7 +110,7 @@ function EntryForm({ order, crumbs }: { order: ProductionOrderListRow | null; cr
     setBusy(complete ? 'complete' : 'save')
     try {
       const res = await saveProductionOrderV2(order?.id ?? null, {
-        product_id: product!.product_id, production_date: date, planned_quantity: planned.trim(), warehouse_id: whId, remarks: remarks.trim() || null,
+        product_id: product!.product_id, production_date: date, planned_quantity: planned.trim(), warehouse_id: whId, remarks: remarks.trim() || null, ...(order && useLatest ? { use_latest_versions: true } : {}),
         ...(complete ? { complete: true, actual_quantity: actual.trim(), rejected_quantity: rejected.trim() || '0', wastage_quantity: wastage.trim() || '0', production_date: date } : {}),
       }, order ? null : request.key)
       request.renew()
@@ -126,10 +129,11 @@ function EntryForm({ order, crumbs }: { order: ProductionOrderListRow | null; cr
     <>
       <PageHeader
         title={order ? `Edit ${order.production_order_number}` : 'New production'}
-        description={order ? 'Change the product, quantity, date, location or remarks. Reservations are released and the materials recalculated from the current BOM.' : 'Create a production order. Materials are calculated from the active BOM and available stock is reserved; stock changes only when production is completed.'}
+        description={order ? 'Change the product, quantity, date, location or remarks. Reservations are released and the materials recalculated. The order keeps its BOM and component versions unless you choose the latest; the previous plan is kept as a revision.' : 'Create a production order. Materials are calculated from the active BOM and available stock is reserved; stock changes only when production is completed.'}
         breadcrumbs={crumbs}
       />
       <FormDraftBar draft={draft} />
+      {order && <DraftVersionNotice kind="PRODUCTION_ORDER" id={order.id} refreshed={useLatest} onRefresh={() => setUseLatest(true)} onUndo={() => setUseLatest(false)} />}
       {notice &&<p role="status" className="mb-4 flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-sm text-green-800"><CheckCircle2 className="size-4" /> {notice}</p>}
       {p && <WarningList warnings={p.warnings} showPurchase />}
 
@@ -146,7 +150,7 @@ function EntryForm({ order, crumbs }: { order: ProductionOrderListRow | null; cr
               <div className="space-y-1"><Label>BOM version</Label>
                 <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm">
                   {!product ? '—' : preview.loading && !p ? <Loader2 className="size-4 animate-spin" />
-                    : p?.bom ? <span>{p.bom.bom_code} v{p.bom.version} · {p.bom.item_count} component(s){order && order.bom_version !== p.bom.version ? ` (order uses v${order.bom_version}; saving recalculates)` : ''}</span>
+                    : p?.bom ? <span>{p.bom.bom_code} v{p.bom.version} · {p.bom.item_count} component(s){order && order.bom_version !== p.bom.version ? ` (order uses v${order.bom_version}${useLatest ? '; switches to the latest on save' : '; kept unless you choose the latest'})` : ''}</span>
                     : <span className="flex items-center gap-1 text-amber-800"><AlertTriangle className="size-4" /> No active BOM</span>}
                 </div></div>
               <div className="space-y-1"><Label htmlFor="pe-planned">Planned production quantity *{unit ? ` (${unit})` : ''}</Label>

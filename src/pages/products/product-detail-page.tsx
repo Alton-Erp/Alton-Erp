@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, ImageOff, Info, Pencil, Power, PowerOff } from 'lucide-react'
+import { Archive, ArchiveRestore, History, ImageOff, Info, Pencil, Power, PowerOff } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 
@@ -102,6 +102,7 @@ export default function ProductDetailPage() {
         breadcrumbs={[{ label: 'Master Data' }, { label: 'Product Master', to: '/products' }, { label: p.sku }]}
         actions={
           <>
+            <Button variant="outline" asChild><Link to={`/products/${p.id}/versions`}><History /> Revision history</Link></Button>
             {has('products.archive') && !archived && p.status === 'ACTIVE' && (
               <Button variant="outline" onClick={() => setConfirm('deactivate')}>
                 <PowerOff />
@@ -254,7 +255,7 @@ export default function ProductDetailPage() {
                 {canHaveBom && (
                   <div className="flex flex-wrap items-center gap-2 text-sm">
                     {activeBom
-                      ? <span>Active: <Link className="font-medium text-primary hover:underline" to={`/production/boms/${activeBom.id}`}>{activeBom.bom_code} v{activeBom.version}</Link> · {activeBom.item_count} component(s)</span>
+                      ? <span>Active: <Link className="font-medium text-primary hover:underline" to={`/production/boms/${activeBom.id}`}>{activeBom.bom_code} v{activeBom.version}</Link> · {activeBom.item_count} component(s) · <Link className="text-primary hover:underline" to={`/production/boms/${activeBom.id}/versions`}>BOM version history</Link></span>
                       : <span className="text-muted-foreground">No active BOM.</span>}
                     {has('production_bom.create') && !archived && (
                       draftBom

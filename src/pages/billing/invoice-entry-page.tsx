@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
 import { usePermissions } from '@/auth/use-permissions'
 import { ErrorState } from '@/components/common/error-state'
+import { DraftVersionNotice } from '@/components/common/draft-version-notice'
 import { FormDraftBar } from '@/components/common/form-draft-bar'
 import { LoadingState } from '@/components/common/loading-state'
 import { PageHeader } from '@/components/common/page-header'
@@ -356,6 +357,7 @@ function EntryForm({ settings, customers, orders, invoice, lines: invLines, soLi
         breadcrumbs={crumbs} />
       {switcher}
       <FormDraftBar draft={draft} showSave={false} />
+      {invoice?.status === 'DRAFT' && <DraftVersionNotice kind="INVOICE" id={invoice.id} onRefreshed={() => void draft.discard().then(() => window.location.reload())} />}
       <form noValidate onSubmit={(e) => { e.preventDefault(); void save(false) }} className="space-y-6">
         <Card>
           <CardHeader><div><CardTitle>Invoice details</CardTitle>

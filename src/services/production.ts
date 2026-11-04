@@ -819,3 +819,24 @@ export async function searchLots(term: string): Promise<(BatchRow & { sku: strin
   const byId = new Map([...(products.data ?? []), ...extra].map((p) => [p.id, p]))
   return lots.map((l) => ({ ...l, sku: byId.get(l.product_id)?.sku ?? '?', product_name: byId.get(l.product_id)?.product_name ?? '' }))
 }
+
+// Version history (migration 20261118090000_master_versioning.sql)
+export const fetchBomVersionHistory = (bomId: string) =>
+  rpc<import('@/features/versions/version-model').BomHistory>('bom_version_history', { p_bom_id: bomId })
+
+/** Reason for a new BOM version and its process instructions (draft BOMs only). */
+export const saveBomVersionDetails = (bomId: string, changeReason: string | null, processInstructions: string | null) =>
+  rpc<{ bom_id: string }>('bom_version_details_save', { p_bom_id: bomId, p_change_reason: changeReason, p_process_instructions: processInstructions })
+
+/** Saves the BOM and activates it in one step (users who may activate BOMs). A change to an approved version becomes the next version. */
+export const saveAndActivateBom = (
+  input: { bomId: string | null; finishedProductId: string; effectiveFrom: string; effectiveTo: string | null; outputQuantity: number; notes: string | null; items: BomItemInput[] },
+  key: string,
+  changeReason: string | null,
+  processInstructions: string | null,
+) =>
+  rpc<{ bom_id: string; bom_code: string; version: number; new_version: boolean; superseded_versions: string[]; closed_versions: string[] }>('production_bom_save_and_activate', {
+    p_bom_id: input.bomId, p_finished_product_id: input.finishedProductId, p_effective_from: input.effectiveFrom, p_effective_to: input.effectiveTo,
+    p_output_quantity: input.outputQuantity, p_notes: input.notes, p_items: input.items, p_idempotency_key: key,
+    p_change_reason: changeReason, p_process_instructions: processInstructions,
+  })

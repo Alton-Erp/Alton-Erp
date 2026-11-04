@@ -71,6 +71,8 @@ export interface SaveData {
   warehouse_id?: string | null
   remarks?: string | null
   complete?: boolean
+  /** Editing: move the order to the active BOM and the current product / component versions (otherwise it keeps its versions). */
+  use_latest_versions?: boolean
 }
 
 export interface SaveResult {

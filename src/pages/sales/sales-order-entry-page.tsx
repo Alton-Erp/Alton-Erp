@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 
 import { usePermissions } from '@/auth/use-permissions'
 import { ErrorState } from '@/components/common/error-state'
+import { DraftVersionNotice } from '@/components/common/draft-version-notice'
 import { FormDraftBar } from '@/components/common/form-draft-bar'
 import { LoadingState } from '@/components/common/loading-state'
 import { PageHeader } from '@/components/common/page-header'
@@ -197,6 +198,7 @@ function EntryForm({ customers, companyGstin, header: so, lines: soLines, crumbs
           : 'One order, any number of products. On saving, available finished goods are reserved and the materials for anything still to be made are checked.'}
         breadcrumbs={crumbs} />
       <FormDraftBar draft={formDraft} showSave={false} />
+      {so?.order_status === 'DRAFT' && <DraftVersionNotice kind="SALES_ORDER" id={so.id} onRefreshed={() => void formDraft.discard().then(() => window.location.reload())} />}
       <form noValidate onSubmit={(e) => { e.preventDefault(); void save(false) }} className="space-y-6">
         <Card>
           <CardHeader><div><CardTitle>Basic information</CardTitle><CardDescription>Sales order number: {so?.sales_order_number ?? 'assigned automatically when saved'}</CardDescription></div></CardHeader>

@@ -513,8 +513,11 @@ select rls_test.call(format($q$ select public.production_order_action(%L, 'SUBMI
 select rls_test.claims('pm2');
 select rls_test.call(format($q$ select public.production_order_action(%L, 'APPROVE') $q$, rls_test.gid('p_old', 'order_id')));
 reset role;
+-- Simulated legacy data: written with the guards off (the released-plan guard of 20261118 included).
 alter table public.production_order_materials disable trigger production_order_materials_whole_pieces;
+alter table public.production_order_materials disable trigger production_order_materials_zz_snapshot;
 update public.production_order_materials set planned_quantity = 0.286 where id = (rls_test.material(rls_test.gid('p_old', 'order_id'), rls_test.id('a1'))).id;
+alter table public.production_order_materials enable trigger production_order_materials_zz_snapshot;
 alter table public.production_order_materials enable trigger production_order_materials_whole_pieces;
 select rls_test.ok('legacy: A1 now 99 PCS @ GENERAL + 78.571 @ BIN2; A3 48.714 @ GENERAL (as reported in production)',
   rls_test.on_hand(rls_test.id('a1'), rls_test.id('bin2')) = 78.571 and rls_test.on_hand(rls_test.id('a3'), rls_test.id('g1')) = 48.714);

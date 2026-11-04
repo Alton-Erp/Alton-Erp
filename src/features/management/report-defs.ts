@@ -44,7 +44,7 @@ export const REPORTS: ReportDef[] = [
   { key: 'STOCK_MOVEMENTS', title: 'Stock Movement Report', group: 'Products & stock', description: 'Every posted stock movement in the period (in +, out −).',
     filters: ['date', 'product'], columns: [
       { key: 'date', label: 'Date', type: 'date' }, { key: 'number', label: 'Movement' }, { key: 'type', label: 'Type' }, { key: 'sku', label: 'SKU' },
-      { key: 'product_name', label: 'Product' }, { key: 'quantity', label: 'Quantity', type: 'number' }, { key: 'unit', label: 'Unit' }, { key: 'warehouse', label: 'Warehouse' },
+      { key: 'product_name', label: 'Product' }, { key: 'product_version', label: 'Version' }, { key: 'quantity', label: 'Quantity', type: 'number' }, { key: 'unit', label: 'Unit' }, { key: 'warehouse', label: 'Warehouse' },
       { key: 'location', label: 'Location' }, { key: 'reference', label: 'Reference' }, { key: 'reason', label: 'Reason' }] },
   { key: 'INVENTORY_VALUATION', title: 'Inventory Valuation', group: 'Products & stock', description: 'Current stock at the weighted-average receipt cost of each lot. Lots without a cost are shown, not guessed.',
     filters: ['product'], link: id('product_id', '/inventory/stock/'), columns: [
@@ -68,7 +68,7 @@ export const REPORTS: ReportDef[] = [
     filters: ['date', 'supplier', 'product'], link: id('id', '/goods-receipts/'), columns: [
       { key: 'receipt_number', label: 'GRN' }, { key: 'date', label: 'Date', type: 'date' }, { key: 'supplier', label: 'Supplier' }, { key: 'po_number', label: 'PO' },
       { key: 'supplier_invoice_number', label: 'Supplier invoice' }, { key: 'supplier_challan_number', label: 'Supplier challan' },
-      { key: 'sku', label: 'SKU' }, { key: 'product_name', label: 'Product' }, { key: 'received', label: 'Received', type: 'number' }, { key: 'accepted', label: 'Accepted', type: 'number' },
+      { key: 'sku', label: 'SKU' }, { key: 'product_name', label: 'Product' }, { key: 'product_version', label: 'Version' }, { key: 'received', label: 'Received', type: 'number' }, { key: 'accepted', label: 'Accepted', type: 'number' },
       { key: 'rejected', label: 'Rejected', type: 'number' }, { key: 'unit', label: 'Unit' }, { key: 'value', label: 'Value', type: 'money', total: true }, { key: 'status', label: 'Status' }] },
   { key: 'SUPPLIER_PURCHASES', title: 'Supplier-wise Purchase Report', group: 'Purchase', description: 'Per supplier: orders, ordered value, goods received, payments and outstanding.',
     filters: ['date', 'supplier'], columns: [
@@ -78,17 +78,17 @@ export const REPORTS: ReportDef[] = [
   { key: 'PRODUCTION_REGISTER', title: 'Production Register', group: 'Production', description: 'Production orders: planned, good, rejected and scrap output.',
     filters: ['date', 'product'], link: id('id', '/production/orders/'), columns: [
       { key: 'order_number', label: 'Order' }, { key: 'date', label: 'Date', type: 'date' }, { key: 'sku', label: 'SKU' }, { key: 'product_name', label: 'Product' },
-      { key: 'unit', label: 'Unit' }, { key: 'planned', label: 'Planned', type: 'number' }, { key: 'good', label: 'Good', type: 'number' }, { key: 'rejected', label: 'Rejected', type: 'number' },
+      { key: 'product_version', label: 'Product version' }, { key: 'bom', label: 'BOM version' }, { key: 'unit', label: 'Unit' }, { key: 'planned', label: 'Planned', type: 'number' }, { key: 'good', label: 'Good', type: 'number' }, { key: 'rejected', label: 'Rejected', type: 'number' },
       { key: 'scrap', label: 'Scrap', type: 'number' }, { key: 'status', label: 'Status' }, { key: 'completed', label: 'Completed', type: 'date' }] },
   { key: 'MATERIAL_CONSUMPTION', title: 'Material Consumption Report', group: 'Production', description: 'Materials consumed by production: BOM standard against actual.',
     filters: ['date', 'product'], columns: [
-      { key: 'date', label: 'Date', type: 'date' }, { key: 'order_number', label: 'Order' }, { key: 'finished_sku', label: 'For' }, { key: 'sku', label: 'Material' },
-      { key: 'product_name', label: 'Name' }, { key: 'unit', label: 'Unit' }, { key: 'planned', label: 'Standard', type: 'number' }, { key: 'actual', label: 'Actual', type: 'number' },
+      { key: 'date', label: 'Date', type: 'date' }, { key: 'order_number', label: 'Order' }, { key: 'bom', label: 'BOM version' }, { key: 'finished_sku', label: 'For' }, { key: 'sku', label: 'Material' },
+      { key: 'product_name', label: 'Name' }, { key: 'component_version', label: 'Material version' }, { key: 'unit', label: 'Unit' }, { key: 'planned', label: 'Standard', type: 'number' }, { key: 'actual', label: 'Actual', type: 'number' },
       { key: 'difference', label: 'Difference', type: 'number' }, { key: 'status', label: 'Status' }] },
   { key: 'PRODUCTION_WASTAGE', title: 'Production Wastage Report', group: 'Production', description: 'Rejected and scrapped output, loss % and material used above the BOM standard.',
     filters: ['date', 'product'], columns: [
       { key: 'date', label: 'Date', type: 'date' }, { key: 'receipt_number', label: 'Receipt' }, { key: 'order_number', label: 'Order' }, { key: 'sku', label: 'SKU' },
-      { key: 'unit', label: 'Unit' }, { key: 'good', label: 'Good', type: 'number' }, { key: 'rejected', label: 'Rejected', type: 'number' }, { key: 'scrap', label: 'Scrap', type: 'number' },
+      { key: 'product_version', label: 'Version' }, { key: 'unit', label: 'Unit' }, { key: 'good', label: 'Good', type: 'number' }, { key: 'rejected', label: 'Rejected', type: 'number' }, { key: 'scrap', label: 'Scrap', type: 'number' },
       { key: 'loss_percent', label: 'Loss %', type: 'percent' }, { key: 'material_over_use', label: 'Material above standard', type: 'number' }, { key: 'reason', label: 'Reason' }] },
   { key: 'SALES_ORDER_REGISTER', title: 'Sales Order Register', group: 'Sales', description: 'Sales orders in the period with status and order value (not revenue).',
     filters: ['date', 'customer', 'product'], link: id('id', '/sales/orders/'), columns: [

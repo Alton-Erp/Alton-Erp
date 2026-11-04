@@ -10,7 +10,7 @@
 //
 // The mock data below exists only inside this test process.
 
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import os from 'node:os'
@@ -102,6 +102,8 @@ const invitationRows = [
 ]
 // Form drafts per user, form, record and scope (mock of erp_form_drafts).
 const formDrafts = new Map()
+// Drafts refreshed to the latest versions (draft_refresh_versions).
+const draftRefreshed = new Set()
 let draftFailures = 0
 const draftKeyOf = (b) => `${currentUser?.id}|${b?.p_form_key}|${b?.p_record_id ?? ''}|${b?.p_scope ?? ''}`
 const draftJson = (row) => ({ ...row, data: row.status === 'draft' ? row.data : null })
@@ -1136,6 +1138,45 @@ const api = http.createServer((req, res) => {
             verification: { purge_tables_empty: true, other_companies_unchanged: true, schema_unchanged: true, actor_access_valid: true },
             storage_files: [{ bucket: 'product-images', name: `${COMPANY_ID}/p1/a.jpg` }, { bucket: 'product-images', name: `${COMPANY_ID}/p2/b.jpg` },
               { bucket: 'documents', name: `${COMPANY_ID}/d1/v1.pdf` }] })
+        // Master versioning (20261118090000)
+        case 'product_version_history':
+          return send(res, 200, { product: { id: body.p_product_id, sku: 'MOCK-WC-1', product_name: 'Mock Closet 1 Premium', product_type: 'FINISHED_GOOD' }, versions: [
+            { id: 'pv2', version_no: 2, effective_from: NOW, effective_to: null, is_current: true, is_legacy: false, source: 'UPDATED', change_reason: 'New glaze from the supplier',
+              changes: { product_name: { from: 'Mock Closet 1', to: 'Mock Closet 1 Premium' }, standard_cost: { from: 1000, to: 1150 } }, created_by: 'Smoke Tester', created_at: NOW,
+              values: { sku: 'MOCK-WC-1', product_name: 'Mock Closet 1 Premium', base_unit: 'PCS', hsn_code: '6910', standard_cost: 1150, gst_rate: 18 } },
+            { id: 'pv1', version_no: 1, effective_from: '2026-10-01T00:00:00Z', effective_to: NOW, is_current: false, is_legacy: true, source: 'LEGACY_BASELINE',
+              change_reason: 'Legacy baseline: the values when version control was introduced. Earlier changes were not recorded.', changes: null, created_by: null,
+              created_at: '2026-10-01T00:00:00Z', values: { sku: 'MOCK-WC-1', product_name: 'Mock Closet 1', base_unit: 'PCS', hsn_code: '6910', standard_cost: 1000, gst_rate: 18 } }] })
+        case 'bom_version_history': {
+          const it = (id, sku, q, v, c = 10) => ({ component_product_id: id, line_no: 1, sku, product_name: sku, component_version: v, quantity: q, unit: 'PCS', wastage_percentage: 0, notes: null,
+            standard_cost: c, line_cost: q * c })
+          return send(res, 200, { product: { id: 'p1', sku: 'MOCK-WC-1', product_name: 'Mock Closet 1' }, versions: [
+            { id: 'bom2', bom_code: 'BOM-000001', version: 2, status: 'APPROVED', lifecycle: 'ACTIVE', effective_from: TODAY, effective_to: null, output_quantity: 1, output_unit: 'PCS',
+              notes: null, change_reason: 'Three-bowl design', process_instructions: 'Torque 5 Nm', created_by: 'Smoke Tester', created_at: NOW, approved_by: 'Smoke Tester', approved_at: NOW,
+              modified_at: NOW, superseded_by: null, items: [it('pa', 'MOCK-A1', 3, 'v2', 12), it('pb', 'MOCK-B1', 2, 'v1'), it('pn', 'MOCK-PLUG', 1, 'v1', 3)] },
+            { id: 'bom1', bom_code: 'BOM-000001', version: 1, status: 'ARCHIVED', lifecycle: 'SUPERSEDED', effective_from: '2026-10-01', effective_to: '2026-11-01', output_quantity: 1,
+              output_unit: 'PCS', notes: null, change_reason: 'First release', process_instructions: null, created_by: 'Smoke Tester', created_at: NOW, approved_by: 'Smoke Tester',
+              approved_at: NOW, modified_at: NOW, superseded_by: 2, items: [it('pa', 'MOCK-A1', 1, 'v1'), it('pb', 'MOCK-B1', 2, 'v1'), it('po', 'MOCK-OLD', 1, 'Legacy / Unversioned', 2)] }] })
+        }
+        case 'production_bom_save_and_activate':
+          if (!has('production_bom.approve')) return send(res, 403, { code: '42501', message: 'You are not allowed to perform this action (requires production_bom.approve).' })
+          if (body.p_bom_id === 'bom1' && !(body.p_change_reason ?? '').trim()) return send(res, 400, { code: 'P0001', message: 'Enter the reason for this change: it is kept with the new BOM version.' })
+          return send(res, 200, { bom_id: 'bom2', bom_code: 'BOM-000001', version: 2, new_version: body.p_bom_id === 'bom1', activated: true, status: 'APPROVED',
+            superseded_versions: ['v1'], closed_versions: [] })
+        case 'draft_version_check': {
+          const items = body.p_kind === 'PRODUCTION_ORDER' ? [
+            { product_id: 'p1', sku: 'MOCK-WC-1', field: 'BOM version', draft_value: 'BOM-000001 v1', current_value: 'BOM-000001 v2', refreshable: true },
+            { product_id: 'pa', sku: 'MOCK-CLAY', field: 'Component version', draft_value: 'v1 · Mock ceramic body · cost 10', current_value: 'v2 · Mock ceramic body · cost 12', refreshable: true }]
+            : body.p_kind === 'PURCHASE_ORDER' && !draftRefreshed.has(body.p_id) ? [
+              { product_id: 'p1', sku: 'MOCK-WC-1', field: 'Description', draft_value: 'Mock Closet 1', current_value: 'Mock Closet 1 Premium', refreshable: true },
+              { product_id: 'p1', sku: 'MOCK-WC-1', field: 'GST rate', draft_value: 12, current_value: 18, refreshable: false }] : []
+          return send(res, 200, { kind: body.p_kind, id: body.p_id, status: 'DRAFT', stale: items.length > 0, items })
+        }
+        case 'draft_refresh_versions':
+          draftRefreshed.add(body.p_id)
+          return send(res, 200, { kind: body.p_kind, id: body.p_id, refreshed_lines: 1 })
+        case 'bom_version_details_save':
+          return send(res, 200, { bom_id: body.p_bom_id, change_reason: body.p_change_reason, process_instructions: body.p_process_instructions })
         // Persistent form drafts (20261117090000): same versioning rules as the database.
         case 'erp_form_draft_get': {
           const row = formDrafts.get(draftKeyOf(body))
@@ -1184,6 +1225,7 @@ const api = http.createServer((req, res) => {
           USERS['new.hire@test.invalid'].active = true
           return send(res, 200, { invitation_id: 'inv-new', status: 'ACCEPTED', company_id: COMPANY_ID, roles: ['Sales Executive'] })
         case 'get_my_access':
+          if (!currentUser) return send(res, 401, { code: 'PGRST301', message: 'JWT expired' })
           return send(res, 200, {
             profile: { id: currentUser.id, email: currentUser.email, full_name: 'Smoke Tester', company_id: COMPANY_ID, is_active: currentUser.active !== false },
             company: { id: COMPANY_ID, legal_name: 'Test Co', display_name: 'Test Co', company_code: 'TEST', currency_code: 'INR', timezone: 'Asia/Kolkata', is_active: true },
@@ -1346,7 +1388,11 @@ const api = http.createServer((req, res) => {
         case 'erp_report':
           return send(res, 200, { report: body.p_report, from: body.p_filters?.from ?? null, to: body.p_filters?.to ?? TODAY, generated_at: NOW,
             ...(() => {
-              const rows = body.p_report === 'INVOICE_REGISTER' ? [
+              const rows = body.p_report === 'STOCK_MOVEMENTS' ? [
+                { date: TODAY, number: 'TXN-000101', type: 'RECEIPT', sku: 'MOCK-WC-1', product_name: 'Mock Closet 1', product_version: 'v1', quantity: 100, unit: 'PCS', warehouse: 'MAIN', location: 'GENERAL', reference: 'GRN-000001', reason: 'Received' },
+                { date: TODAY, number: 'TXN-000102', type: 'RECEIPT', sku: 'MOCK-WC-1', product_name: 'Mock Closet 1 Premium', product_version: 'v2', quantity: 5, unit: 'PCS', warehouse: 'MAIN', location: 'GENERAL', reference: 'GRN-000002', reason: 'Received' },
+                { date: TODAY, number: 'TXN-000050', type: 'OPENING_STOCK', sku: 'MOCK-OLD', product_name: 'Old washer', product_version: 'Legacy / Unversioned', quantity: 50, unit: 'PCS', warehouse: 'MAIN', location: 'GENERAL', reference: null, reason: 'Opening' },
+              ] : body.p_report === 'INVOICE_REGISTER' ? [
                 { id: 'inv2', invoice_number: 'INV/26-27/0001', date: TODAY, customer: 'Acme Ltd', gstin: '27BBBBB0000B1Z5', taxable: 1900, cgst: 171, sgst: 171, igst: 0, grand_total: 2242, paid: 1121, balance: 1121, status: 'PARTIALLY_PAID', due_date: TODAY },
                 { id: 'inv9', invoice_number: 'INV/26-27/0009', date: TODAY, customer: 'Beta Traders', gstin: null, taxable: 1000, cgst: 90, sgst: 90, igst: 0, grand_total: 1180, paid: 0, balance: null, status: 'CANCELLED', due_date: TODAY },
               ] : []
@@ -3942,6 +3988,139 @@ const signOut = async () => {
 }
 
 // ---------------------------------------------------------------------------
+// Immutable product / component / BOM versions (20261118090000) — numbers refer to section 11 of the request
+// ---------------------------------------------------------------------------
+const productPatches = () => requests.filter((r) => r.method === 'PATCH' && r.path === '/rest/v1/products')
+await step('Versions 1/10: editing a product needs a reason, which is sent with the change (the new version records it)', async () => {
+  await goto('/products/p1/edit')
+  await waitFor(`!!document.querySelector('#p-change-reason') && !!document.querySelector('#p-product_name')`, 'edit form with the reason field')
+  await waitFor(`document.querySelector('[data-draft-status]')?.dataset.draftStatus !== 'loading'`, 'draft check')
+  await fill('#p-product_name', 'Mock Closet 1 Premium')
+  const before = productPatches().length
+  await click('button[type=submit]', 'Save changes')
+  await waitFor(bodyHas('Enter the reason for this change'), 'reason required')
+  assert(productPatches().length === before, 'saved without a reason')
+  await fill('#p-change-reason', 'New glaze from the supplier')
+  await click('button[type=submit]', 'Save changes')
+  await waitFor(`location.pathname === '/products/p1'`, 'saved')
+  const body = productPatches().at(-1).body
+  assert(body.product_name === 'Mock Closet 1 Premium' && body.change_reason === 'New glaze from the supplier', JSON.stringify(body))
+  await waitFor(`!!document.querySelector('main a[href="/products/p1/versions"]')`, 'version history link')
+})
+
+await step('Versions: product history (who, when, reason, previous -> new value) and a comparison of two versions', async () => {
+  await click('main a[href="/products/p1/versions"]')
+  await waitFor(bodyHasAll('Revision history — MOCK-WC-1', 'v1 (legacy baseline)', 'New glaze from the supplier', 'Mock Closet 1 → Mock Closet 1 Premium', 'Current', 'Superseded'), 'history')
+  await waitFor(`document.querySelector('tr[data-field=product_name]') && document.querySelector('tr[data-field=standard_cost]')`, 'comparison')
+  assert(await evaluate(`!document.querySelector('tr[data-field=hsn_code]')`), 'unchanged fields shown with "Only changed fields"')
+  assert(await evaluate(bodyHasAll('Previous values (v1 (legacy baseline))', 'Current values (v2)')), 'previous / current headings missing')
+  await click('#cmp-only')
+  await waitFor(`!!document.querySelector('tr[data-field=hsn_code]')`, 'all fields')
+  await click('button[aria-label="View version 1"]')
+  await waitFor(`document.querySelector('[data-testid=version-view]')?.innerText.includes('v1 (legacy baseline) — read-only') && document.querySelector('[data-testid=version-view]').innerText.includes('Mock Closet 1')`, 'read-only version view')
+  assert(await evaluate(`!document.querySelector('[data-testid=version-view] input, [data-testid=version-view] textarea')`), 'historical version is editable')
+  await screenshot('113-product-versions')
+})
+
+await step('Versions 3: BOM versions with lifecycle, reason, approver and the component differences', async () => {
+  await goto('/production/boms/bom2/versions')
+  await waitFor(bodyHasAll('BOM versions — MOCK-WC-1', 'Active', 'Superseded', 'Three-bowl design', 'First release'), 'BOM versions')
+  const row = (sku, change) => `document.querySelector('tr[data-component="${sku}"][data-change=${change}]')`
+  await waitFor(`${row('MOCK-PLUG', 'ADDED')} && ${row('MOCK-OLD', 'REMOVED')} && ${row('MOCK-A1', 'CHANGED')} && ${row('MOCK-B1', 'UNCHANGED')}`, 'component differences')
+  assert(await evaluate(`${row('MOCK-A1', 'CHANGED')}.innerText.includes('quantity, component version, cost') && ${row('MOCK-A1', 'CHANGED')}.innerText.includes('v1 → v2')
+    && ${row('MOCK-A1', 'CHANGED')}.innerText.includes('Modified') && ${row('MOCK-A1', 'CHANGED')}.innerText.includes('₹36.00 (+26.00)')`), 'change details missing')
+  await waitFor(`${bodyHasAll('Added: 1', 'Removed: 1', 'Modified: 1', 'by v2')} && document.querySelector('tr[data-field=unit_cost]')?.innerText.includes('₹32.00') && document.querySelector('tr[data-field=unit_cost]').innerText.includes('₹59.00')`, 'costs and indicators')
+  await screenshot('114-bom-versions')
+})
+
+await step('Activation: the active BOM is edited directly; saving needs a reason and creates and activates the next version (no approval step)', async () => {
+  await goto('/production/boms/bom1')
+  await waitFor(`!!document.querySelector('[data-testid=bom-revise-note]') && !!document.querySelector('#bom-change-reason') && !document.querySelector('#bom-change-reason').disabled`, 'active version editable for an authorised user')
+  assert(!(await evaluate(`[...document.querySelectorAll('button')].some((b) => /Submit for approval/.test(b.innerText))`)), 'an approval step is offered')
+  const calls = () => rpcCalls('production_bom_save_and_activate')
+  // An earlier visit may have auto-saved a draft of this form (restored with its reason); start without a reason.
+  await waitFor("!document.querySelector('[data-draft-status]') || document.querySelector('[data-draft-status]').dataset.draftStatus !== 'loading'", 'draft check')
+  await sleep(300)
+  await fill('#bom-change-reason', '')
+  const before = calls().length
+  await click('button', 'Save as new version (activates now)')
+  try {
+    await waitFor(bodyHas('Enter the reason for this change'), 'reason required')
+  } catch (e) {
+    throw new Error(e.message + ' — page says: ' + (await evaluate("[...document.querySelectorAll('[role=alert],[role=status]')].map((x) => x.innerText).join(' | ') + ' reason=' + JSON.stringify(document.querySelector('#bom-change-reason')?.value)")))
+  }
+  assert(calls().length === before, 'saved without a reason')
+  await fill('#bom-change-reason', 'Three-bowl design')
+  await click('button', 'Save as new version (activates now)')
+  await waitFor(`location.pathname === '/production/boms/bom2' && ${bodyHas('saved and activated: new production orders use it now')} && ${bodyHas('Superseded: v1')}`, 'activated')
+  const body = calls().at(-1).body
+  assert(body.p_bom_id === 'bom1' && body.p_change_reason === 'Three-bowl design' && /^[0-9a-f-]{36}$/.test(body.p_idempotency_key), JSON.stringify(body))
+  assert(rpcCalls('production_bom_action').length === 0 || !rpcCalls('production_bom_action').some((r) => r.body.p_action === 'SUBMIT'), 'submitted for approval')
+  await screenshot('115-bom-activated')
+})
+
+await step('Draft rule: an edited production order keeps its BOM and component versions unless the user chooses the latest', async () => {
+  const saves = () => rpcCalls('production_order_v2_save')
+  await goto('/production/orders/po1/edit')
+  await waitFor(`document.querySelector('[data-testid=draft-version-notice]') && ${bodyHasAll('Newer versions are available', 'BOM version: BOM-000001 v1 → BOM-000001 v2', 'Component version')}`, 'notice')
+  await screenshot('116-draft-version-notice')
+  let before = saves().length
+  await click('button', 'Save and recalculate')
+  await waitFor(`location.pathname === '/production/orders/po1'`, 'saved (kept)')
+  assert(saves().length === before + 1, 'not saved')
+  assert(!('use_latest_versions' in saves().at(-1).body.p_data), 'switched to the latest without being asked')
+  await goto('/production/orders/po1/edit')
+  await waitFor(`!!document.querySelector('[data-testid=draft-version-notice]')`, 'notice again')
+  await click('[data-testid=draft-version-notice] button', 'Refresh to the latest versions')
+  await waitFor(`document.querySelector('[data-testid=draft-version-notice]')?.dataset.choice === 'latest'`, 'latest chosen')
+  await click('[data-testid=draft-version-notice] button', 'Keep the current versions instead')
+  await waitFor(`document.querySelector('[data-testid=draft-version-notice]') && document.querySelector('[data-testid=draft-version-notice]').dataset.choice !== 'latest'`, 'undone')
+  await click('[data-testid=draft-version-notice] button', 'Refresh to the latest versions')
+  before = saves().length
+  await click('button', 'Save and recalculate')
+  await waitFor(`location.pathname === '/production/orders/po1'`, 'saved (latest)')
+  assert(saves().length === before + 1 && saves().at(-1).body.p_data.use_latest_versions === true, JSON.stringify(saves().at(-1).body))
+})
+
+await step('Draft rule: a draft purchase order shows newer product versions; it changes only when the user refreshes it', async () => {
+  draftRefreshed.clear()
+  await goto('/purchase-orders/po1/edit')
+  await waitFor(`document.querySelector('[data-testid=draft-version-notice]') && ${bodyHasAll('Description: Mock Closet 1 → Mock Closet 1 Premium', 'GST rate: 12 → 18', 'a commercial term')}`, 'notice')
+  await click('[data-testid=draft-version-notice] button', "Keep the draft's versions")
+  await waitFor(`!document.querySelector('[data-testid=draft-version-notice]')`, 'kept')
+  assert(rpcCalls('draft_refresh_versions').length === 0, 'refreshed without being asked')
+  await goto('/purchase-orders/po1/edit')
+  await waitFor(`!!document.querySelector('[data-testid=draft-version-notice]')`, 'notice again')
+  await click('[data-testid=draft-version-notice] button', 'Refresh to the latest versions')
+  await waitFor(`!document.querySelector('[data-testid=draft-version-notice]') && !!document.querySelector('#po-ref')`, 'refreshed and reloaded')
+  const call = rpcCalls('draft_refresh_versions').at(-1)?.body
+  assert(call?.p_kind === 'PURCHASE_ORDER' && call.p_id === 'po1', JSON.stringify(call))
+})
+
+await step('Versions 8/9: the stock movement report shows the version at the time, and the Excel export carries the same values', async () => {
+  await goto('/reports/view/stock_movements')
+  await waitFor(`${bodyHasAll('Mock Closet 1 Premium', 'Legacy / Unversioned')} && document.querySelector('table th') && [...document.querySelectorAll('table th')].some((th) => th.innerText.trim().toLowerCase() === 'version')`, 'report with versions')
+  const before = new Set(readdirSync(downloadDir))
+  await click('button', 'Excel')
+  let file = null
+  for (let i = 0; i < 50 && !file; i++) {
+    await sleep(200)
+    file = readdirSync(downloadDir).find((n) => !before.has(n) && /stock-movements.*\.xlsx$/.test(n)) ?? null
+  }
+  assert(file, 'no Excel file downloaded')
+  await sleep(300)
+  const XLSX = await import('xlsx')
+  const wb = XLSX.read(readFileSync(path.join(downloadDir, file)))
+  const sheet = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1 })
+  const head = sheet.findIndex((r) => r.includes('Version'))
+  assert(head >= 0, 'no version column in the export')
+  const vi = sheet[head].indexOf('Version')
+  const ni = sheet[head].indexOf('Product')
+  const got = sheet.slice(head + 1).map((r) => [r[ni], r[vi]])
+  assert(JSON.stringify(got) === JSON.stringify([['Mock Closet 1', 'v1'], ['Mock Closet 1 Premium', 'v2'], ['Old washer', 'Legacy / Unversioned']]), JSON.stringify(got))
+})
+
+// ---------------------------------------------------------------------------
 // Persistent form drafts (auto-save) — numbers refer to section 11 of the request
 // ---------------------------------------------------------------------------
 const draftStatusIs = (s) => `document.querySelector('[data-draft-status]')?.dataset.draftStatus === ${JSON.stringify(s)}`
@@ -4137,8 +4316,9 @@ await step('ERP reset: correct password resets on the server; success shown only
   assert(!('user_id' in call.body) && !('company_id' in call.body), 'the browser sent a user or company id')
   await screenshot('100-erp-reset-done')
   const previews = rpcCalls('erp_reset_preview').length
+  await evaluate('window.__beforeReload = true')
   await click('[role=dialog] button', 'Reload the ERP')
-  await waitFor(`location.pathname === '/admin/erp-settings' && ${bodyHas('Will be deleted')}`, 'reloaded')
+  await waitFor(`!window.__beforeReload && location.pathname === '/admin/erp-settings' && ${bodyHas('Will be deleted')}`, 'reloaded')
   assert(rpcCalls('erp_reset_preview').length > previews, 'data not reloaded from the server after the reset')
 })
 
@@ -4181,12 +4361,17 @@ await step('Force reset: "Delete everything now" deletes directly on the server,
   assert(requests.filter((r) => r.path === '/functions/v1/force-reset-erp-data').length === 0, 'the old Edge Function was called')
   assert(requests.some((r) => r.method === 'DELETE' && r.path === '/storage/v1/object/product-images'), 'product images not removed')
   await screenshot('102-force-reset-done')
+  await evaluate('window.__beforeReload = true')
   await click('[role=dialog] button', 'Reload the ERP')
-  await waitFor(`location.pathname === '/admin/erp-settings' && ${bodyHas('Force Reset / Delete Everything')}`, 'reloaded')
+  await waitFor(`!window.__beforeReload && location.pathname === '/admin/erp-settings' && ${bodyHas('Force Reset / Delete Everything')}`, 'reloaded')
 })
 
 await step('Force reset: history lists standard and force attempts with results', async () => {
-  await click('[data-testid=force-reset-section] button', 'View Reset History')
+  // Right after the reload the settings page can still re-render once and drop a dialog opened too early; retry the click.
+  for (let i = 0; i < 3; i++) {
+    await click('[data-testid=force-reset-section] button', 'View Reset History')
+    try { await waitFor(`!!document.querySelector('[role=dialog]')`, 'history dialog', 3000); break } catch (e) { if (i === 2) throw e }
+  }
   await waitFor(bodyHasAll('Reset history', 'Force', 'completed', 'Standard', 'blocked', 'Stock ledger'), 'history')
   await screenshot('103-reset-history')
   await click('[role=dialog] button', 'Close')
@@ -4471,6 +4656,13 @@ await step('no console errors or uncaught exceptions', async () => {
 
 ws.close()
 browser.kill()
+// On Windows Edge can hand off to another process, so browser.kill() may leave the real browser running and
+// holding the debugging port; the next run then fails. Stop every process using this run's own profile folder.
+if (process.platform === 'win32') {
+  const needle = path.basename(profileDir)
+  spawnSync('powershell.exe', ['-NoProfile', '-Command',
+    `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${needle}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`], { stdio: 'ignore' })
+}
 api.close()
 app.close()
 await sleep(500)

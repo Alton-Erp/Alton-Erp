@@ -1,4 +1,4 @@
-import { ArrowLeft, CopyPlus, Loader2, Network, Pencil, Plus, Trash2 } from 'lucide-react'
+import { ArrowLeft, CopyPlus, History, Loader2, Network, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
@@ -33,7 +33,8 @@ import { useRequestKey } from '@/hooks/use-request-key'
 import { describeDataError, describeProductError } from '@/lib/errors'
 import { formatDate, formatDateTime, toIsoDate } from '@/lib/format'
 import type { ProductOption } from '@/services/inventory'
-import { activateBom, bomAction, fetchBom, newBomVersion, saveBom } from '@/services/production'
+import { activateBom, bomAction, fetchBom, newBomVersion, saveAndActivateBom, saveBom, saveBomVersionDetails } from '@/services/production'
+import { DraftVersionNotice } from '@/components/common/draft-version-notice'
 import { bomRequirement, isFractionalForUnit, isWholeUnit, parseUnitQty, qtyInputMode, quantityRule } from '@/features/inventory/whole-units'
 
 // Each component line: (1) product, (2) SKU, (3) qty per output on the first row;
@@ -98,6 +99,9 @@ export default function BomEditorPage() {
   const [to, setTo] = useState('')
   const [output, setOutput] = useState('1')
   const [notes, setNotes] = useState('')
+  // Version control: why this version exists and how it is made (kept with the version once approved).
+  const [changeReason, setChangeReason] = useState('')
+  const [instructions, setInstructions] = useState('')
   const { prefs } = useErpPreferences()
   const defaultWastage = String(prefs?.['production.default_wastage_percent'] ?? 0)
   const [lines, setLines] = useState<Line[]>(() => [blankLine(defaultWastage)])
@@ -132,7 +136,7 @@ export default function BomEditorPage() {
     if (pendingPlanning.changes.length === 0) return true
     setPlanningBusy(true)
     try {
-      await updateProduct(productInfo.data.id, pendingPlanning.patch)
+      await updateProduct(productInfo.data.id, { ...pendingPlanning.patch, change_reason: 'Planning fields changed from the bill of materials' })
       setPlanningMessage(`Saved on ${productInfo.data.sku}: ${pendingPlanning.changes.map((c) => `${c.label} ${c.to}`).join(', ')}.`)
       setPlanningRefresh((n) => n + 1)
       return true
@@ -148,6 +152,11 @@ export default function BomEditorPage() {
   const bom = loaded.data?.bom
   const editableStatus = !bom || bom.status === 'DRAFT' || bom.status === 'REJECTED'
   const canEdit = editableStatus && (bom ? has('production_bom.update') || (has('production_bom.create') && bom.created_by === user?.id) : has('production_bom.create'))
+  // No approval queue: users who may activate BOMs (existing production_bom.approve) save and activate in one step;
+  // a change to the active version becomes the next version, and the active one is kept unchanged.
+  const canActivate = has('production_bom.approve')
+  const revising = Boolean(bom && bom.status === 'APPROVED' && canActivate && has('production_bom.create'))
+  const editable = canEdit || revising
 
   // Load the stored BOM into the form once per fetch.
   const [formLoaded, setFormLoaded] = useState<string | null>(null)
@@ -161,6 +170,9 @@ export default function BomEditorPage() {
       setTo(data.bom.effective_to ?? '')
       setOutput(String(data.bom.output_quantity))
       setNotes(data.bom.notes ?? '')
+      const details = data.bom as unknown as { change_reason?: string | null; process_instructions?: string | null }
+      setChangeReason(details.change_reason ?? '')
+      setInstructions(details.process_instructions ?? '')
       setLines(
         data.items.map((i) => ({
           key: i.id,
@@ -187,23 +199,26 @@ export default function BomEditorPage() {
   const draft = usePersistentFormDraft({
     formKey: 'bom.editor', recordId: bom?.id ?? null, baseVersion: bom?.updated_at ?? null,
     scope: bom ? '' : presetProductId ? `product:${presetProductId}` : '',
-    enabled: canEdit && (!bomId || (bom !== undefined && formLoaded === `${bom.id}:${bom.updated_at}`)),
-    value: { product, from, to, output, notes, lines: lines.map(({ key: _key, ...l }) => l) },
+    enabled: editable && (!bomId || (bom !== undefined && formLoaded === `${bom.id}:${bom.updated_at}`)),
+    value: { product, from, to, output, notes, changeReason, instructions, lines: lines.map(({ key: _key, ...l }) => l) },
     onRestore: (d) => {
       if (!bom) setProduct(d.product)
       setFrom(d.from)
       setTo(d.to)
       setOutput(d.output)
       setNotes(d.notes)
+      setChangeReason(d.changeReason ?? '')
+      setInstructions(d.instructions ?? '')
       setLines(d.lines.length ? d.lines.map((l) => ({ ...l, key: crypto.randomUUID() })) : [blankLine(defaultWastage)])
     },
   })
 
   const updateLine = (k: string, patch: Partial<Line>) => setLines((ls) => ls.map((l) => (l.key === k ? { ...l, ...patch } : l)))
 
-  const save = async () => {
+  const save = async (activate = false) => {
     setError(null)
     setMessage(null)
+    if (revising && changeReason.trim().length < 3) return setError('Enter the reason for this change: saving creates and activates a new version, and the reason is kept with it.')
     if (!product) return setError('Select the finished product (or sub-assembly) this BOM produces.')
     const out = parseUnitQty(output, product.base_unit)
     if (!out) return setError(`Output quantity must be greater than zero (${quantityRule(product.base_unit)}).`)
@@ -228,9 +243,7 @@ export default function BomEditorPage() {
     try {
       // Planning fields are saved on the product first (they do not depend on the BOM version).
       if (canEditPlanning && pendingPlanning.changes.length > 0 && !(await savePlanning())) return
-      const result = await saveBom(
-        {
-          bomId: bom?.id ?? null,
+      const input = {
           finishedProductId: product.product_id,
           effectiveFrom: from,
           effectiveTo: to || null,
@@ -245,11 +258,27 @@ export default function BomEditorPage() {
             source_type: l.source || null,
             preferred_supplier_id: l.supplierId || null,
           })),
-        },
-        key,
-      )
+        }
+      if (activate || revising) {
+        const r = await saveAndActivateBom({ ...input, bomId: bom?.id ?? null }, key, changeReason.trim() || null, instructions.trim() || null)
+        renew()
+        void draft.markSubmitted()
+        const replaced = [...(r.superseded_versions ?? []), ...(r.closed_versions ?? [])]
+        setMessage(`${r.bom_code} v${r.version} saved and activated: new production orders use it now.${replaced.length ? ` Superseded: ${replaced.join(', ')} (kept unchanged for history).` : ''}`)
+        if (r.bom_id !== bom?.id) navigate(`/production/boms/${r.bom_id}`, { replace: !bom })
+        else setRefresh((n) => n + 1)
+        return
+      }
+      const result = await saveBom({ ...input, bomId: bom?.id ?? null }, key)
       renew()
       void draft.markSubmitted()
+      if (changeReason.trim() || instructions.trim() || bom) {
+        try {
+          await saveBomVersionDetails(result.bom_id, changeReason.trim() || null, instructions.trim() || null)
+        } catch (e) {
+          setError(`The BOM was saved, but the reason / process instructions were not: ${describeDataError(e)}`)
+        }
+      }
       if (!bom) navigate(`/production/boms/${result.bom_id}`, { replace: true })
       else {
         setMessage(filled.length === 0
@@ -328,6 +357,7 @@ export default function BomEditorPage() {
         actions={
           <>
             <Button variant="outline" asChild><Link to="/production/boms"><ArrowLeft /> All BOMs</Link></Button>
+            {bom && <Button variant="outline" asChild><Link to={`/production/boms/${bom.id}/versions`}><History /> Versions &amp; compare</Link></Button>}
             {bom && has('production_bom.create') && (
               <Button variant={bom.status === 'APPROVED' ? 'default' : 'outline'} disabled={busy} onClick={() => void createVersion()}>
                 {bom.status === 'APPROVED' ? <><Pencil /> Edit components</> : <><CopyPlus /> New version</>}
@@ -341,6 +371,7 @@ export default function BomEditorPage() {
       />
       <FormDraftBar draft={draft} />
       {error && <p role="alert" className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-800">{error}</p>}
+      {bom && (bom.status === 'DRAFT' || bom.status === 'REJECTED') && <DraftVersionNotice kind="BOM" id={bom.id} onRefreshed={() => setRefresh((n) => n + 1)} />}
       {message &&<p role="status" className="mb-4 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-sm text-green-800">{message}</p>}
       {fractional.length > 0 && (
         <p role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-900">
@@ -373,15 +404,25 @@ export default function BomEditorPage() {
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="bom-output">Output quantity{product ? ` (${product.base_unit})` : ''}</Label>
-                <Input id="bom-output" inputMode={qtyInputMode(product?.base_unit)} value={output} onChange={(e) => setOutput(e.target.value)} disabled={!canEdit} />
+                <Input id="bom-output" inputMode={qtyInputMode(product?.base_unit)} value={output} onChange={(e) => setOutput(e.target.value)} disabled={!editable} />
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5"><Label htmlFor="bom-from">Effective from</Label><Input id="bom-from" type="date" value={from} onChange={(e) => setFrom(e.target.value)} disabled={!canEdit} /></div>
-                <div className="space-y-1.5"><Label htmlFor="bom-to">Effective to (optional)</Label><Input id="bom-to" type="date" min={from} value={to} onChange={(e) => setTo(e.target.value)} disabled={!canEdit} /></div>
+                <div className="space-y-1.5"><Label htmlFor="bom-from">Effective from</Label><Input id="bom-from" type="date" value={from} onChange={(e) => setFrom(e.target.value)} disabled={!editable} /></div>
+                <div className="space-y-1.5"><Label htmlFor="bom-to">Effective to (optional)</Label><Input id="bom-to" type="date" min={from} value={to} onChange={(e) => setTo(e.target.value)} disabled={!editable} /></div>
               </div>
               <div className="space-y-1.5 sm:col-span-2">
                 <Label htmlFor="bom-notes">Notes</Label>
-                <Textarea id="bom-notes" rows={2} maxLength={2000} value={notes} onChange={(e) => setNotes(e.target.value)} disabled={!canEdit} />
+                <Textarea id="bom-notes" rows={2} maxLength={2000} value={notes} onChange={(e) => setNotes(e.target.value)} disabled={!editable} />
+              </div>
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="bom-change-reason">Reason for this version</Label>
+                <Input id="bom-change-reason" maxLength={500} value={changeReason} onChange={(e) => setChangeReason(e.target.value)} disabled={!editable}
+                  placeholder={canEdit ? 'e.g. Three-bowl design; tap quantity changed' : undefined} />
+              </div>
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="bom-instructions">Process instructions</Label>
+                <Textarea id="bom-instructions" rows={2} maxLength={4000} value={instructions} onChange={(e) => setInstructions(e.target.value)} disabled={!editable} />
+                {!editable && bom && <p className="text-xs text-muted-foreground">This version is fixed. Changes create a new version.</p>}
               </div>
               {bom?.review_note && <p className="text-sm sm:col-span-2"><span className="font-medium">Review note:</span> {bom.review_note}</p>}
             </CardContent>
@@ -486,7 +527,7 @@ export default function BomEditorPage() {
                         <span className="text-sm font-medium text-muted-foreground sm:pt-6"><span className="sm:hidden">Line </span>{n}</span>
                         <div className="min-w-0">
                           <FieldLabel>Component product</FieldLabel>
-                          {canEdit
+                          {editable
                             ? <BomComponentPicker label={`Component line ${n}`} value={l.product} exclude={exclude}
                                 onChange={(p) => updateLine(l.key, { product: p, ...(p ? {} : { source: '', supplierId: '' }) })} />
                             : <p className="pt-2 text-sm">{l.product?.product_name ?? '—'}</p>}
@@ -499,12 +540,12 @@ export default function BomEditorPage() {
                           <FieldLabel>Qty per output</FieldLabel>
                           <div className="flex items-center gap-1.5">
                             <Input aria-label={`Quantity line ${n}`} inputMode={qtyInputMode(unit)} className="text-right" value={l.quantity}
-                              onChange={(e) => updateLine(l.key, { quantity: e.target.value })} disabled={!canEdit} />
+                              onChange={(e) => updateLine(l.key, { quantity: e.target.value })} disabled={!editable} />
                             <span className="w-9 shrink-0 text-xs text-muted-foreground">{unit ?? ''}</span>
                           </div>
                         </div>
                         <div className="flex justify-end sm:pt-6">
-                          {canEdit && (
+                          {editable && (
                             <Button variant="ghost" size="icon-sm" aria-label={`Remove line ${n}`} onClick={() => setLines((ls) => (ls.length > 1 ? ls.filter((x) => x.key !== l.key) : [blankLine(defaultWastage)]))}><Trash2 /></Button>
                           )}
                         </div>
@@ -513,7 +554,7 @@ export default function BomEditorPage() {
                         <span className="hidden sm:block" />
                         <div className="min-w-0">
                           <FieldLabel>Source</FieldLabel>
-                          <Select value={l.source || 'default'} onValueChange={(v) => updateLine(l.key, { source: v === 'default' ? '' : (v as BomSource) })} disabled={!canEdit}>
+                          <Select value={l.source || 'default'} onValueChange={(v) => updateLine(l.key, { source: v === 'default' ? '' : (v as BomSource) })} disabled={!editable}>
                             <SelectTrigger aria-label={`Source line ${n}`}><SelectValue /></SelectTrigger>
                             <SelectContent>
                               <SelectItem value="default">From product{defaultSource ? ` (${defaultSource})` : ''}</SelectItem>
@@ -523,7 +564,7 @@ export default function BomEditorPage() {
                         </div>
                         <div className="min-w-0">
                           <FieldLabel>Preferred supplier</FieldLabel>
-                          <Select value={l.supplierId || 'default'} onValueChange={(v) => updateLine(l.key, { supplierId: v === 'default' ? '' : v })} disabled={!canEdit}>
+                          <Select value={l.supplierId || 'default'} onValueChange={(v) => updateLine(l.key, { supplierId: v === 'default' ? '' : v })} disabled={!editable}>
                             <SelectTrigger aria-label={`Supplier line ${n}`}><SelectValue /></SelectTrigger>
                             <SelectContent>
                               <SelectItem value="default">From product{defaultSupplier ? ` (${defaultSupplier})` : ''}</SelectItem>
@@ -535,26 +576,40 @@ export default function BomEditorPage() {
                         </div>
                         <div>
                           <FieldLabel>Wastage %</FieldLabel>
-                          <Input aria-label={`Wastage line ${n}`} inputMode="decimal" className="text-right" value={l.wastage} onChange={(e) => updateLine(l.key, { wastage: e.target.value })} disabled={!canEdit} />
+                          <Input aria-label={`Wastage line ${n}`} inputMode="decimal" className="text-right" value={l.wastage} onChange={(e) => updateLine(l.key, { wastage: e.target.value })} disabled={!editable} />
                         </div>
                         <span className="hidden sm:block" />
                       </div>
                       <div className={cn('grid gap-2 sm:items-center', ROW_B)}>
                         <span className="hidden sm:block" />
-                        <Input aria-label={`Notes line ${n}`} placeholder="Remarks (optional)" maxLength={500} value={l.notes} onChange={(e) => updateLine(l.key, { notes: e.target.value })} disabled={!canEdit} className="h-8 text-xs" />
+                        <Input aria-label={`Notes line ${n}`} placeholder="Remarks (optional)" maxLength={500} value={l.notes} onChange={(e) => updateLine(l.key, { notes: e.target.value })} disabled={!editable} className="h-8 text-xs" />
                         <p className={cn('text-xs sm:col-span-3', calc?.error ? 'text-shortage' : 'text-muted-foreground')} data-testid={`bom-calc-${n}`}>{calc?.text ?? ''}</p>
                       </div>
                     </li>
                   )
                 })}
               </ol>
-              {canEdit && (
+              {editable && (
                 <div className="mt-3 flex flex-wrap justify-between gap-2">
                   <Button variant="outline" size="sm" onClick={() => setLines((ls) => [...ls, blankLine(defaultWastage)])} disabled={lines.length >= 500}><Plus /> Add component</Button>
-                  <Button onClick={() => void save()} disabled={busy}>{busy && <Loader2 className="animate-spin" />} {bom ? 'Save draft' : 'Create draft BOM'}</Button>
+                  <div className="flex flex-wrap gap-2">
+                    {revising ? (
+                      <Button onClick={() => void save(true)} disabled={busy}>{busy && <Loader2 className="animate-spin" />} Save as new version (activates now)</Button>
+                    ) : (
+                      <>
+                        <Button variant={canActivate ? 'outline' : 'default'} onClick={() => void save()} disabled={busy}>{busy && <Loader2 className="animate-spin" />} {bom ? 'Save draft' : 'Create draft BOM'}</Button>
+                        {canActivate && <Button onClick={() => void save(true)} disabled={busy}>{busy && <Loader2 className="animate-spin" />} Save and activate</Button>}
+                      </>
+                    )}
+                  </div>
                 </div>
               )}
-              {!canEdit && bom && (
+              {revising && (
+                <p className="mt-3 text-xs text-muted-foreground" data-testid="bom-revise-note">
+                  This is the active version. Your changes are saved as version {(bom?.version ?? 0) + 1}, effective today, and activated at once; version {bom?.version} is kept unchanged as Superseded. Production orders already planned keep their version.
+                </p>
+              )}
+              {!editable && bom && (
                 <p className="mt-3 text-xs text-muted-foreground">
                   {bom.status === 'APPROVED'
                     ? 'This is the active version, so it is kept as it is for history. Use "Edit components" to add, remove or change components in a new version.'

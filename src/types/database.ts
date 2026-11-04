@@ -264,6 +264,7 @@ export interface Database {
           ean: string | null
           group_head: string | null
           minimum_cover_days: number | null
+          change_reason: string | null
           hsn_code: string | null
           gst_rate: number | null
           selling_price: number | null
@@ -309,6 +310,7 @@ export interface Database {
           ean?: string | null
           group_head?: string | null
           minimum_cover_days?: number | null
+          change_reason?: string | null
           hsn_code?: string | null
           gst_rate?: number | null
           selling_price?: number | null
@@ -351,6 +353,7 @@ export interface Database {
           ean?: string | null
           group_head?: string | null
           minimum_cover_days?: number | null
+          change_reason?: string | null
           hsn_code?: string | null
           gst_rate?: number | null
           selling_price?: number | null

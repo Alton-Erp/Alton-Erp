@@ -159,6 +159,8 @@ function ProductForm({ existing, categories, suppliers }: { existing: ProductRow
   const [submitted, setSubmitted] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  // Version control: every edit of an existing product records a new version with this reason.
+  const [changeReason, setChangeReason] = useState('')
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [imageError, setImageError] = useState<string | null>(null)
   const [saved, setSaved] = useState<{ id: string; sku: string; imageWarning: string | null; bomExpected: boolean; gaps: number } | null>(null)
@@ -214,7 +216,14 @@ function ProductForm({ existing, categories, suppliers }: { existing: ProductRow
         // has_bom follows the BOM module; the form never overwrites it.
         delete changes.has_bom
         if (!canChangeStatus) delete changes.status
-        if (Object.keys(changes).length > 0) await updateProduct(existing.id, changes as ProductUpdate)
+        if (Object.keys(changes).length > 0) {
+          if (changeReason.trim().length < 3) {
+            setSaveError('Enter the reason for this change (it is kept in the product version history).')
+            setSaving(false)
+            return
+          }
+          await updateProduct(existing.id, { ...(changes as ProductUpdate), change_reason: changeReason.trim().slice(0, 500) })
+        }
         id = existing.id
       } else {
         const created = await createProduct(companyId, input)
@@ -619,6 +628,21 @@ function ProductForm({ existing, categories, suppliers }: { existing: ProductRow
                     </li>
                   ))}
                 </ul>
+              </CardContent>
+            </Card>
+          )}
+          {existing && (
+            <Card>
+              <CardHeader>
+                <div>
+                  <CardTitle>Reason for change</CardTitle>
+                  <CardDescription>Saving creates a new product version. Earlier transactions, BOMs and reports keep the previous values.</CardDescription>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <Label htmlFor="p-change-reason" className="sr-only">Reason for change</Label>
+                <Textarea id="p-change-reason" rows={2} maxLength={500} value={changeReason} placeholder="e.g. Supplier changed the glaze"
+                  onChange={(e) => setChangeReason(e.target.value)} />
               </CardContent>
             </Card>
           )}

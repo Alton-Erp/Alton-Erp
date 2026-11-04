@@ -345,7 +345,7 @@ export async function updateProductsFromImport(
   const failures = new Map<number, string>()
   for (const [i, u] of updates.entries()) {
     try {
-      await updateProduct(u.id, u.changes)
+      await updateProduct(u.id, { ...u.changes, change_reason: u.changes.change_reason ?? 'Updated by Excel import' })
     } catch (error) {
       failures.set(i, describeProductError(error))
     }
@@ -397,4 +397,12 @@ export async function fetchDisplayNames(ids: (string | null)[]): Promise<Map<str
   const { data, error } = await requireSupabase().rpc('user_display_names', { p_user_ids: unique })
   if (error) return new Map()
   return new Map((data ?? []).map((r) => [r.user_id, r.display_name]))
+}
+
+/** Version history of a product / component (migration 20261118090000_master_versioning.sql). */
+export async function fetchProductVersionHistory(productId: string): Promise<import('@/features/versions/version-model').ProductHistory> {
+  const { data, error } = await (requireSupabase().rpc as unknown as (f: string, a: Record<string, unknown>) => Promise<{ data: unknown; error: unknown }>)(
+    'product_version_history', { p_product_id: productId })
+  if (error) throw error
+  return data as import('@/features/versions/version-model').ProductHistory
 }

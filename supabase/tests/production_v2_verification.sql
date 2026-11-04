@@ -378,7 +378,8 @@ select rls_test.expect_call_ok('components: packing carton added to PD-FG (new v
 select rls_test.expect_call_error('components: a component already in the BOM is refused',
   format('select public.production_bom_add_components(%L, %L::jsonb, %L)', rls_test.id('fg'),
     jsonb_build_array(jsonb_build_object('component_product_id', rls_test.id('ca'), 'quantity_per_unit', 1)), gen_random_uuid()), 'already in');
-select rls_test.expect_call_ok('recalculate: order 1 saved again picks up BOM v2', 'o1r', rls_test.save(rls_test.gid('o1', 'order_id'), '{}'::jsonb));
+-- 20261118: an edited order keeps its BOM version unless the user explicitly chooses the latest.
+select rls_test.expect_call_ok('recalculate: order 1 saved again with "use the latest versions" picks up BOM v2', 'o1r', rls_test.save(rls_test.gid('o1', 'order_id'), '{"use_latest_versions": true}'::jsonb));
 reset role;
 select rls_test.ok('components: PD-FG2 BOM v1 active with A = 2 per unit -> 10 for 5 units',
   (rls_test.get('ac2') ->> 'version')::int = 1 and (rls_test.get('pv2b') -> 'bom' ->> 'version')::int = 1

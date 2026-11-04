@@ -58,7 +58,7 @@ const ORDER_FILTERS: ReportDef['filters'] = ['product', 'bom', 'status', 'wareho
 
 const REPORTS: ReportDef[] = [
   { key: 'ORDERS_SUMMARY', title: 'Production Orders Summary', description: 'Orders planned to start in the period with quantities and dates.', dates: 'Planned start date', filters: ORDER_FILTERS, statuses: PRODUCTION_STATUS_LABELS,
-    columns: [t('production_order_number', 'Order'), t('status', 'Status', PRODUCTION_STATUS_LABELS), t('priority', 'Priority'), t('sku', 'SKU'), t('product_name', 'Product'), t('bom_code', 'BOM'), t('bom_version', 'Ver.'), t('unit', 'Unit'),
+    columns: [t('production_order_number', 'Order'), t('status', 'Status', PRODUCTION_STATUS_LABELS), t('priority', 'Priority'), t('sku', 'SKU'), t('product_name', 'Product'), t('product_version', 'Product ver.'), t('bom_code', 'BOM'), t('bom_version', 'Ver.'), t('unit', 'Unit'),
       q('planned_quantity', 'Planned'), q('completed_quantity', 'Good'), q('rejected_quantity', 'Rejected'), q('scrap_quantity', 'Scrap'), d('planned_start_date', 'Planned start'), d('target_completion_date', 'Target'),
       d('actual_start_date', 'Started'), d('actual_completion_date', 'Completed'), t('source_warehouse', 'From'), t('destination_warehouse', 'To')] },
   { key: 'PLANNED_VS_ACTUAL', title: 'Planned versus Actual Production', description: 'Planned vs recorded output per order with a target date in the period.', dates: 'Target completion date', filters: ORDER_FILTERS, statuses: PRODUCTION_STATUS_LABELS,
@@ -70,7 +70,7 @@ const REPORTS: ReportDef[] = [
   { key: 'MATERIAL_SHORTAGE', title: 'Material Shortage Report', description: 'Materials whose outstanding requirement is not covered by reservations and usable stock (current).', dates: 'Current (no period)', filters: ['product', 'warehouse'],
     columns: [t('sku', 'Material'), t('product_name', 'Name'), t('unit', 'Unit'), t('warehouse_code', 'Warehouse'), t('order_numbers', 'Orders'), q('outstanding', 'Outstanding'), q('reserved_for_orders', 'Reserved'), q('available', 'Available'), q('shortage', 'Shortage')] },
   { key: 'PLANNED_VS_ACTUAL_CONSUMPTION', title: 'Planned versus Actual Consumption', description: 'Planned material vs issued (net of reversals), with the standard for the output actually produced.', dates: 'Start date', filters: ORDER_FILTERS, statuses: PRODUCTION_STATUS_LABELS,
-    columns: [t('production_order_number', 'Order'), t('status', 'Status', PRODUCTION_STATUS_LABELS), t('product_sku', 'Product'), t('component_sku', 'Material'), t('component_name', 'Name'), t('unit', 'Unit'), q('planned_quantity', 'Planned'),
+    columns: [t('production_order_number', 'Order'), t('status', 'Status', PRODUCTION_STATUS_LABELS), t('product_sku', 'Product'), t('component_sku', 'Material'), t('component_name', 'Name'), t('component_version', 'Material ver.'), t('unit', 'Unit'), q('planned_quantity', 'Planned'),
       q('issued_quantity', 'Issued'), q('variance', 'Issued − planned'), q('actual_output', 'Output'), q('standard_for_actual_output', 'Standard for output')] },
   { key: 'OUTPUT_AND_REJECTIONS', title: 'Production Output and Rejections', description: 'Output receipts with good, rejected and scrap quantities.', dates: 'Production date', filters: ['product', 'bom', 'warehouse'],
     columns: [t('receipt_number', 'Receipt'), d('production_date', 'Date'), t('production_order_number', 'Order'), t('sku', 'SKU'), t('product_name', 'Product'), t('batch_number', 'Batch'), t('unit', 'Unit'), q('good_quantity', 'Good'),
