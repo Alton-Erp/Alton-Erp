@@ -77,6 +77,13 @@ USERS['owner@test.invalid'] = {
 // Invited employees: inactive until they accept (user invitations, migration 20261116090000).
 USERS['new.hire@test.invalid'] = { id: '55555555-5555-4555-8555-555555555555', active: false, roles: ['SALES_EXECUTIVE'], permissions: USERS['manager@test.invalid'].permissions }
 USERS['revoked.hire@test.invalid'] = { id: '66666666-6666-4666-8666-666666666666', active: false, roles: [], permissions: [] }
+// Password reset with a 6-digit code (Supabase /recover + /verify type recovery).
+const RESET_EMAIL = 'reset.me@test.invalid'
+USERS[RESET_EMAIL] = { id: '77777777-7777-4777-8777-777777777777', roles: ['MANAGEMENT_VIEWER'], permissions: USERS['viewer@test.invalid'].permissions }
+const RECOVERY_CODES = ['482913', '605174', '739258', '914306', '268540', '351697']
+const recovery = { sends: 0, code: null, expired: false, lastSent: 0 }
+// Passwords changed through a verified recovery (default for every account: correct-horse).
+const passwords = {}
 const INVITE_LINKS = { validhash123: 'new.hire@test.invalid', revokedhash123: 'revoked.hire@test.invalid' }
 const perm = (code, description) => ({ code, description })
 const ROLE_CATALOG = [
@@ -997,7 +1004,7 @@ const api = http.createServer((req, res) => {
 
     if (url.pathname === '/auth/v1/token') {
       const user = USERS[body?.email]
-      if (!user || body.password !== 'correct-horse') {
+      if (!user || body.password !== (passwords[body?.email] ?? 'correct-horse')) {
         return send(res, 400, { code: 'invalid_credentials', error_code: 'invalid_credentials', msg: 'Invalid login credentials' })
       }
       currentUser = { email: body.email, ...user }
@@ -1005,6 +1012,30 @@ const api = http.createServer((req, res) => {
         access_token: fakeJwt(user.id), token_type: 'bearer', expires_in: 3600, expires_at: Math.floor(Date.now() / 1000) + 3600,
         refresh_token: 'refresh-' + user.id,
         user: { id: user.id, aud: 'authenticated', role: 'authenticated', email: body.email, app_metadata: {}, user_metadata: {}, created_at: '2026-10-01T00:00:00Z' },
+      })
+    }
+    // Password reset: Supabase answers the same for unknown addresses; one code per minute per account.
+    if (url.pathname === '/auth/v1/recover' && req.method === 'POST') {
+      if (body?.email === RESET_EMAIL) {
+        const wait = Math.ceil((recovery.lastSent + 60_000 - Date.now()) / 1000)
+        if (wait > 0) return send(res, 429, { code: 'over_email_send_rate_limit', error_code: 'over_email_send_rate_limit', msg: `For security purposes, you can only request this after ${wait} seconds.` })
+        recovery.lastSent = Date.now()
+        recovery.code = RECOVERY_CODES[recovery.sends++ % RECOVERY_CODES.length]
+        recovery.expired = false
+      }
+      return send(res, 200, {})
+    }
+    if (url.pathname === '/auth/v1/verify' && req.method === 'POST' && body?.type === 'recovery' && body?.email) {
+      // Wrong, used, replaced and expired codes all get otp_expired, as in Supabase.
+      if (body.email !== RESET_EMAIL || !recovery.code || body.token !== recovery.code || recovery.expired) {
+        return send(res, 403, { code: 'otp_expired', error_code: 'otp_expired', msg: 'Token has expired or is invalid' })
+      }
+      recovery.code = null
+      const user = USERS[RESET_EMAIL]
+      currentUser = { email: RESET_EMAIL, ...user, recovering: true }
+      return send(res, 200, {
+        access_token: fakeJwt(user.id), token_type: 'bearer', expires_in: 3600, expires_at: Math.floor(Date.now() / 1000) + 3600, refresh_token: 'refresh-' + user.id,
+        user: { id: user.id, aud: 'authenticated', role: 'authenticated', email: RESET_EMAIL, app_metadata: {}, user_metadata: {}, created_at: '2026-10-01T00:00:00Z' },
       })
     }
     // Invitation links (token_hash) verified by the browser with verifyOtp.
@@ -1056,6 +1087,7 @@ const api = http.createServer((req, res) => {
       return send(res, 400, { ok: false, code: 'BAD_REQUEST', error: 'Unknown action.' })
     }
     if (url.pathname === '/auth/v1/logout') return send(res, 204)
+    if (url.pathname === '/auth/v1/user' && req.method === 'PUT' && currentUser?.recovering && body?.password) passwords[currentUser.email] = body.password
     if (url.pathname === '/auth/v1/user' && currentUser) {
       return send(res, 200, { id: currentUser.id, aud: 'authenticated', role: 'authenticated', email: currentUser.email, app_metadata: {}, user_metadata: {}, created_at: '2026-10-01T00:00:00Z' })
     }
@@ -4645,6 +4677,187 @@ await step('read-only user: administration pages denied', async () => {
     await goto(p)
     await waitFor(bodyHas("You don't have permission to view this page"), `${p} denied`)
   }
+})
+
+// ---------------------------------------------------------------------------
+// Password reset with a 6-digit e-mail code (no magic link)
+// ---------------------------------------------------------------------------
+const recoverCalls = () => requests.filter((r) => r.path === '/auth/v1/recover')
+const verifyCalls = () => requests.filter((r) => r.path === '/auth/v1/verify' && r.body?.type === 'recovery')
+const passwordPuts = () => requests.filter((r) => r.path === '/auth/v1/user' && r.method === 'PUT')
+const otpValues = () => evaluate(`[...document.querySelectorAll('[data-otp-index]')].map((i) => i.value).join(',')`)
+const activeOtp = () => evaluate(`document.activeElement?.dataset?.otpIndex ?? null`)
+async function typeKey(key) {
+  const isChar = key.length === 1
+  const vk = key === 'Backspace' ? 8 : isChar ? key.toUpperCase().charCodeAt(0) : 0
+  await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key === 'Backspace' ? 'Backspace' : `Key${key}`, windowsVirtualKeyCode: vk, ...(isChar ? { text: key } : {}) })
+  await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key, windowsVirtualKeyCode: vk })
+  await sleep(80)
+}
+const pasteInto = (selector, text) => evaluate(`(() => {
+  const el = document.querySelector(${JSON.stringify(selector)}); el.focus();
+  const dt = new DataTransfer(); dt.setData('text/plain', ${JSON.stringify(text)});
+  el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+})()`)
+const storedValues = () => evaluate(`JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage })`)
+const resendState = (enabled, label) => `[...document.querySelectorAll('[data-testid=otp-resend]')].some((b) => ${enabled ? '!b.disabled' : 'b.disabled'} && b.innerText.includes(${JSON.stringify(label)}))`
+
+await step('Password reset 1: Forgot password asks for the e-mail and sends a 6-digit code (no link); unknown addresses get the same answer; repeated requests are refused by the server', async () => {
+  await signOut()
+  await click('a', 'Forgot password?')
+  await waitFor(`location.pathname === '/forgot-password' && !!document.querySelector('#forgot-email')`, 'e-mail step')
+  await fill('#forgot-email', 'not-an-email')
+  await click('button[type=submit]', 'Send code')
+  await waitFor(bodyHas('Enter a valid email address.'), 'e-mail validated')
+  assert(recoverCalls().length === 0, 'request sent for an invalid address')
+  await fill('#forgot-email', 'nobody@test.invalid')
+  await click('button[type=submit]', 'Send code')
+  await waitFor(`${bodyHasAll('Enter the 6-digit code', 'If an account exists for', 'nobody@test.invalid')} && document.querySelectorAll('[data-otp-index]').length === 6`, 'same answer for an unknown address')
+  assert(recoverCalls().at(-1).body.email === 'nobody@test.invalid' && !recoverCalls().at(-1).query.includes('redirect_to'), 'a reset link (redirect) was requested: ' + JSON.stringify(recoverCalls().at(-1)))
+  await click('button', 'Use a different email')
+  await waitFor(`!!document.querySelector('#forgot-email')`, 'e-mail step again')
+  await fill('#forgot-email', RESET_EMAIL)
+  await click('button[type=submit]', 'Send code')
+  await waitFor(`${bodyHas(RESET_EMAIL)} && document.querySelectorAll('[data-otp-index]').length === 6`, 'code step')
+  await waitFor(resendState(false, 'Resend code in'), 'resend countdown')
+  await screenshot('120-reset-code')
+  // Asking again at once: the server refuses, and the page says how long to wait.
+  await click('button', 'Use a different email')
+  await waitFor(`!!document.querySelector('#forgot-email')`, 'e-mail step (third time)')
+  await fill('#forgot-email', RESET_EMAIL)
+  await click('button[type=submit]', 'Send code')
+  await waitFor(`/Please wait \\d+ seconds before requesting another code/.test(document.body.innerText)`, 'server-side limit shown')
+  assert(await evaluate(`!!document.querySelector('#forgot-email')`), 'left the e-mail step after a refused request')
+  recovery.lastSent = 0 // a minute passes
+  await click('button[type=submit]', 'Send code')
+  await waitFor(`document.querySelectorAll('[data-otp-index]').length === 6`, 'code step again')
+})
+
+await step('Password reset 2: code boxes take digits only, move on, go back with Backspace and accept a pasted code; wrong and expired codes are refused clearly', async () => {
+  await waitFor(`document.activeElement?.dataset?.otpIndex === '0'`, 'first box focused')
+  await typeKey('9')
+  assert((await activeOtp()) === '1', 'focus did not move on')
+  await typeKey('a')
+  assert((await otpValues()) === '9,,,,,', 'a letter was accepted: ' + (await otpValues()))
+  await typeKey('8')
+  assert((await otpValues()) === '9,8,,,,' && (await activeOtp()) === '2', 'second digit: ' + (await otpValues()))
+  await typeKey('Backspace')
+  assert((await otpValues()) === '9,,,,,' && (await activeOtp()) === '1', 'Backspace from an empty box: ' + (await otpValues()) + ' focus ' + (await activeOtp()))
+  const before = verifyCalls().length
+  await pasteInto('#otp-0', '000 000')
+  await waitFor(bodyHas('That code is incorrect or has expired'), 'wrong code refused')
+  assert(verifyCalls().length === before + 1 && verifyCalls().at(-1).body.token === '000000' && verifyCalls().at(-1).body.email === RESET_EMAIL, JSON.stringify(verifyCalls().at(-1)?.body))
+  await waitFor(`document.activeElement?.dataset?.otpIndex === '0'`, 'boxes cleared and refocused')
+  assert((await otpValues()) === ',,,,,', 'wrong code left in the boxes')
+  recovery.expired = true
+  await pasteInto('#otp-0', recovery.code)
+  for (let i = 0; i < 50 && verifyCalls().length < before + 2; i++) await sleep(100)
+  assert(verifyCalls().length === before + 2, 'expired code not sent once')
+  await waitFor(`${bodyHas('That code is incorrect or has expired')} && !document.querySelector('[data-otp-index]').disabled && document.querySelector('[data-otp-index]').value === ''`, 'expired code refused')
+  recovery.expired = false
+  const stored = await storedValues()
+  assert(!stored.includes(recovery.code) && !stored.includes('000000'), 'a code was stored in the browser')
+  await screenshot('121-reset-wrong-code')
+})
+
+await step('Password reset 3: a refresh keeps the code screen and countdown; Resend sends a new code after 60 s and the earlier code stops working', async () => {
+  await goto('/forgot-password')
+  await waitFor(`${bodyHas(RESET_EMAIL)} && ${resendState(false, 'Resend code in')}`, 'after refresh')
+  const old = recovery.code
+  // A minute passes (browser and server).
+  await evaluate(`(() => { const k = 'alton:password-recovery:request:v1'; const v = JSON.parse(sessionStorage.getItem(k)); v.sentAt -= 61000; sessionStorage.setItem(k, JSON.stringify(v)) })()`)
+  recovery.lastSent = 0
+  await goto('/forgot-password')
+  await waitFor(`[...document.querySelectorAll('[data-testid=otp-resend]')].some((b) => !b.disabled && b.innerText.trim() === 'Resend code')`, 'resend enabled')
+  const sends = recoverCalls().length
+  await click('[data-testid=otp-resend]')
+  await waitFor(`${bodyHas('A new code has been sent')} && ${resendState(false, 'Resend code in')}`, 'resent, countdown again')
+  assert(recoverCalls().length === sends + 1 && recovery.code !== old, 'no new code')
+  await pasteInto('#otp-0', old)
+  await waitFor(bodyHas('That code is incorrect or has expired'), 'earlier code refused')
+})
+
+await step('Password reset 4: the right code opens the new-password step only; the recovery session cannot open the ERP, even after a refresh', async () => {
+  await waitFor(`!document.querySelector('[data-otp-index]').disabled`, 'boxes ready')
+  const code = recovery.code
+  const puts = passwordPuts().length
+  await pasteInto('#otp-0', code)
+  await waitFor(`${bodyHasAll('Choose a new password', 'Code verified for', RESET_EMAIL)} && !!document.querySelector('#new-password')`, 'password step')
+  assert(passwordPuts().length === puts, 'password changed before the new password was entered')
+  await screenshot('122-reset-new-password')
+  await goto('/')
+  await waitFor(`location.pathname === '/forgot-password' && ${bodyHas('Choose a new password')}`, 'ERP closed during recovery')
+  await goto('/products')
+  await waitFor(`location.pathname === '/forgot-password' && ${bodyHas('Choose a new password')}`, 'ERP pages closed during recovery')
+  assert(!(await storedValues()).includes(code), 'the code was stored')
+})
+
+await step('Password reset 5: password strength and confirmation are checked before anything is sent; then the password is updated, every session ends and sign-in opens', async () => {
+  const puts = passwordPuts().length
+  await fill('#new-password', 'short1')
+  await fill('#confirm-password', 'short1')
+  await click('button[type=submit]', 'Update password')
+  await waitFor(bodyHas('Use at least 8 characters.'), 'too short')
+  await fill('#new-password', 'onlyletters')
+  await fill('#confirm-password', 'onlyletters')
+  await click('button[type=submit]', 'Update password')
+  await waitFor(bodyHas('Use a mix of letters and numbers.'), 'too weak')
+  await fill('#new-password', 'Glaze-2026')
+  await fill('#confirm-password', 'Glaze-2027')
+  await click('button[type=submit]', 'Update password')
+  await waitFor(bodyHas('The passwords do not match.'), 'mismatch')
+  assert(passwordPuts().length === puts, 'password sent before it was valid')
+  await fill('#confirm-password', 'Glaze-2026')
+  const logouts = () => requests.filter((r) => r.path === '/auth/v1/logout')
+  const before = logouts().length
+  await click('button[type=submit]', 'Update password')
+  await waitFor(bodyHasAll('Password updated', 'signed out on every device'), 'success')
+  assert(passwordPuts().length === puts + 1 && passwordPuts().at(-1).body.password === 'Glaze-2026', 'password not updated through Supabase Auth')
+  assert(logouts().length === before + 1 && logouts().at(-1).query.includes('scope=global'), 'other sessions not ended: ' + JSON.stringify(logouts().at(-1)))
+  await screenshot('123-reset-done')
+  await waitFor(`location.pathname === '/login' && ${bodyHas('Your password has been updated. Sign in with your new password.')}`, 'redirected to sign in')
+  const stored = await storedValues()
+  assert(!stored.includes('alton:password-recovery') && !stored.includes('Glaze-2026'), 'recovery state left in the browser: ' + stored.slice(0, 300))
+})
+
+await step('Password reset 6: the old password no longer works, the new one signs in; old reset links never sign in', async () => {
+  await login(RESET_EMAIL, 'correct-horse')
+  await waitFor(bodyHas('Incorrect email or password.'), 'old password refused')
+  await login(RESET_EMAIL, 'Glaze-2026')
+  await waitFor(`location.pathname === '/' && ${bodyHas('Management Dashboard')}`, 'signed in with the new password')
+  await signOut()
+  await goto('/reset-password?code=old-link-code')
+  await waitFor(`${bodyHasAll('Reset links are no longer used', '6-digit code')} && location.search === ''`, 'old link refused, address cleaned')
+  await screenshot('124-reset-old-link')
+  await goto('/reset-password')
+  await waitFor(`location.pathname === '/forgot-password'`, 'plain /reset-password goes to the code flow')
+})
+
+await step('Password reset 7: on a phone the six boxes fit without horizontal scrolling; cancelling a verified reset keeps the password; normal sign-in still works', async () => {
+  recovery.lastSent = 0
+  await setViewport(360, 740)
+  await sleep(300)
+  await goto('/forgot-password')
+  await waitFor(`!!document.querySelector('#forgot-email')`, 'e-mail step')
+  await fill('#forgot-email', RESET_EMAIL)
+  await click('button[type=submit]', 'Send code')
+  await waitFor(`document.querySelectorAll('[data-otp-index]').length === 6`, 'code step')
+  assert(await noHorizontalScroll(), 'code screen scrolls horizontally on a phone')
+  assert(await evaluate(`[...document.querySelectorAll('[data-otp-index]')].every((i) => i.getBoundingClientRect().width >= 36 && i.getBoundingClientRect().right <= window.innerWidth)`), 'boxes too small or off screen')
+  await screenshot('125-reset-code-mobile')
+  await pasteInto('#otp-0', recovery.code)
+  await waitFor(`!!document.querySelector('#new-password')`, 'password step')
+  const puts = passwordPuts().length
+  await click('button', 'Cancel and keep the old password')
+  await waitFor(`location.pathname === '/login'`, 'cancelled')
+  assert(passwordPuts().length === puts, 'password changed on cancel')
+  await cdp('Emulation.clearDeviceMetricsOverride')
+  await sleep(300)
+  await login(RESET_EMAIL, 'Glaze-2026')
+  await waitFor(`location.pathname === '/'`, 'password unchanged after cancel')
+  await signOut()
+  await login('manager@test.invalid')
+  await waitFor(`location.pathname === '/'`, 'normal sign-in still works')
 })
 
 await step('no console errors or uncaught exceptions', async () => {

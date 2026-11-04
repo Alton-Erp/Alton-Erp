@@ -1,0 +1,68 @@
+<!--
+  Alton ERP password reset e-mail (Supabase Auth "Reset password" template).
+
+  Hosted project: Dashboard → Authentication → Emails → "Reset password"
+    Subject:  Your Alton ERP password reset code
+    Body:     paste this file.
+  Local CLI:  supabase/config.toml → [auth.email.template.recovery]
+
+  Password reset: the e-mail shows the 6-digit code ({{ .Token }}); the user types it on
+  /forgot-password. There is no reset link and {{ .ConfirmationURL }} is not used.
+
+  The same Supabase e-mail is also sent by the invite-user Edge Function when an existing
+  account is invited (redirect INVITE_REDIRECT_URL = <Site URL>/accept-invitation, or the
+  older <Site URL>/reset-password). For that case only, the e-mail keeps the activation link
+  to /accept-invitation (token_hash, verified by that page). The ERP's own password reset
+  sends no redirect, so it never matches this branch.
+  Requires: Site URL without a trailing slash (Authentication → URL Configuration), as for
+  the invitation template.
+  Supabase sends this e-mail; the code is never stored or logged by the ERP.
+-->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Alton ERP password reset</title>
+  </head>
+  <body style="margin:0;padding:0;background:#f4f5f7;font-family:Segoe UI,Helvetica,Arial,sans-serif;color:#1f2937;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;padding:24px 12px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:8px;border:1px solid #e5e7eb;">
+            <tr>
+              <td style="padding:24px 28px;border-bottom:1px solid #e5e7eb;">
+                <p style="margin:0;font-size:18px;font-weight:600;color:#111827;">Alton ERP</p>
+              </td>
+            </tr>
+            {{ if or (eq .RedirectTo (printf "%s/accept-invitation" .SiteURL)) (eq .RedirectTo (printf "%s/reset-password" .SiteURL)) }}
+            <tr>
+              <td style="padding:24px 28px;font-size:15px;line-height:1.55;">
+                <p style="margin:0 0 14px;">Hello,</p>
+                <p style="margin:0 0 18px;">You have been invited to join your company in <strong>Alton ERP</strong>. Use the button below to set your password and activate your access.</p>
+                <p style="margin:0 0 18px;">
+                  <a href="{{ .SiteURL }}/accept-invitation?token_hash={{ .TokenHash }}&amp;type=recovery"
+                     style="display:inline-block;background:#1d4ed8;color:#ffffff;text-decoration:none;font-weight:600;padding:11px 20px;border-radius:6px;">Accept invitation</a>
+                </p>
+                <p style="margin:0;font-size:13px;color:#6b7280;">If you were not expecting this invitation, ignore this e-mail.</p>
+              </td>
+            </tr>
+            {{ else }}
+            <tr>
+              <td style="padding:24px 28px;font-size:15px;line-height:1.55;">
+                <p style="margin:0 0 14px;">Hello,</p>
+                <p style="margin:0 0 18px;">We received a request to reset the password of your Alton ERP account ({{ .Email }}). Enter this code on the password reset screen:</p>
+                <p style="margin:0 0 18px;text-align:center;">
+                  <span style="display:inline-block;font-size:30px;font-weight:700;letter-spacing:8px;font-family:Consolas,Menlo,monospace;color:#111827;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:8px;padding:12px 20px;">{{ .Token }}</span>
+                </p>
+                <p style="margin:0 0 10px;font-size:14px;">The code expires soon and works once. Only the most recent code is valid.</p>
+                <p style="margin:0;font-size:13px;color:#6b7280;">Never share this code. Alton ERP staff will never ask for it. If you did not ask to reset your password, ignore this e-mail; your password stays the same.</p>
+              </td>
+            </tr>
+            {{ end }}
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

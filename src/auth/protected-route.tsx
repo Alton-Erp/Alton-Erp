@@ -15,8 +15,11 @@ import {
  * a default grant of access.
  */
 export function ProtectedRoute({ children }: { children: ReactNode }) {
-  const { status } = useAuth()
+  const { status, recoveryPending } = useAuth()
   const location = useLocation()
+
+  // A verified password-recovery code is not a sign-in: the new password must be set first.
+  if (recoveryPending) return <Navigate to="/forgot-password" replace />
 
   switch (status) {
     case 'unconfigured':

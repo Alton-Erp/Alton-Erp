@@ -2,6 +2,7 @@ import type { Session } from '@supabase/supabase-js'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import { AuthContext, AuthFlowError, type AuthContextValue, type AuthStatus } from '@/auth/auth-context'
+import { clearPendingRequest, clearVerifiedUser, describeOtpError, markVerifiedUser, readVerifiedUser, retryAfterSeconds, VERIFIED_STORAGE_KEY } from '@/features/auth/password-recovery'
 import { browserStorage, flushAllDrafts } from '@/features/drafts/draft-flush'
 import { clearLocalDrafts } from '@/features/drafts/draft-model'
 import { describeAuthError, describeDataError, isNetworkError } from '@/lib/errors'
@@ -20,6 +21,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [accessState, setAccessState] = useState<AccessState | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
   const [sessionExpired, setSessionExpired] = useState(false)
+  // User who verified a recovery code but has not set the new password yet (shared by all tabs).
+  const [recoveryUser, setRecoveryUser] = useState<string | null>(readVerifiedUser)
 
   const userSignedOut = useRef(false)
   const hadSession = useRef(false)
@@ -31,6 +34,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!supabase) return
     const { data } = supabase.auth.onAuthStateChange((event, nextSession) => {
       if (event === 'SIGNED_OUT') {
+        clearVerifiedUser()
+        setRecoveryUser(null)
         if (hadSession.current && !userSignedOut.current) setSessionExpired(true)
         userSignedOut.current = false
       }
@@ -44,6 +49,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const userId = session?.user.id
+
+  // Another tab verified or finished a recovery.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === null || e.key === VERIFIED_STORAGE_KEY) setRecoveryUser(readVerifiedUser())
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
+
+  const recoveryPending = Boolean(userId && recoveryUser === userId)
 
   // Load profile, company, roles and permissions whenever the user changes.
   useEffect(() => {
@@ -122,14 +138,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const requestPasswordReset = useCallback(async (email: string) => {
     if (!supabase) throw new AuthFlowError('Supabase is not configured.')
-    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-      redirectTo: `${window.location.origin}/reset-password`,
-    })
+    // No redirect: the e-mail carries a 6-digit code ({{ .Token }}), not a link.
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim())
     // Only rate-limit and connectivity problems are reported; anything else is
     // treated as success so the response never reveals whether an account exists.
     if (error && (error.status === 429 || isNetworkError(error))) {
-      throw new AuthFlowError(describeAuthError(error))
+      const wait = retryAfterSeconds(error)
+      throw new AuthFlowError(wait ? `Please wait ${wait} seconds before requesting another code.` : describeAuthError(error), wait)
     }
+  }, [])
+
+  const verifyRecoveryCode = useCallback(async (email: string, code: string) => {
+    if (!supabase) throw new AuthFlowError('Supabase is not configured.')
+    if (!/^\d{6}$/.test(code)) throw new AuthFlowError('Enter the 6-digit code from the e-mail.')
+    const { data, error } = await supabase.auth.verifyOtp({ email: email.trim(), token: code, type: 'recovery' })
+    if (error || !data.session || !data.user) throw new AuthFlowError(describeOtpError(error, isNetworkError(error)))
+    // Marked at once, so the recovery session never opens the ERP.
+    markVerifiedUser(data.user.id)
+    setRecoveryUser(data.user.id)
+    clearPendingRequest()
   }, [])
 
   const updatePassword = useCallback(async (password: string) => {
@@ -138,6 +165,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (error) throw new AuthFlowError(describeAuthError(error))
     void logSecurityEvent('auth.password_changed')
   }, [])
+
+  const completePasswordRecovery = useCallback(async (password: string) => {
+    if (!supabase) throw new AuthFlowError('Supabase is not configured.')
+    const expired = 'Your code verification has expired. Request a new code.'
+    const current = (await supabase.auth.getSession()).data.session
+    if (!current || readVerifiedUser() !== current.user.id) throw new AuthFlowError(expired)
+    const { error } = await supabase.auth.updateUser({ password })
+    if (error) {
+      if (error.name === 'AuthSessionMissingError' || error.code === 'session_not_found' || error.status === 401) throw new AuthFlowError(expired)
+      throw new AuthFlowError(describeAuthError(error))
+    }
+    void logSecurityEvent('auth.password_changed')
+    clearVerifiedUser()
+    setRecoveryUser(null)
+    // Ends this session and every other session of the account.
+    await signOut()
+  }, [signOut])
+
+  const cancelPasswordRecovery = useCallback(async () => {
+    clearVerifiedUser()
+    clearPendingRequest()
+    setRecoveryUser(null)
+    await signOut()
+  }, [signOut])
 
   const reloadAccess = useCallback(() => {
     setAccessState((prev) => (prev ? { ...prev, error: null } : prev))
@@ -154,6 +205,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     signIn,
     signOut,
     requestPasswordReset,
+    verifyRecoveryCode,
+    completePasswordRecovery,
+    cancelPasswordRecovery,
+    recoveryPending,
     updatePassword,
     reloadAccess,
   }

@@ -37,7 +37,16 @@ export interface AuthContextValue {
   sessionExpired: boolean
   signIn: (email: string, password: string) => Promise<void>
   signOut: () => Promise<void>
+  /** Asks Supabase to e-mail a 6-digit recovery code. Never reveals whether the address has an account. */
   requestPasswordReset: (email: string) => Promise<void>
+  /** Checks the e-mailed code (verifyOtp type recovery); on success the user may set a new password. */
+  verifyRecoveryCode: (email: string, code: string) => Promise<void>
+  /** Sets the new password after a verified code, then signs out everywhere. */
+  completePasswordRecovery: (password: string) => Promise<void>
+  /** Abandons a verified recovery: signs out without changing the password. */
+  cancelPasswordRecovery: () => Promise<void>
+  /** A recovery code was verified for the signed-in user, who has not set the new password yet. The ERP stays closed. */
+  recoveryPending: boolean
   updatePassword: (password: string) => Promise<void>
   reloadAccess: () => void
 }
@@ -45,4 +54,11 @@ export interface AuthContextValue {
 export const AuthContext = createContext<AuthContextValue | null>(null)
 
 /** Error with a message that is safe to show to the user. */
-export class AuthFlowError extends Error {}
+export class AuthFlowError extends Error {
+  /** Seconds to wait before retrying, when the server says so (rate limits). */
+  readonly retryAfter: number | null
+  constructor(message: string, retryAfter: number | null = null) {
+    super(message)
+    this.retryAfter = retryAfter
+  }
+}
