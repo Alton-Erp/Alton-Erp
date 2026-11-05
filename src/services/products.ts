@@ -373,17 +373,21 @@ export async function fetchProductsByIds(ids: string[], companyId?: string): Pro
 export async function updateProductsFromImport(
   updates: { id: string; changes: ProductUpdate; expectedUpdatedAt?: string }[],
   onProgress?: (done: number) => void,
+  companyId?: string,
 ): Promise<Map<number, string>> {
   const failures = new Map<number, string>()
   for (const [i, u] of updates.entries()) {
     try {
-      const changes = { ...u.changes, change_reason: u.changes.change_reason ?? 'Updated by Excel import' }
+      // An import never changes a product's identity: SKU, id and company are dropped from any payload.
+      const { sku: _sku, id: _id, company_id: _company, ...fields } = u.changes as ProductUpdate & { sku?: unknown; id?: unknown; company_id?: unknown }
+      const changes = { ...fields, change_reason: fields.change_reason ?? 'Updated by Excel import' }
       if (!u.expectedUpdatedAt) {
         await updateProduct(u.id, changes)
       } else {
         // Only if the product is still as it was when the file was checked (no overwrite of a newer edit, no repeat).
-        const { error, count } = await requireSupabase().from('products').update(changes, { count: 'exact' })
-          .eq('id', u.id).eq('updated_at', u.expectedUpdatedAt)
+        let query = requireSupabase().from('products').update(changes, { count: 'exact' }).eq('id', u.id).eq('updated_at', u.expectedUpdatedAt)
+        if (companyId) query = query.eq('company_id', companyId)
+        const { error, count } = await query
         if (error) throw error
         if (count === 0) {
           failures.set(i, 'Not updated: this product was changed after the file was checked (or you cannot edit it). Check the file again and re-import.')
@@ -398,19 +402,20 @@ export async function updateProductsFromImport(
 }
 
 /**
- * Stored SKU of each product whose name is one of these (exact, trimmed), keyed by
- * nameKey() — a row without a SKU must not create a second product of the same name.
+ * SKU and name of every product of the company (archived included), for the import's duplicate checks.
+ * Names and SKUs are compared case-insensitively in the browser, so "WASH BASIN" matches "Wash Basin".
  */
-export async function findExistingNames(names: string[]): Promise<Map<string, string>> {
-  const owners = new Map<string, string>()
-  // Names with quotes or backslashes cannot be sent safely in an in() list; they are not looked up.
-  const safe = [...new Set(names.map((n) => n.trim()).filter((n) => n && !/["\\]/.test(n)))]
-  for (let i = 0; i < safe.length; i += 100) {
-    const { data, error } = await requireSupabase().from('products').select('id, sku, product_name').in('product_name', safe.slice(i, i + 100))
+export async function fetchProductIdentities(companyId: string): Promise<{ id: string; sku: string; product_name: string }[]> {
+  const out: { id: string; sku: string; product_name: string }[] = []
+  const PAGE = 1000
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await requireSupabase().from('products').select('id, sku, product_name')
+      .eq('company_id', companyId).order('id').range(from, from + PAGE - 1)
     if (error) throw error
-    for (const p of data ?? []) owners.set(p.product_name.trim().replace(/\s+/g, ' ').toLowerCase(), p.sku)
+    out.push(...(data ?? []))
+    if (!data || data.length < PAGE) break
   }
-  return owners
+  return out
 }
 
 /**

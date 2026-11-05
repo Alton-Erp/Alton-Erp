@@ -12,6 +12,7 @@
     "test:db:drilldown": "node tests/db/drilldown-consistency-check.mjs",
     "test:db:department": "node tests/db/department-data-check.mjs",
     "test:db:product-delete": "node tests/db/product-bulk-delete-check.mjs",
+    "test:db:product-import": "node tests/db/product-import-safety-check.mjs",
     "test:db:rollback": "node tests/db/whole-piece-rollback-check.mjs && node tests/db/erp-reset-rollback-check.mjs && node tests/db/erp-force-reset-rollback-check.mjs && node tests/db/product-purchase-rollback-check.mjs && node tests/db/stock-reliability-rollback-check.mjs && node tests/db/invoice-dispatch-rollback-check.mjs && node tests/db/force-reset-direct-rollback-check.mjs && node tests/db/bom-planning-ean-rollback-check.mjs && node tests/db/partial-invoicing-rollback-check.mjs && node tests/db/user-invitations-rollback-check.mjs && node tests/db/form-drafts-rollback-check.mjs && node tests/db/master-versioning-rollback-check.mjs && node tests/db/department-data-rollback-check.mjs && node tests/db/sku-free-format-rollback-check.mjs",
     "test:unit": "node --test \"tests/unit/**/*.test.ts\"",
     "test:db:readonly": "node tests/db/readonly-rpc-check.mjs",

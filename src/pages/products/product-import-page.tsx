@@ -10,6 +10,7 @@ import { KpiCard } from '@/components/common/kpi-card'
 import { PageHeader } from '@/components/common/page-header'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -23,9 +24,11 @@ import {
   buildErrorReport,
   buildFailedRowsReport,
   detectHeaderRow,
+  identityMaps,
   legacyQuantityColumns,
   missingRequiredFields,
-  nameKey,
+  modifiableFields,
+  newProductConflict,
   productRowToFormValues,
   rowKind,
   splitAtHeader,
@@ -46,10 +49,10 @@ import { formatNumber, toIsoDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { recordImportJob, type ImportJobRowInput } from '@/services/admin'
 import {
+  fetchProductIdentities,
   fetchProductsByIds,
   findExistingEans,
   findExistingIdentifiers,
-  findExistingNames,
   insertProducts,
   listCategories,
   logProductImport,
@@ -85,6 +88,11 @@ export default function ProductImportPage() {
   const [mapping, setMapping] = useState<ColumnMapping | null>(null)
   // Smart import (new → added, changed → updated, unchanged → skipped) for users who may update products.
   const [duplicateMode, setDuplicateMode] = useState<DuplicateMode>(() => (canUpdate ? 'update' : 'skip'))
+  // Fields to modify in existing products: every mapped column unless unticked (kept as the unticked set,
+  // so a column mapped later starts ticked).
+  const [unticked, setUnticked] = useState<Set<ImportFieldKey>>(() => new Set())
+  // A new SKU whose name is already in the ERP is added as a separate product only when the user says so.
+  const [allowSameName, setAllowSameName] = useState(false)
   const [results, setResults] = useState<RowResult[]>([])
   const [busy, setBusy] = useState<null | 'reading' | 'validating' | 'importing'>(null)
   const [progress, setProgress] = useState(0)
@@ -96,6 +104,10 @@ export default function ProductImportPage() {
   const split = useMemo(() => splitAtHeader(allRows, headerIndex), [allRows, headerIndex])
   const dataRowCount = split.data.filter((r) => r.some((c) => c !== '')).length
   const missing = mapping ? missingRequiredFields(mapping, duplicateMode) : []
+  const modifiable = mapping ? modifiableFields(mapping) : []
+  const modifyFields = new Set(modifiable.filter((f) => !unticked.has(f.key)).map((f) => f.key))
+  const notModified = modifiable.filter((f) => unticked.has(f.key)).map((f) => f.label)
+  const modifyLabels = modifiable.filter((f) => modifyFields.has(f.key)).map((f) => f.label)
 
   const reset = () => {
     setImportKey(crypto.randomUUID())
@@ -107,6 +119,8 @@ export default function ProductImportPage() {
     setResults([])
     setFinal(null)
     setError(null)
+    setUnticked(new Set())
+    setAllowSameName(false)
   }
 
   const selectSheet = (wb: ParsedWorkbook, name: string) => {
@@ -139,7 +153,7 @@ export default function ProductImportPage() {
     }
   }
 
-  const validate = async () => {
+  const validate = async (sameName = allowSameName) => {
     if (!mapping) return
     setError(null)
     if (dataRowCount === 0) return setError('The selected sheet has no data rows below the header.')
@@ -157,11 +171,8 @@ export default function ProductImportPage() {
       }
       const suppliers = mapping.preferred_supplier === null ? [] : await fetchSupplierOptions(true).catch(() => [])
       const eanOwners = await findExistingEans([...new Set(col('ean').map(normalizeEan))])
-      // Rows without a SKU are new products: their names are checked against the product master.
-      const unnamedSku = mapping.product_name === null ? [] : split.data
-        .filter((r) => (mapping.sku === null || !(r[mapping.sku] ?? '').trim()) && (r[mapping.product_name!] ?? '').trim())
-        .map((r) => r[mapping.product_name!])
-      const existingNames = await findExistingNames(unnamedSku)
+      // Every SKU and name of the company: new rows must not repeat a name or a near-identical SKU.
+      const identities = identityMaps(await fetchProductIdentities(companyId))
       setResults(
         validateImportRows(
           split.data,
@@ -173,7 +184,10 @@ export default function ProductImportPage() {
             barcodeOwners: existing.barcodeOwners,
             eanOwners,
             existingProducts,
-            existingNames,
+            existingNames: identities.existingNames,
+            looseSkus: identities.looseSkus,
+            modifyFields,
+            allowSameName: sameName,
             suppliers,
             duplicateMode,
           },
@@ -195,12 +209,13 @@ export default function ProductImportPage() {
     setProgress(0)
     setError(null)
     try {
-      // A product without a SKU added meanwhile (e.g. the same file imported in another tab) is not created twice.
-      const addedMeanwhile = await findExistingNames(creates.filter((r) => !r.input!.sku).map((r) => r.input!.product_name))
+      // Second duplicate check, just before saving: a SKU or name added meanwhile (another user, another tab,
+      // the same file imported twice) is never created again. The database's unique SKU index is the last guard.
+      const now = identityMaps(await fetchProductIdentities(companyId))
       const blocked = new Map<number, string>()
       creates.forEach((r, i) => {
-        const sku = !r.input!.sku ? addedMeanwhile.get(nameKey(r.input!.product_name)) : undefined
-        if (sku) blocked.set(i, `Not created: a product with this name was added meanwhile (SKU ${sku}).`)
+        const conflict = newProductConflict(r.input!, now, allowSameName)
+        if (conflict) blocked.set(i, conflict)
       })
       const toInsert = creates.filter((_, i) => !blocked.has(i))
       const insertFailures = await insertProducts(companyId, toInsert.map((r) => r.input!), setProgress)
@@ -209,6 +224,7 @@ export default function ProductImportPage() {
       const updateFailures = await updateProductsFromImport(
         changes.map((r) => ({ id: r.productId!, changes: r.input as ProductUpdate, expectedUpdatedAt: r.productUpdatedAt })),
         (n) => setProgress(creates.length + n),
+        companyId,
       )
       const updated = results.map((r) => {
         const c = creates.indexOf(r)
@@ -288,7 +304,7 @@ export default function ProductImportPage() {
             ['Supplier Model No. / Supplier Product Name', 'The supplier\'s own model number and name (optional). The SKU and product name are not changed by them.'],
             ['Manufacturable', 'Yes or No (optional)'],
             ['Preferred Supplier', 'Supplier code or name of an active supplier (optional). Unknown suppliers are reported and left blank.'],
-            ['Updating existing products', 'Rows are matched to existing products by SKU (spaces and capitals ignored). New SKUs are added, rows that match the stored product are skipped, and only the fields whose values differ are updated. Blank cells keep the stored value and the SKU is never changed. Every change is listed for review before saving.'],
+            ['Updating existing products', 'Rows are matched to existing products by SKU (spaces and capitals ignored). New SKUs are added, rows that match the stored product are skipped, and only the fields ticked under "Fields to Modify in Existing Products" whose values differ are updated. Blank cells keep the stored value and the SKU is never changed. A SKU that differs from a stored one only by spaces or separators, or a new product whose name is already used, is reported as a duplicate and not saved. Every change is listed for review before saving.'],
             ['Export compatibility', `An export from the product list uses the columns: ${EXPORT_COLUMNS.join(', ')}. Correct it and import it again: only the changed values are saved.`],
           ],
         },
@@ -300,8 +316,8 @@ export default function ProductImportPage() {
 
   const summary = summarizeImport(results)
   // After saving, a row that could not be saved is listed with the failed rows.
-  const groupOf = (r: RowResult): RowKind => (r.saveError ? 'invalid' : rowKind(r))
-  const groups = { new: [] as RowResult[], modified: [] as RowResult[], skipped: [] as RowResult[], invalid: [] as RowResult[] }
+  const groupOf = (r: RowResult): RowKind => (r.saveError ? (r.saveError.startsWith('Not created:') ? 'ambiguous' : 'invalid') : rowKind(r))
+  const groups = { new: [] as RowResult[], modified: [] as RowResult[], skipped: [] as RowResult[], ambiguous: [] as RowResult[], invalid: [] as RowResult[] }
   for (const r of results) groups[groupOf(r)].push(r)
   const done = step === 'done'
 
@@ -468,7 +484,67 @@ export default function ProductImportPage() {
                 Map these columns to continue: {missing.join(', ')}.
               </p>
             )}
+            {duplicateMode === 'update' && mapping.sku === null && (
+              <p role="alert" className="mx-5 mb-5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="sku-unmapped">
+                The SKU column is not mapped, so no row can be matched to an existing product: every row is treated as a new product, and rows whose
+                name is already in the Product Master are reported as duplicates. Map the SKU column to update existing products.
+              </p>
+            )}
           </Card>
+
+          {duplicateMode === 'update' && (
+            <Card data-testid="modify-fields">
+              <CardHeader>
+                <div>
+                  <CardTitle>Fields to Modify in Existing Products</CardTitle>
+                  <CardDescription>
+                    Existing products (matched by SKU) get only the ticked fields, and only where the Excel value differs. Unticked fields keep their
+                    stored value, blank cells never erase data, and the SKU is never changed. New products use every mapped column.
+                  </CardDescription>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {modifiable.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Map product columns above to choose which fields may change.</p>
+                ) : (
+                  <>
+                    <div className="flex flex-wrap items-center gap-2 text-sm">
+                      <span className="font-medium tabular-nums" data-testid="modify-count">
+                        {formatNumber(modifyFields.size)} of {formatNumber(modifiable.length)} fields selected
+                      </span>
+                      <Button type="button" size="sm" variant="outline" onClick={() => setUnticked(new Set())} disabled={modifyFields.size === modifiable.length}>
+                        Select All
+                      </Button>
+                      <Button type="button" size="sm" variant="outline" onClick={() => setUnticked(new Set(modifiable.map((f) => f.key)))} disabled={modifyFields.size === 0}>
+                        Deselect All
+                      </Button>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                      {modifiable.map((f) => (
+                        <label key={f.key} className="flex items-center gap-2 text-sm">
+                          <Checkbox
+                            checked={modifyFields.has(f.key)}
+                            data-testid="modify-field"
+                            data-field={f.key}
+                            onCheckedChange={(v) => setUnticked((prev) => {
+                              const next = new Set(prev)
+                              if (v === true) next.delete(f.key)
+                              else next.add(f.key)
+                              return next
+                            })}
+                          />
+                          {f.label}
+                        </label>
+                      ))}
+                    </div>
+                    {modifyFields.size === 0 && (
+                      <p role="status" className="text-sm text-amber-800">No field is selected: existing products will not be changed; only new products are added.</p>
+                    )}
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           <Card className="overflow-hidden">
             <CardHeader>
@@ -529,7 +605,8 @@ export default function ProductImportPage() {
                       {final.updated === 1 ? 'product' : 'products'} updated, of {formatNumber(summary.total)} rows
                     </p>
                     <p className="text-sm text-muted-foreground">
-                      {formatNumber(final.skipped)} unchanged rows skipped · {formatNumber(final.failed)} failed.
+                      {formatNumber(final.skipped)} unchanged rows skipped · {formatNumber(groups.ambiguous.length)} duplicate or ambiguous ·{' '}
+                      {formatNumber(groups.invalid.length)} failed.
                       {final.logError && ' (The import summary could not be written to the audit log or import history; each product was still audited.)'}
                     </p>
                   </div>
@@ -553,12 +630,13 @@ export default function ProductImportPage() {
             </Card>
           )}
 
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5" data-testid="import-summary">
+          <div className="grid gap-4 sm:grid-cols-3 xl:grid-cols-6" data-testid="import-summary">
             <KpiCard label="Total Excel rows" value={formatNumber(summary.total)} icon={FileSpreadsheet} />
             <KpiCard label={done ? 'New products added' : 'New products'} value={formatNumber(done && final ? final.imported : summary.creates)} icon={CheckCircle2} accent="available" />
             <KpiCard label={done ? 'Products updated' : 'Modified products'} value={formatNumber(done && final ? final.updated : summary.updates)} icon={CheckCircle2} accent="manufacturing" />
             <KpiCard label="Unchanged — skipped" value={formatNumber(summary.skipped)} hint={duplicateMode === 'update' ? 'Same as the Product Master' : 'Existing SKUs left unchanged'} icon={Info} />
-            <KpiCard label={done ? 'Failed rows' : 'Invalid rows'} value={formatNumber(done && final ? final.failed : summary.errors)} icon={Info} accent="shortage" />
+            <KpiCard label="Duplicate / ambiguous" value={formatNumber(summary.ambiguous)} hint="Not saved: needs your decision" icon={Info} accent="shortage" />
+            <KpiCard label={done ? 'Failed rows' : 'Invalid rows'} value={formatNumber(groups.invalid.length)} icon={Info} accent="shortage" />
           </div>
 
           <div className="space-y-3">
@@ -567,13 +645,27 @@ export default function ProductImportPage() {
                 <SimpleRows rows={rows} lastHeader="Notes" last={(r) => r.warnings.length ? <Messages items={r.warnings} tone="warning" /> : <span className="text-muted-foreground">—</span>} />
               )}
             </RowGroup>
-            <RowGroup kind="modified" title={done ? 'Updated' : 'Modified products'} rows={groups.modified} defaultOpen={!done}>
-              {(rows) => <div className="space-y-4">{rows.map((r) => <ComparisonCard key={r.rowNumber} row={r} />)}</div>}
+            <RowGroup kind="modified" title={done ? 'Updated' : 'Existing products to modify'} rows={groups.modified} defaultOpen={!done}>
+              {(rows) => <div className="space-y-4">{rows.map((r) => <ComparisonCard key={r.rowNumber} row={r} notModified={notModified} />)}</div>}
             </RowGroup>
             <RowGroup kind="skipped" title="Unchanged products — skipped" rows={groups.skipped}>
               {(rows) => (
                 <SimpleRows rows={rows} lastHeader="Reason"
-                  last={(r) => (r.skipReason === 'exists' ? 'SKU already exists — not changed (add new products only)' : 'No changes: the file matches the Product Master')} />
+                  last={(r) => (r.skipReason === 'exists' ? 'SKU already exists — not changed (add new products only)'
+                    : r.skipReason === 'no-fields' ? 'No fields selected to modify — existing product not changed'
+                    : 'No changes in the selected fields: the file matches the Product Master')} />
+              )}
+            </RowGroup>
+            <RowGroup kind="ambiguous" title="Duplicate / ambiguous products" rows={groups.ambiguous} defaultOpen
+              action={step === 'review' && (allowSameName || groups.ambiguous.some((r) => r.errors.some((e) => e.includes('allow separate products')))) ? (
+                <label className="flex items-center gap-2 text-sm" title="Only for rows with a new SKU whose name is already used by another product">
+                  <Checkbox data-testid="allow-same-name" checked={allowSameName} disabled={busy !== null}
+                    onCheckedChange={(v) => { setAllowSameName(v === true); void validate(v === true) }} />
+                  New SKUs with an existing name are different products — add them
+                </label>
+              ) : undefined}>
+              {(rows) => (
+                <SimpleRows rows={rows} lastHeader="Why it is not saved" last={(r) => <Messages items={[...r.errors, ...(r.saveError ? [r.saveError] : [])]} tone="error" />} />
               )}
             </RowGroup>
             <RowGroup kind="invalid" title={done ? 'Failed rows' : 'Invalid rows'} rows={groups.invalid} defaultOpen
@@ -623,9 +715,25 @@ export default function ProductImportPage() {
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
         title={summary.updates > 0 ? `Add ${formatNumber(summary.creates)} new and update ${formatNumber(summary.updates)} products?` : `Import ${formatNumber(summary.valid)} new products?`}
-        description={`${formatNumber(summary.creates)} new products will be added${summary.updates > 0
-          ? ` and ${formatNumber(summary.updates)} existing products will get only the changed fields listed above (each change is recorded in the audit log)`
-          : ''}. ${formatNumber(summary.skipped)} unchanged rows are skipped and ${formatNumber(summary.errors)} invalid rows are not imported. Stock is not affected.`}
+        description={
+          <span className="block space-y-2" data-testid="import-confirm">
+            <span className="block">Please confirm what will be saved:</span>
+            <span className="block tabular-nums">
+              New products to add: <b>{formatNumber(summary.creates)}</b><br />
+              Existing products to modify: <b>{formatNumber(summary.updates)}</b><br />
+              Unchanged products to skip: <b>{formatNumber(summary.skipped)}</b><br />
+              Duplicate or ambiguous rows (not saved): <b>{formatNumber(summary.ambiguous)}</b><br />
+              Invalid rows (not saved): <b>{formatNumber(summary.errors)}</b>
+            </span>
+            {summary.updates > 0 && (
+              <span className="block">
+                Fields that may change in existing products: {modifyLabels.join(', ') || 'none'}. Only the changes listed above are saved and each is
+                recorded in the audit log. {notModified.length > 0 && `Not modified: ${notModified.join(', ')}.`} SKUs are never changed.
+              </span>
+            )}
+            <span className="block">Matching is checked again just before saving. Stock is not affected.</span>
+          </span>
+        }
         confirmLabel={summary.updates > 0 ? 'Save changes' : 'Import products'}
         onConfirm={() => void runImport()}
       />
@@ -637,6 +745,7 @@ const GROUP_STYLE: Record<RowKind, string> = {
   new: 'border-l-emerald-500',
   modified: 'border-l-blue-500',
   skipped: 'border-l-slate-300',
+  ambiguous: 'border-l-orange-500',
   invalid: 'border-l-amber-500',
 }
 const PAGE = 50
@@ -711,9 +820,11 @@ function Messages({ items, tone }: { items: string[]; tone: 'error' | 'warning' 
   )
 }
 
-/** Existing ERP value next to the Excel value for every field in the file; changed fields are highlighted. */
-function ComparisonCard({ row }: { row: RowResult }) {
-  const compared = row.compared ?? row.changes?.map((c) => ({ ...c, changed: true })) ?? []
+const ACTION_LABEL = { update: 'Update', unchanged: 'Unchanged', blank: 'Kept (blank cell)' } as const
+
+/** Existing ERP value, Excel value and action for every selected field; changed fields are highlighted. */
+function ComparisonCard({ row, notModified }: { row: RowResult; notModified: string[] }) {
+  const compared = row.compared ?? row.changes?.map((c) => ({ ...c, changed: true, action: 'update' as const })) ?? []
   const changed = compared.filter((c) => c.changed).length
   return (
     <div className="rounded-md border" data-testid="import-comparison" data-sku={row.sku}>
@@ -730,6 +841,7 @@ function ComparisonCard({ row }: { row: RowResult }) {
               <TableHead>Field</TableHead>
               <TableHead>Existing ERP value</TableHead>
               <TableHead>Excel value</TableHead>
+              <TableHead>Action</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -741,12 +853,18 @@ function ComparisonCard({ row }: { row: RowResult }) {
                   {c.changed && <span className="ml-2 rounded bg-amber-200 px-1.5 py-0.5 text-[10px] uppercase text-amber-900">Changed</span>}
                 </TableCell>
                 <TableCell className={cn('tabular-nums', c.changed && 'text-muted-foreground line-through')}>{c.from}</TableCell>
-                <TableCell className="tabular-nums">{c.to}</TableCell>
+                <TableCell className={cn('tabular-nums', c.action === 'blank' && 'text-muted-foreground italic')}>{c.to}</TableCell>
+                <TableCell data-testid="field-action">{ACTION_LABEL[c.action]}</TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
       </div>
+      {notModified.length > 0 && (
+        <p className="border-t px-3 py-2 text-xs text-muted-foreground" data-testid="not-modified">
+          Not selected — kept unchanged: {notModified.join(', ')}.
+        </p>
+      )}
       {row.warnings.length > 0 && <div className="border-t px-3 py-2"><Messages items={row.warnings} tone="warning" /></div>}
     </div>
   )

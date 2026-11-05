@@ -2529,6 +2529,7 @@ await step('categories page lists categories with counts', async () => {
 // Spreadsheet with valid, invalid, duplicate and existing rows.
 const xlsxPath = path.join(outDir, 'import-test.xlsx')
 const xlsxAgainPath = path.join(outDir, 'import-again.xlsx')
+const xlsxFieldsPath = path.join(outDir, 'import-fields.xlsx')
 {
   const write = (file, rows) => {
     const wb = XLSX.utils.book_new()
@@ -2556,6 +2557,12 @@ const xlsxAgainPath = path.join(outDir, 'import-again.xlsx')
     ['imp-2', 'Imported Seat', '', 'Component', 'Outsourced', 'Nos', '', ''],
     ['MOCK-CLAY', 'Mock ceramic body', '', 'Raw Material', '', 'kg', '', ''],
   ])
+  // Field selection: name, GST and price differ for MOCK-WC-1; a near-miss SKU and a name in other capitals.
+  write(xlsxFieldsPath, [head,
+    ['mock-wc-1 ', 'Renamed closet', '', 'Finished Good', '', '', '12', '9990'],
+    ['MOCK WC 1', 'Another closet', '', 'Finished Good', '', '', '', ''],
+    ['', 'MOCK CERAMIC BODY', '', 'Raw Material', '', 'kg', '', ''],
+  ])
 }
 
 async function uploadImportFile(file) {
@@ -2575,29 +2582,39 @@ await step('smart import: preview classifies rows as new, modified, unchanged (s
   // No red mandatory marks on the mapping.
   assert(!(await evaluate(`[...document.querySelectorAll('label')].some((l) => l.innerText.includes('*'))`)), 'a label still has a * mark')
   assert(!(await evaluate(`[...document.querySelectorAll('[id^=map-]')].some((el) => el.getAttribute('aria-invalid') === 'true')`)), 'an unmapped field is marked red')
+  await waitFor(`!!document.querySelector('[data-testid=modify-fields]')`, 'fields to modify')
+  const modifyCount = await evaluate(`document.querySelector('[data-testid=modify-count]').innerText`)
+  const mappedFields = await evaluate(`document.querySelectorAll('[data-testid=modify-field]').length`)
+  assert(modifyCount === `${mappedFields} of ${mappedFields} fields selected` && mappedFields === 7, modifyCount)
+  assert(!(await evaluate(`!!document.querySelector('[data-testid=modify-field][data-field=sku]')`)), 'the SKU can be selected for modification')
   await screenshot('06-import-mapping')
   const before = writes().length
   await click('button', 'Validate')
   await waitFor(`!!document.querySelector('[data-testid=import-summary]')`, 'preview')
   assert(writes().length === before, 'validation wrote to the database')
   assert(requests.some((r) => r.path === '/rest/v1/rpc/check_product_identifiers'), 'existing SKU lookup not performed')
+  const identities = requests.filter((r) => r.path === '/rest/v1/products' && /select=id(%2C|,)sku(%2C|,)product_name/.test(r.query)).at(-1)
+  assert(identities && identities.query.includes('company_id=eq.'), 'SKU / name list not read for the company: ' + identities?.query)
   const loaded = requests.filter((r) => r.path === '/rest/v1/products' && r.query.includes('id=in.')).at(-1)
   assert(loaded && loaded.query.includes('company_id=eq.'), 'stored products not limited to the company: ' + loaded?.query)
-  for (const text of ['Total Excel rows', 'New products', 'Modified products', 'Unchanged — skipped', 'Invalid rows']) assert(await evaluate(bodyHas(text)), `missing "${text}"`)
-  const counts = { new: await groupCount('new'), modified: await groupCount('modified'), skipped: await groupCount('skipped'), invalid: await groupCount('invalid') }
-  assert(JSON.stringify(counts) === JSON.stringify({ new: 2, modified: 1, skipped: 1, invalid: 5 }), JSON.stringify(counts))
+  for (const text of ['Total Excel rows', 'New products', 'Modified products', 'Unchanged — skipped', 'Duplicate / ambiguous', 'Invalid rows', 'Existing products to modify']) {
+    assert(await evaluate(bodyHas(text)), `missing "${text}"`)
+  }
+  const counts = { new: await groupCount('new'), modified: await groupCount('modified'), skipped: await groupCount('skipped'), ambiguous: await groupCount('ambiguous'), invalid: await groupCount('invalid') }
+  assert(JSON.stringify(counts) === JSON.stringify({ new: 2, modified: 1, skipped: 1, ambiguous: 3, invalid: 2 }), JSON.stringify(counts))
   // Modified: existing value next to the Excel value; only the changed field is highlighted.
   const cmp = await evaluate(`[...document.querySelectorAll('[data-testid=import-comparison][data-sku="MOCK-WC-1"] tbody tr')].map((tr) => [tr.dataset.field, tr.dataset.changed, tr.innerText.replace(/\\s+/g, ' ').trim()])`)
   const price = cmp.find((c) => c[0] === 'selling_price')
   assert(price && price[1] === 'true' && price[2].includes('₹9,800.00') && price[2].includes('₹9,950.00'), JSON.stringify(cmp))
   assert(cmp.filter((c) => c[1] === 'true').length === 1, 'unchanged fields highlighted: ' + JSON.stringify(cmp))
-  assert(cmp.some((c) => c[0] === 'gst_rate' && c[1] === 'false' && c[2].includes('18%')), 'GST comparison missing')
+  assert(cmp.some((c) => c[0] === 'gst_rate' && c[1] === 'false' && c[2].includes('18%') && c[2].endsWith('Unchanged')), 'GST comparison missing')
+  assert(price[2].endsWith('Update'), 'action column: ' + price[2])
   // Invalid rows are listed with their reasons (open by default).
   for (const text of ['Duplicate SKU in this file: rows 6, 10', 'Source Type "Factory"', 'A product with this name already exists (SKU MOCK-GLZ)']) {
     assert(await evaluate(bodyHas(text)), `missing "${text}"`)
   }
   await click('[data-testid=import-group-skipped] button', 'Unchanged products')
-  await waitFor(bodyHas('No changes: the file matches the Product Master'), 'skipped list expands')
+  await waitFor(bodyHas('No changes in the selected fields: the file matches the Product Master'), 'skipped list expands')
   assert(await evaluate(bodyHas('Add 2 new and update 1')), 'import button')
   await screenshot('07-import-review')
 })
@@ -2608,6 +2625,10 @@ await step('smart import: confirm adds the new products, updates only changed fi
   await click('button', 'Add 2 new and update 1')
   await waitFor(`document.querySelector('[role=alertdialog]')`, 'confirm')
   assert(writes().length === before, 'imported before confirmation')
+  const confirmText = await evaluate(`document.querySelector('[data-testid=import-confirm]').innerText`)
+  for (const text of ['New products to add: 2', 'Existing products to modify: 1', 'Unchanged products to skip: 1', 'Duplicate or ambiguous rows (not saved): 3', 'Invalid rows (not saved): 2']) {
+    assert(confirmText.includes(text), `confirmation lacks "${text}": ${confirmText}`)
+  }
   await click('[role=alertdialog] button', 'Save changes')
   await waitFor(bodyHas('Import finished'), 'summary')
   const made = writes().slice(before)
@@ -2623,7 +2644,7 @@ await step('smart import: confirm adds the new products, updates only changed fi
   assert(requests.some((r) => r.path === '/rest/v1/rpc/log_product_import'), 'import not logged')
   assert(!requests.slice(requestsBefore).some((r) => /stock|inventory/.test(r.path)), 'import touched stock')
   assert(await evaluate(bodyHas('2 new products added and 1 existing product updated, of 9 rows')), 'summary text')
-  assert(await evaluate(bodyHas('1 unchanged rows skipped · 5 failed')), 'skipped / failed counts')
+  assert(await evaluate(bodyHas('1 unchanged rows skipped · 3 duplicate or ambiguous · 2 failed')), 'skipped / failed counts')
   assert(await evaluate(`[...document.querySelectorAll('button')].some((b) => b.innerText.includes('Download failed rows'))`), 'no failed-row download')
   await screenshot('08-import-summary')
 })
@@ -2638,6 +2659,37 @@ await step('smart import: uploading the same products again creates and updates 
   assert(await evaluate(bodyHas('Nothing to import: every row is unchanged or invalid.')), 'nothing-to-import note')
   assert(await evaluate(`[...document.querySelectorAll('button')].find((b) => b.innerText.includes('Import 0 new'))?.disabled === true`), 'import button not disabled')
   assert(writes().length === before, 'a repeated upload wrote data')
+})
+
+await step('import field selection: only the ticked field is updated; near-miss SKUs and names in other capitals are not created', async () => {
+  await uploadImportFile(xlsxFieldsPath)
+  await waitFor(`!!document.querySelector('[data-testid=modify-fields]')`, 'fields to modify')
+  await click('[data-testid=modify-fields] button', 'Deselect All')
+  await waitFor(`document.querySelector('[data-testid=modify-count]').innerText.startsWith('0 of')`, 'all deselected')
+  await click('[data-testid=modify-field][data-field=selling_price]')
+  await waitFor(`document.querySelector('[data-testid=modify-count]').innerText.startsWith('1 of')`, 'one field selected')
+  const before = writes().length
+  await click('button', 'Validate')
+  await waitFor(`!!document.querySelector('[data-testid=import-summary]')`, 'preview')
+  const counts = { new: await groupCount('new'), modified: await groupCount('modified'), ambiguous: await groupCount('ambiguous'), invalid: await groupCount('invalid') }
+  assert(JSON.stringify(counts) === JSON.stringify({ new: 0, modified: 1, ambiguous: 2, invalid: 0 }), JSON.stringify(counts))
+  const fields = await evaluate(`[...document.querySelectorAll('[data-testid=import-comparison][data-sku="MOCK-WC-1"] tbody tr')].map((tr) => tr.dataset.field)`)
+  assert(JSON.stringify(fields) === '["selling_price"]', 'only the selected field is compared: ' + JSON.stringify(fields))
+  const kept = await evaluate(`document.querySelector('[data-testid=import-comparison][data-sku="MOCK-WC-1"] [data-testid=not-modified]').innerText`)
+  assert(kept.includes('Product Name') && kept.includes('GST Rate'), kept)
+  for (const text of ['MOCK-WC-1 is almost the same', 'A product with this name already exists (SKU MOCK-CLAY)']) assert(await evaluate(bodyHas(text)), `missing "${text}"`)
+  assert(writes().length === before, 'validation wrote data')
+  await click('button', 'Add 0 new and update 1')
+  await waitFor(`document.querySelector('[role=alertdialog]')`, 'confirm')
+  assert((await evaluate(`document.querySelector('[data-testid=import-confirm]').innerText`)).includes('Fields that may change in existing products: Selling Price.'), 'selected fields in the confirmation')
+  await click('[role=alertdialog] button', 'Save changes')
+  await waitFor(bodyHas('Import finished'), 'summary')
+  const made = writes().slice(before)
+  assert(!made.some((r) => r.method === 'POST'), 'a product was created: ' + JSON.stringify(made.filter((r) => r.method === 'POST').map((r) => r.body)))
+  const patches = made.filter((r) => r.method === 'PATCH')
+  assert(patches.length === 1 && JSON.stringify(Object.keys(patches[0].body).sort()) === '["change_reason","selling_price"]' && patches[0].body.selling_price === 9990,
+    'update not limited to the selected field: ' + JSON.stringify(patches.map((p) => p.body)))
+  assert(patches[0].query.includes('company_id=eq.') && patches[0].query.includes('updated_at=eq.'), 'update not tied to the company and check time: ' + patches[0].query)
 })
 
 await step('Product Master form: no red mandatory marks; a missing name still shows a message on save', async () => {

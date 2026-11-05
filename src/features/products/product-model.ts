@@ -201,9 +201,22 @@ export function categoryCodeFor(name: string, taken: Set<string>): string {
   return `${base}-X`
 }
 
+/**
+ * A SKU as typed or pasted, cleaned: invisible characters (zero-width spaces, byte-order marks) removed,
+ * look-alike characters folded (non-breaking or full-width spaces, full-width letters), ends trimmed.
+ */
+export function cleanSku(sku: string): string {
+  return sku.normalize('NFKC').replace(/[​-‍⁠﻿]/g, '').trim()
+}
+
 /** SKU uniqueness is case-insensitive (matches the database unique index). */
 export function skuKey(sku: string): string {
-  return sku.trim().toLowerCase()
+  return cleanSku(sku).toLowerCase()
+}
+
+/** SKU without separators ("FG-0001", "fg 0001" and "FG0001" are the same): flags near-misses, never used to match. */
+export function looseSkuKey(sku: string): string {
+  return skuKey(sku).replace(/[^\p{L}\p{N}]+/gu, '')
 }
 
 export function findUnit(value: string): string | null {

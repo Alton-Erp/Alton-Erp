@@ -178,7 +178,7 @@ describe('spreadsheet import', () => {
     assert.equal(byRow.get(13)?.status, 'valid')
     assert.ok(byRow.get(13)?.warnings.some((w) => w.includes('17%')))
 
-    assert.deepEqual(summarizeImport(results), { total: 11, valid: 4, creates: 4, updates: 0, withWarnings: 4, skipped: 1, errors: 6 })
+    assert.deepEqual(summarizeImport(results), { total: 11, valid: 4, creates: 4, updates: 0, withWarnings: 4, skipped: 1, ambiguous: 2, errors: 4 })
     for (const r of results) assert.equal(r.input === null, r.status !== 'valid', 'only valid rows carry an insert payload')
   })
 

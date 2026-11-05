@@ -12,9 +12,14 @@
 //     product gets only the fields whose value differs (a blank cell never
 //     erases data, the SKU is never changed); every compared field is listed
 //     (existing value / Excel value) for review before anything is saved.
-//   * A SKU that appears more than once in the file is invalid on every row, and
-//     a row without a SKU whose name matches an existing product is invalid, so
-//     uploading the same file twice never creates duplicates.
+//   * Fields to modify: for existing products only the fields ticked on the
+//     mapping screen are read and compared; every other column is ignored and
+//     the stored value is kept. New products use every mapped column.
+//   * Never a duplicate: a SKU used on more than one row, a new SKU that differs
+//     from a stored SKU only by separators ("FG0001" / "FG-0001"), and a new
+//     product whose name is already in the ERP are "Duplicate / Ambiguous" and
+//     are not saved (a new SKU with a known name can be allowed explicitly).
+//     A row is never matched to a product by guessing.
 
 import { productGaps, type ProductGap } from './product-completeness.ts'
 import { formatCost } from './product-list-format.ts'
@@ -22,8 +27,10 @@ import {
   PRODUCT_TYPE_LABELS,
   SKU_PREFIXES,
   SOURCE_TYPE_LABELS,
+  cleanSku,
   defaultSourceFor,
   findUnit,
+  looseSkuKey,
   parseProductType,
   parseSourceType,
   skuKey,
@@ -35,7 +42,7 @@ export const MAX_IMPORT_ROWS = 5000
 export const MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024
 
 export const IMPORT_FIELDS = [
-  { key: 'sku', label: 'SKU', required: false, synonyms: ['sku', 'sku code', 'product code', 'item code', 'code'] },
+  { key: 'sku', label: 'SKU', required: false, synonyms: ['sku', 'sku code', 'sku no', 'sku number', 'sku id', 'item sku', 'product sku', 'product code', 'item code', 'code'] },
   { key: 'product_name', label: 'Product Name', required: true, synonyms: ['product name', 'name', 'item name', 'product'] },
   { key: 'description', label: 'Description', required: false, synonyms: ['description', 'product description', 'details'] },
   { key: 'category', label: 'Category', required: false, synonyms: ['category', 'product category', 'category name', 'category code'] },
@@ -107,6 +114,8 @@ export interface FieldChange {
 /** One field supplied in the file for an existing product: changed or the same as stored. */
 export interface FieldComparison extends FieldChange {
   changed: boolean
+  /** update: the Excel value replaces the stored one; unchanged: same value; blank: empty cell, the stored value is kept. */
+  action: 'update' | 'unchanged' | 'blank'
 }
 
 export interface ImportRowResult {
@@ -124,8 +133,10 @@ export interface ImportRowResult {
   changes?: FieldChange[]
   /** Existing products: every field supplied in the file, changed or not. */
   compared?: FieldComparison[]
-  /** Why a row is skipped: nothing differs, or existing products are left alone ("add new only"). */
-  skipReason?: 'unchanged' | 'exists'
+  /** Why a row is skipped: nothing differs, existing products are left alone ("add new only"), or no field is selected to modify. */
+  skipReason?: 'unchanged' | 'exists' | 'no-fields'
+  /** An error row that is a duplicate or an ambiguous match (needs a decision, not a correction of a value). */
+  issue?: 'ambiguous'
   errors: string[]
   warnings: string[]
   /** Full insert payload (create) or only the changed fields (update). */
@@ -145,18 +156,24 @@ export interface ImportContext {
   /** Product id that owns each existing barcode (lets an update keep its own barcode). */
   barcodeOwners?: Map<string, string>
   suppliers?: ImportSupplier[]
-  /** Stored SKU of each existing product by nameKey(): a row without a SKU must not duplicate one. */
+  /** Stored SKU(s) of the existing products with each nameKey() (comma-separated): a new product must not repeat one. */
   existingNames?: Map<string, string>
+  /** Stored SKU(s) by looseSkuKey(): a new SKU that differs only by separators is reported, never matched. */
+  looseSkus?: Map<string, string>
+  /** Columns whose values may change existing products (undefined: every mapped column). SKU is never changed. */
+  modifyFields?: ReadonlySet<ImportFieldKey>
+  /** A new SKU whose product name is already in the ERP is added as a separate product (otherwise ambiguous). */
+  allowSameName?: boolean
 }
 
 /** Product names compared for duplicates: trimmed, case-insensitive, inner spaces collapsed. */
-export const nameKey = (name: string) => name.trim().replace(/\s+/g, ' ').toLowerCase()
+export const nameKey = (name: string) => name.normalize('NFKC').replace(/[​-‍⁠﻿]/g, '').trim().replace(/\s+/g, ' ').toLowerCase()
 
-export type RowKind = 'new' | 'modified' | 'skipped' | 'invalid'
+export type RowKind = 'new' | 'modified' | 'skipped' | 'ambiguous' | 'invalid'
 
-/** New / Modified / Skipped (unchanged or left alone) / Invalid, as shown on the import preview. */
-export function rowKind(r: Pick<ImportRowResult, 'status' | 'action'>): RowKind {
-  if (r.status === 'error') return 'invalid'
+/** New / Modified / Skipped (unchanged or left alone) / Duplicate-ambiguous / Invalid, as shown on the import preview. */
+export function rowKind(r: Pick<ImportRowResult, 'status' | 'action' | 'issue'>): RowKind {
+  if (r.status === 'error') return r.issue === 'ambiguous' ? 'ambiguous' : 'invalid'
   if (r.status === 'skipped') return 'skipped'
   return r.action === 'update' ? 'modified' : 'new'
 }
@@ -211,6 +228,22 @@ export function splitAtHeader(rows: string[][], headerIndex: number) {
 export function missingRequiredFields(mapping: ColumnMapping, mode: DuplicateMode = 'skip'): string[] {
   if (mode === 'update' && mapping.sku !== null) return []
   return IMPORT_FIELDS.filter((f) => f.required && mapping[f.key] === null).map((f) => f.label)
+}
+
+/** The product field(s) each import column fills. */
+export const IMPORT_FIELD_TARGET: Record<ImportFieldKey, keyof ProductInput> = {
+  sku: 'sku', product_name: 'product_name', description: 'description', category: 'category_id', brand: 'brand', model_number: 'model_number',
+  barcode: 'barcode', ean: 'ean', supplier_model_number: 'supplier_model_number', supplier_product_name: 'supplier_product_name',
+  product_type: 'product_type', source_type: 'default_source_type', unit: 'base_unit', length_cm: 'length_cm', width_cm: 'width_cm', height_cm: 'height_cm',
+  hsn_code: 'hsn_code', gst_rate: 'gst_rate', selling_price: 'selling_price', mrp: 'mrp', standard_cost: 'standard_cost',
+  standard_manufacturing_cost: 'standard_manufacturing_cost', minimum_selling_price: 'minimum_selling_price', lead_time_days: 'lead_time_days',
+  reorder_level_days: 'reorder_level_days', minimum_cover_days: 'minimum_cover_days', group_head: 'group_head', is_manufacturable: 'is_manufacturable',
+  preferred_supplier: 'preferred_supplier_id', remarks: 'remarks',
+}
+
+/** Mapped columns that can modify existing products (every mapped column except the SKU, which is never changed). */
+export function modifiableFields(mapping: ColumnMapping): { key: ImportFieldKey; label: string }[] {
+  return IMPORT_FIELDS.filter((f) => f.key !== 'sku' && mapping[f.key] !== null).map((f) => ({ key: f.key, label: f.label }))
 }
 
 function parseBoolean(value: string): boolean | null | undefined {
@@ -348,27 +381,46 @@ export function validateImportRows(
 
     const errors: string[] = []
     const warnings: string[] = []
-    const sku = cell(row, 'sku')
+    const sku = cleanSku(cell(row, 'sku'))
     const key = sku ? skuKey(sku) : ''
+    const name = cell(row, 'product_name')
+    // Duplicates and ambiguous matches: reported for a decision, never saved and never matched by guessing.
+    const ambiguous: string[] = []
 
-    // A SKU used on more than one row: every such row is invalid (which values are meant is unclear).
+    // A SKU used on more than one row: every such row is rejected (which values are meant is unclear).
     const sameSku = key ? (skuRows.get(key) ?? []) : []
     if (sameSku.length > 1) {
-      results.push({ rowNumber, sku, productName: cell(row, 'product_name'), status: 'error', warnings: [], input: null,
+      results.push({ rowNumber, sku, productName: name, status: 'error', issue: 'ambiguous', warnings: [], input: null,
         errors: [`Duplicate SKU in this file: rows ${sameSku.join(', ')} have SKU ${sku}. Keep one row per SKU.`] })
       return
     }
+    const exists = Boolean(key) && ctx.existingSkus.has(key)
+    const n = nameKey(name)
+    const storedForName = n ? ctx.existingNames?.get(n) : undefined
     // A row without a SKU is a new product: it must not repeat another row or an existing product.
     if (!key) {
-      const n = nameKey(cell(row, 'product_name'))
       const sameName = n ? (nameRows.get(n) ?? []) : []
-      if (sameName.length > 1) errors.push(`Duplicate product in this file: rows ${sameName.join(', ')} have the same name and no SKU.`)
-      const storedSku = n ? ctx.existingNames?.get(n) : undefined
-      if (storedSku) errors.push(`A product with this name already exists (SKU ${storedSku}). Enter its SKU on this row to update it, or use a different name for a new product.`)
+      if (sameName.length > 1) ambiguous.push(`Duplicate product in this file: rows ${sameName.join(', ')} have the same name and no SKU.`)
+      if (storedForName) ambiguous.push(`A product with this name already exists (SKU ${storedForName}). Enter its SKU on this row to update it, or use a different name for a new product.`)
+    } else if (!exists) {
+      // A new SKU: not a near-miss of a stored SKU, and not the name of a stored product.
+      const near = ctx.looseSkus?.get(looseSkuKey(sku))
+      if (near) {
+        ambiguous.push(`SKU ${sku} is not in the Product Master, but ${near} is almost the same (only spaces or separators differ). `
+          + `Write the SKU exactly as stored to update that product, or use a clearly different SKU for a new product.`)
+      } else if (storedForName && !ctx.allowSameName) {
+        ambiguous.push(`SKU ${sku} is new, but a product named "${name}" already exists (SKU ${storedForName}). `
+          + `Use SKU ${storedForName} to update it, or allow separate products with the same name if this is a different product.`)
+      } else if (storedForName) {
+        warnings.push(`Added as a separate product: a product with the same name already exists (SKU ${storedForName}).`)
+      }
     }
-    const exists = Boolean(key) && ctx.existingSkus.has(key)
     const existing = exists && ctx.duplicateMode === 'update' ? ctx.existingProducts?.get(key) : undefined
     const isUpdate = Boolean(existing)
+    if (ambiguous.length > 0) {
+      results.push({ rowNumber, sku, productName: name, status: 'error', issue: 'ambiguous', errors: ambiguous, warnings: [], input: null })
+      return
+    }
 
     if (exists && ctx.duplicateMode === 'skip') {
       results.push({ rowNumber, sku, productName: cell(row, 'product_name'), status: 'skipped', skipReason: 'exists', errors: [],
@@ -378,41 +430,45 @@ export function validateImportRows(
     if (exists && ctx.duplicateMode === 'error') errors.push('SKU already exists in the product master.')
     if (exists && ctx.duplicateMode === 'update' && !existing) errors.push('SKU exists but the stored product could not be loaded. Validate again.')
 
+    // Existing products: only the columns selected to modify are read; every other column keeps the stored value.
+    const selected = (col: ImportFieldKey) => !existing || !ctx.modifyFields || ctx.modifyFields.has(col)
+    const val = (col: ImportFieldKey) => (selected(col) ? cell(row, col) : '')
+
     // Start from the stored values (update) or a blank form (create); only cells with a value change anything.
     const values: ProductFormValues = existing ? { ...existing.values } : { ...EMPTY_PRODUCT_FORM, base_unit: '' }
     const provided = new Set<keyof ProductInput>()
     values.sku = existing ? existing.sku : sku
 
     for (const [col, field] of TEXT_FIELDS) {
-      const v = cell(row, col)
+      const v = val(col)
       if (v !== '') {
         ;(values as unknown as Record<string, string>)[field] = v
         provided.add(field as keyof ProductInput)
       }
     }
 
-    const rawType = cell(row, 'product_type')
+    const rawType = val('product_type')
     if (rawType) {
       const t = parseProductType(rawType)
       if (!t) errors.push(`Product Type "${rawType}" is not recognised. Use: ${Object.values(PRODUCT_TYPE_LABELS).join(', ')}.`)
       else { values.product_type = t; provided.add('product_type') }
     }
 
-    const rawSource = cell(row, 'source_type')
+    const rawSource = val('source_type')
     if (rawSource) {
       const s = parseSourceType(rawSource)
       if (!s) errors.push(`Source Type "${rawSource}" is not recognised. Use: ${Object.values(SOURCE_TYPE_LABELS).join(', ')}.`)
       else { values.default_source_type = s; provided.add('default_source_type') }
     }
 
-    const rawUnit = cell(row, 'unit')
+    const rawUnit = val('unit')
     if (rawUnit) {
       const u = findUnit(rawUnit)
       if (!u) errors.push(`Unit "${rawUnit}" is not recognised.`)
       else { values.base_unit = u; provided.add('base_unit') }
     }
 
-    const rawCategory = cell(row, 'category')
+    const rawCategory = val('category')
     if (rawCategory) {
       const category = categoryByKey.get(`name:${rawCategory.toLowerCase()}`) ?? categoryByKey.get(`code:${rawCategory.toUpperCase()}`)
       if (!category) errors.push(`Category "${rawCategory}" does not exist. Create it first or correct the name.`)
@@ -420,11 +476,11 @@ export function validateImportRows(
       else { values.category_id = category.id; provided.add('category_id') }
     }
 
-    const rawManufacturable = parseBoolean(cell(row, 'is_manufacturable'))
+    const rawManufacturable = parseBoolean(val('is_manufacturable'))
     if (rawManufacturable === null) errors.push('Manufacturable must be Yes or No.')
     else if (rawManufacturable !== undefined) { values.is_manufacturable = rawManufacturable; provided.add('is_manufacturable') }
 
-    const rawSupplier = cell(row, 'preferred_supplier')
+    const rawSupplier = val('preferred_supplier')
     if (rawSupplier) {
       const supplier = supplierByKey.get(rawSupplier.toLowerCase())
       if (!supplier) warnings.push(`Preferred Supplier "${rawSupplier}" was not found by code or name, so none is set. Add the supplier first or correct the name.`)
@@ -485,11 +541,19 @@ export function validateImportRows(
       compared = []
       const update: Partial<ProductInput> = {}
       for (const field of UPDATABLE) {
-        if (!provided.has(field)) continue
+        const label = FIELD_LABELS[field as ProductField] ?? field
         const from = before?.[field] ?? null
+        if (!provided.has(field)) {
+          // A selected column left blank in the file: shown, and the stored value is kept.
+          const col = COLUMN_OF.get(field)
+          if (col && mapping[col] !== null && selected(col) && cell(row, col) === '') {
+            compared.push({ field, label, from: show(field, from), to: 'Blank', changed: false, action: 'blank' })
+          }
+          continue
+        }
         const to = validation.input[field] ?? null
         const changed = from !== to
-        compared.push({ field, label: FIELD_LABELS[field as ProductField] ?? field, from: show(field, from), to: show(field, to), changed })
+        compared.push({ field, label, from: show(field, from), to: show(field, to), changed, action: changed ? 'update' : 'unchanged' })
         if (changed) (update as Record<string, unknown>)[field] = to
       }
       changes = compared.filter((c) => c.changed).map((c) => ({ field: c.field, label: c.label, from: c.from, to: c.to }))
@@ -505,11 +569,12 @@ export function validateImportRows(
     }
 
     let status: ImportRowResult['status'] = errors.length > 0 ? 'error' : 'valid'
+    const noFields = isUpdate && ctx.modifyFields !== undefined && ctx.modifyFields.size === 0
     if (status === 'valid' && isUpdate && changes && changes.length === 0) {
       status = 'skipped'
-      warnings.unshift('No changes: the file matches the stored product.')
+      warnings.unshift(noFields ? 'No fields are selected to modify: the existing product is not changed.' : 'No changes in the selected fields: the file matches the stored product.')
     }
-    const skipReason = status === 'skipped' ? ('unchanged' as const) : undefined
+    const skipReason = status === 'skipped' ? (noFields ? ('no-fields' as const) : ('unchanged' as const)) : undefined
 
     results.push({
       rowNumber,
@@ -535,6 +600,9 @@ const GAP_LABELS: Record<ProductGap['key'], string> = {
   hsn: 'HSN code', gst: 'GST rate', category: 'category', price: 'selling price', cost: 'standard cost', bom: 'BOM',
 }
 
+/** The import column that fills each product field. */
+const COLUMN_OF = new Map(Object.entries(IMPORT_FIELD_TARGET).map(([col, field]) => [field, col as ImportFieldKey]))
+
 const MONEY_FIELDS = new Set<keyof ProductInput>(['selling_price', 'mrp', 'standard_cost', 'standard_manufacturing_cost', 'minimum_selling_price'])
 
 function display(value: unknown): string {
@@ -551,8 +619,58 @@ export function summarizeImport(results: ImportRowResult[]) {
     updates: results.filter((r) => r.status === 'valid' && r.action === 'update').length,
     withWarnings: results.filter((r) => r.status === 'valid' && r.warnings.length > 0).length,
     skipped: results.filter((r) => r.status === 'skipped').length,
-    errors: results.filter((r) => r.status === 'error').length,
+    ambiguous: results.filter((r) => r.status === 'error' && r.issue === 'ambiguous').length,
+    errors: results.filter((r) => r.status === 'error' && r.issue !== 'ambiguous').length,
   }
+}
+
+/** One stored product of the company, as used for duplicate checks. */
+export interface ProductIdentity {
+  id: string
+  sku: string
+  product_name: string
+}
+
+/** Lookups for duplicate checks: SKUs (exact and without separators) and names, all case-insensitive. */
+export function identityMaps(products: ProductIdentity[]) {
+  const existingSkus = new Set<string>()
+  const skuIds = new Map<string, string>()
+  const existingNames = new Map<string, string>()
+  const looseSkus = new Map<string, string>()
+  const add = (m: Map<string, string>, k: string, sku: string) => {
+    if (!k) return
+    const prev = m.get(k)
+    if (!prev) m.set(k, sku)
+    else if (!prev.split(', ').includes(sku)) m.set(k, `${prev}, ${sku}`)
+  }
+  for (const p of products) {
+    existingSkus.add(skuKey(p.sku))
+    skuIds.set(skuKey(p.sku), p.id)
+    add(existingNames, nameKey(p.product_name), p.sku)
+    add(looseSkus, looseSkuKey(p.sku), p.sku)
+  }
+  return { existingSkus, skuIds, existingNames, looseSkus }
+}
+
+/**
+ * The second duplicate check, against the Product Master as it is just before saving: why a new product
+ * must not be created now (its SKU, a near-identical SKU or its name was added meanwhile), or null.
+ */
+export function newProductConflict(
+  input: { sku?: string | null; product_name: string },
+  now: ReturnType<typeof identityMaps>,
+  allowSameName = false,
+): string | null {
+  const sku = cleanSku(input.sku ?? '')
+  const stored = now.existingNames.get(nameKey(input.product_name))
+  if (sku) {
+    if (now.existingSkus.has(skuKey(sku))) return `Not created: a product with SKU ${sku} now exists (added after the file was checked). Validate the file again to update it.`
+    const near = now.looseSkus.get(looseSkuKey(sku))
+    if (near) return `Not created: SKU ${near} is almost the same as ${sku} and now exists. Validate the file again.`
+    if (stored && !allowSameName) return `Not created: a product with this name now exists (SKU ${stored}). Validate the file again.`
+    return null
+  }
+  return stored ? `Not created: a product with this name was added meanwhile (SKU ${stored}).` : null
 }
 
 /** Rows for a downloadable report of every row that was not imported cleanly, plus every change made. */
@@ -566,7 +684,7 @@ export function buildErrorReport(
       r.rowNumber,
       r.sku,
       r.productName,
-      r.saveError ? 'failed' : r.status === 'valid' && r.action === 'update' ? 'update' : r.status,
+      r.saveError ? 'failed' : r.status === 'valid' && r.action === 'update' ? 'update' : r.issue === 'ambiguous' ? 'duplicate / ambiguous' : r.status,
       [...r.errors, ...(r.saveError ? [r.saveError] : [])].join(' | '),
       r.warnings.join(' | '),
       (r.changes ?? []).map((c) => `${c.label}: ${c.from} → ${c.to}`).join(' | '),

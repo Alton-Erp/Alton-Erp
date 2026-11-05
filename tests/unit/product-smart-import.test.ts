@@ -57,9 +57,9 @@ describe('smart import: new, modified, unchanged, invalid', () => {
     assert.equal(r.productUpdatedAt, '2026-11-01T10:00:00.123456+00:00')
     assert.deepEqual(r.input, { standard_manufacturing_cost: 475, mrp: 900 })
     const byLabel = new Map(r.compared!.map((c) => [c.label, c]))
-    assert.deepEqual(byLabel.get('Standard Manufacturing Cost'), { field: 'standard_manufacturing_cost', label: 'Standard Manufacturing Cost', from: '₹450.00', to: '₹475.00', changed: true })
-    assert.deepEqual(byLabel.get('MRP'), { field: 'mrp', label: 'MRP', from: '₹850.00', to: '₹900.00', changed: true })
-    assert.deepEqual(byLabel.get('GST Rate'), { field: 'gst_rate', label: 'GST Rate', from: '18%', to: '18%', changed: false })
+    assert.deepEqual(byLabel.get('Standard Manufacturing Cost'), { field: 'standard_manufacturing_cost', label: 'Standard Manufacturing Cost', from: '₹450.00', to: '₹475.00', changed: true, action: 'update' })
+    assert.deepEqual(byLabel.get('MRP'), { field: 'mrp', label: 'MRP', from: '₹850.00', to: '₹900.00', changed: true, action: 'update' })
+    assert.deepEqual(byLabel.get('GST Rate'), { field: 'gst_rate', label: 'GST Rate', from: '18%', to: '18%', changed: false, action: 'unchanged' })
     assert.equal(byLabel.get('Category')?.from, 'Water Closets', 'names, not ids')
     assert.deepEqual(r.changes?.map((c) => c.label), ['MRP', 'Standard Manufacturing Cost'])
   })
@@ -84,7 +84,7 @@ describe('smart import: new, modified, unchanged, invalid', () => {
     const after = [stored('p1', 'WC-100', { standard_manufacturing_cost: 475 }), stored('p2', 'WC-200'),
       stored('p3', 'WC-300', { product_name: 'New closet', category_id: null })]
     const second = validateImportRows(file, mapping, ctxWith(after, { existingNames: new Map([['brand-new seat', 'CMP-000001']]) }))
-    assert.deepEqual(second.map(rowKind), ['skipped', 'skipped', 'invalid'])
+    assert.deepEqual(second.map(rowKind), ['skipped', 'skipped', 'ambiguous'])
     assert.ok(second[2].errors[0].includes('already exists (SKU CMP-000001)'), second[2].errors.join())
     assert.equal(summarizeImport(second).valid, 0)
   })
@@ -94,13 +94,14 @@ describe('smart import: new, modified, unchanged, invalid', () => {
     assert.equal(rowKind(r), 'skipped', 'nothing supplied = nothing to change')
     const [m] = validateImportRows([['WC-100', '', '', '', '', '990', '', '', '']], mapping, ctxWith(erp()))
     assert.deepEqual(m.input, { mrp: 990 }, 'only the filled cell; name, cost, GST, HSN, remarks are untouched')
-    assert.deepEqual(m.compared?.map((c) => c.field), ['mrp'])
+    assert.deepEqual(m.compared?.filter((c) => c.action !== 'blank').map((c) => c.field), ['mrp'])
+    assert.ok(m.compared?.filter((c) => c.action === 'blank').every((c) => !c.changed && c.to === 'Blank'), 'blank cells are shown as kept')
   })
 
   it('6. a SKU repeated in the file (any case or spacing) is invalid on every row', () => {
     const results = validateImportRows([same('WC-100'), ['', 'Seat', 'Component', '', '', '', '', '', ''], same(' wc-100'), ['', ' seat ', 'Component', '', '', '', '', '', '']],
       mapping, ctxWith(erp()))
-    assert.deepEqual(results.map(rowKind), ['invalid', 'invalid', 'invalid', 'invalid'])
+    assert.deepEqual(results.map(rowKind), ['ambiguous', 'ambiguous', 'ambiguous', 'ambiguous'])
     assert.ok(results[0].errors[0].startsWith('Duplicate SKU in this file: rows 2, 4'))
     assert.ok(results[1].errors[0].startsWith('Duplicate product in this file: rows 3, 5'))
   })
