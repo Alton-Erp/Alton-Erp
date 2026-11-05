@@ -512,6 +512,7 @@ export default function ProductImportPage() {
                       <span className="font-medium tabular-nums" data-testid="modify-count">
                         {formatNumber(modifyFields.size)} of {formatNumber(modifiable.length)} fields selected
                       </span>
+                      {mapping.sku !== null && <span className="text-xs text-muted-foreground">+ SKU (used to match, never changed)</span>}
                       <Button type="button" size="sm" variant="outline" onClick={() => setUnticked(new Set())} disabled={modifyFields.size === modifiable.length}>
                         Select All
                       </Button>
@@ -520,6 +521,15 @@ export default function ProductImportPage() {
                       </Button>
                     </div>
                     <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                      {/* SKU finds the existing product, so it is always used and never changed by the import. */}
+                      <label className="flex items-center gap-2 text-sm text-muted-foreground"
+                        title={mapping.sku === null ? 'Map the SKU column to match existing products' : 'Used to find the existing product; never changed by the import'}>
+                        <Checkbox checked={mapping.sku !== null} disabled data-testid="modify-sku" aria-label="SKU (match key, never changed)" />
+                        <span>
+                          <span className="font-medium text-foreground">SKU</span>{' '}
+                          {mapping.sku === null ? '— not mapped' : '— match key (locked)'}
+                        </span>
+                      </label>
                       {modifiable.map((f) => (
                         <label key={f.key} className="flex items-center gap-2 text-sm">
                           <Checkbox

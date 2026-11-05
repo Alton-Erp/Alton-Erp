@@ -2587,6 +2587,7 @@ await step('smart import: preview classifies rows as new, modified, unchanged (s
   const mappedFields = await evaluate(`document.querySelectorAll('[data-testid=modify-field]').length`)
   assert(modifyCount === `${mappedFields} of ${mappedFields} fields selected` && mappedFields === 7, modifyCount)
   assert(!(await evaluate(`!!document.querySelector('[data-testid=modify-field][data-field=sku]')`)), 'the SKU can be selected for modification')
+  assert(await evaluate(`(() => { const s = document.querySelector('[data-testid=modify-sku]'); return !!s && s.disabled && s.dataset.state === 'checked' && s.closest('label').innerText.includes('match key') })()`), 'SKU not shown as the locked match key')
   await screenshot('06-import-mapping')
   const before = writes().length
   await click('button', 'Validate')
