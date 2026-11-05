@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   Archive,
   ArchiveRestore,
   Blend,
@@ -54,11 +55,12 @@ import { PRODUCT_TYPES, PRODUCT_TYPE_LABELS, SOURCE_TYPES, SOURCE_TYPE_LABELS, t
 import { DrillBanner } from '@/features/drilldown/drill-banner'
 import { contextFromParams, DASHBOARDS, METRICS, type DashboardKey } from '@/features/drilldown/drill-registry'
 import { useCompanyClock, useDrill } from '@/features/drilldown/use-drill'
+import { formatCost, gstText, hsnText } from '@/features/products/product-list-format'
 import { missingInfo } from '@/features/products/product-missing-info'
 import { useAsync } from '@/hooks/use-async'
 import { useDebouncedValue } from '@/hooks/use-debounced-value'
 import { describeDataError } from '@/lib/errors'
-import { formatCurrency, formatNumber, toIsoDate } from '@/lib/format'
+import { formatNumber, toIsoDate } from '@/lib/format'
 import {
   fetchProductKpis,
   listAllProducts,
@@ -76,7 +78,8 @@ import type { ProductRow } from '@/types/database'
 type BoolFilter = 'any' | 'yes' | 'no'
 const BOOL_FILTERS: readonly BoolFilter[] = ['any', 'yes', 'no']
 const STATUS_FILTERS: readonly ProductStatusFilter[] = ['current', 'active', 'inactive', 'archived', 'all']
-const SORT_COLUMNS: readonly ProductSortColumn[] = ['sku', 'product_name', 'product_type', 'default_source_type', 'status', 'selling_price', 'updated_at']
+const SORT_COLUMNS: readonly ProductSortColumn[] = ['sku', 'product_name', 'product_type', 'default_source_type', 'status', 'selling_price', 'updated_at',
+  'standard_manufacturing_cost', 'hsn_code', 'gst_rate', 'base_unit']
 const PAGE_SIZES = [10, 25, 50, 100]
 const toBool = (v: BoolFilter) => (v === 'any' ? null : v === 'yes')
 
@@ -486,15 +489,13 @@ export default function ProductsPage() {
             <Table>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
+                  <SortableHead column="product_name" label="Product Name" sort={sort} onSort={setSort} />
                   <SortableHead column="sku" label="SKU" sort={sort} onSort={setSort} />
-                  <SortableHead column="product_name" label="Product" sort={sort} onSort={setSort} />
                   <TableHead>Category</TableHead>
-                  <SortableHead column="product_type" label="Type" sort={sort} onSort={setSort} />
-                  <SortableHead column="default_source_type" label="Source" sort={sort} onSort={setSort} />
-                  <TableHead>Unit</TableHead>
-                  <TableHead>HSN / GST</TableHead>
-                  <TableHead className="text-right">MRP</TableHead>
-                  <SortableHead column="selling_price" label="Selling Price" sort={sort} onSort={setSort} align="right" />
+                  <SortableHead column="standard_manufacturing_cost" label="Cost" sort={sort} onSort={setSort} align="right" />
+                  <SortableHead column="hsn_code" label="HSN" sort={sort} onSort={setSort} />
+                  <SortableHead column="gst_rate" label="GST" sort={sort} onSort={setSort} align="right" />
+                  <SortableHead column="base_unit" label="Unit" sort={sort} onSort={setSort} />
                   <SortableHead column="status" label="Status" sort={sort} onSort={setSort} />
                   {missingView && <TableHead>Missing information</TableHead>}
                   <TableHead className="text-right">
@@ -505,14 +506,11 @@ export default function ProductsPage() {
               <TableBody>
                 {rows.map((p) => (
                   <TableRow key={p.id}>
-                    <TableCell>
-                      <Link to={`/products/${p.id}`} className="font-medium text-primary hover:underline">
-                        {p.sku}
-                      </Link>
-                      {p.ean && <p className="text-xs text-muted-foreground tabular-nums" title="EAN">EAN {p.ean}</p>}
-                    </TableCell>
                     <TableCell className="min-w-48 max-w-72 whitespace-normal">
                       <p className="font-medium">{p.product_name}</p>
+                      <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                        {PRODUCT_TYPE_LABELS[p.product_type]} <ProductSourceBadge source={p.default_source_type} />
+                      </p>
                       {(p.brand || p.model_number) && (
                         <p className="text-xs text-muted-foreground">{[p.brand, p.model_number].filter(Boolean).join(' · ')}</p>
                       )}
@@ -520,18 +518,17 @@ export default function ProductsPage() {
                         <p className="text-xs text-muted-foreground">Supplier: {[p.supplier_model_number, p.supplier_product_name].filter(Boolean).join(' · ')}</p>
                       )}
                     </TableCell>
-                    <TableCell className="text-muted-foreground">{p.category_id ? (categoryName.get(p.category_id) ?? '—') : '—'}</TableCell>
-                    <TableCell>{PRODUCT_TYPE_LABELS[p.product_type]}</TableCell>
                     <TableCell>
-                      <ProductSourceBadge source={p.default_source_type} />
+                      <Link to={`/products/${p.id}`} className="font-medium text-primary hover:underline">
+                        {p.sku}
+                      </Link>
+                      {p.ean && <p className="text-xs text-muted-foreground tabular-nums" title="EAN">EAN {p.ean}</p>}
                     </TableCell>
+                    <TableCell className="text-muted-foreground">{p.category_id ? (categoryName.get(p.category_id) ?? '—') : '—'}</TableCell>
+                    <TableCell className="text-right tabular-nums" data-col="cost">{formatCost(p.standard_manufacturing_cost)}</TableCell>
+                    <TableCell className="tabular-nums" data-col="hsn">{hsnText(p.hsn_code) ?? <MissingValue />}</TableCell>
+                    <TableCell className="text-right tabular-nums" data-col="gst">{gstText(p.gst_rate) ?? <MissingValue />}</TableCell>
                     <TableCell>{p.base_unit}</TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {p.hsn_code ?? '—'}
-                      {p.gst_rate !== null && <span> · {Number(p.gst_rate)}%</span>}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums text-muted-foreground">{p.mrp === null || p.mrp === undefined ? '—' : formatCurrency(Number(p.mrp))}</TableCell>
-                    <TableCell className="text-right tabular-nums">{p.selling_price === null ? '—' : formatCurrency(Number(p.selling_price))}</TableCell>
                     <TableCell>
                       <ProductStatusBadge product={p} />
                     </TableCell>
@@ -641,5 +638,14 @@ function RowActions({
         )}
       </DropdownMenuContent>
     </DropdownMenu>
+  )
+}
+
+/** A required value that is not entered yet (HSN, GST): shown, not hidden. */
+function MissingValue() {
+  return (
+    <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-700" title="Not entered yet">
+      <AlertTriangle aria-hidden className="size-3.5" /> Missing
+    </span>
   )
 }

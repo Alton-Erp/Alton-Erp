@@ -12,6 +12,7 @@ import type { Database, ProductCategoryRow, ProductRow } from '@/types/database'
 
 export type ProductStatusFilter = 'current' | 'active' | 'inactive' | 'archived' | 'all'
 export type ProductSortColumn = 'sku' | 'product_name' | 'product_type' | 'default_source_type' | 'status' | 'selling_price' | 'updated_at'
+  | 'standard_manufacturing_cost' | 'hsn_code' | 'gst_rate' | 'base_unit'
 
 export interface ProductListParams {
   search: string

@@ -1991,7 +1991,14 @@ const api = http.createServer((req, res) => {
         if (single) return send(res, 201, { id: rows[0].id })
         return send(res, 201)
       }
-      if (req.method === 'PATCH') return send(res, 204, undefined, { 'Content-Range': '*/1' })
+      if (req.method === 'PATCH') {
+        // The standard manufacturing cost of an edit is kept, so the list shows the saved value. Other fields are
+        // not kept: later steps (purchase orders, GST previews, deactivation) use the original catalogue.
+        if (body && 'standard_manufacturing_cost' in body) {
+          for (const p of filterRows(products, url.searchParams)) p.standard_manufacturing_cost = body.standard_manufacturing_cost
+        }
+        return send(res, 204, undefined, { 'Content-Range': '*/1' })
+      }
     }
 
     if (url.pathname === '/rest/v1/suppliers' && req.method === 'POST') {
@@ -5012,6 +5019,39 @@ await step('List cards 2: Product Master filters live in the address: a free-for
   await waitFor(`/^\\/products\\/[^/]+$/.test(location.pathname)`, 'product details')
   await evaluate('history.back()')
   await waitFor(`location.pathname === '/products' && new URLSearchParams(location.search).get('status') === 'active' && ${pressed('Active')}`, 'Back keeps the tab')
+})
+
+await step('Product Master columns: Product Name, SKU, Category, Cost, HSN, GST, Unit, Status; missing values flagged; Cost sorts on the server; an edit shows at once', async () => {
+  await goto('/products')
+  await waitFor(`document.querySelectorAll('tbody tr').length > 0`, 'product rows')
+  const heads = await evaluate(`[...document.querySelectorAll('thead th')].map((th) => th.innerText.trim().toLowerCase()).filter(Boolean)`)
+  assert(JSON.stringify(heads.slice(0, 8)) === JSON.stringify(['product name', 'sku', 'category', 'cost', 'hsn', 'gst', 'unit', 'status']), JSON.stringify(heads))
+  assert(await evaluate(`[...document.querySelectorAll('td[data-col=gst]')].some((c) => c.innerText.trim() === '18%')`), 'GST shown as a percentage')
+  assert(await evaluate(`[...document.querySelectorAll('td[data-col=hsn]')].some((c) => c.innerText.trim() === '6910')`), 'HSN shown as stored')
+  // Products without an HSN code or GST rate show "Missing"; a cost that is not entered shows "—".
+  assert(await evaluate(`[...document.querySelectorAll('td[data-col=hsn], td[data-col=gst]')].some((c) => c.innerText.includes('Missing'))`), 'missing values not flagged')
+  assert(await evaluate(`[...document.querySelectorAll('td[data-col=cost]')].some((c) => c.innerText.trim() === '—')`), 'missing cost not shown as —')
+  assert(!(await evaluate(bodyHas('HSN / GST'))), 'the old combined column is still there')
+  const before = requests.length
+  await click('th button', 'COST') // headings are styled in capitals
+  await waitFor(`new URLSearchParams(location.search).get('sort') === 'standard_manufacturing_cost'`, 'sorted by cost')
+  for (let i = 0; i < 30 && !requests.slice(before).some((r) => r.path === '/rest/v1/products' && r.query.includes('order=standard_manufacturing_cost.asc')); i++) await sleep(100)
+  assert(requests.slice(before).some((r) => r.path === '/rest/v1/products' && r.query.includes('order=standard_manufacturing_cost.asc')), 'cost sort not sent to the database')
+  await click('th button', 'GST')
+  await waitFor(`new URLSearchParams(location.search).get('sort') === 'gst_rate'`, 'sorted by GST')
+  await screenshot('155-product-columns')
+  // Edit: the list shows the saved standard manufacturing cost (two decimals, rupees).
+  await goto('/products/p2/edit')
+  await waitFor(`!!document.querySelector('#p-standard_manufacturing_cost')`, 'edit form')
+  await fill('#p-standard_manufacturing_cost', '1234.5')
+  await fill('#p-change-reason', 'New moulding cost')
+  await click('button[type=submit]')
+  await waitFor(`location.pathname === '/products/p2'`, 'saved')
+  await goto('/products?q=MOCK-WC-2')
+  await waitFor(`[...document.querySelectorAll('tbody tr')].some((r) => r.innerText.includes('MOCK-WC-2') && r.querySelector('td[data-col=cost]')?.innerText.trim() === '₹1,234.50')`, 'edited cost shown')
+  // A drill-down list (Missing Information) has the same columns.
+  await goto('/products?drill=pm.incomplete')
+  await waitFor(`!!document.querySelector('[data-testid=drill-banner]') && !!document.querySelector('td[data-col=cost]') && !!document.querySelector('td[data-col=hsn]') && !!document.querySelector('td[data-col=gst]')`, 'columns in a drill-down list')
 })
 
 await step('List cards 3: Purchase Orders, Goods Received, Ledger and the stock card: each card opens its records with the same rule', async () => {
