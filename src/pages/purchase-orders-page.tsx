@@ -2,7 +2,7 @@ import {
   Ban, CheckCircle2, ClipboardList, Clock, Download, FileEdit, IndianRupee, Loader2, PackageCheck, PackageOpen, Plus, Send, Truck, X,
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 
 import { usePermissions } from '@/auth/use-permissions'
 import { DataTable, type DataTableColumn } from '@/components/common/data-table'
@@ -19,13 +19,12 @@ import { formatQty } from '@/features/inventory/inventory-model'
 import { PoStatusBadge } from '@/features/purchasing/po-components'
 import { OPEN_PO_STATUSES, PO_STATUS_LABELS, PO_STATUSES, PURCHASE_TYPE_LABELS, poExportRows } from '@/features/purchasing/po-model'
 import { useAsync } from '@/hooks/use-async'
-import { getPresetRange } from '@/lib/date-range'
+import { useDrill, useUrlDateRange } from '@/features/drilldown/use-drill'
 import { describeDataError } from '@/lib/errors'
 import { formatDate, formatNumber, toIsoDate } from '@/lib/format'
 import { fetchDisplayNames } from '@/services/products'
 import { fetchPoDashboard, fetchPurchaseOrders, PO_LIST_LIMIT } from '@/services/purchasing'
 import type { PurchaseOrderListRow, PurchaseType } from '@/types/database-purchasing'
-import type { DateRangeValue } from '@/types'
 
 interface Filters {
   status: string
@@ -49,9 +48,25 @@ export default function PurchaseOrdersPage() {
   const { has } = usePermissions()
   const navigate = useNavigate()
   const location = useLocation()
-  const [period, setPeriod] = useState<DateRangeValue>(() => getPresetRange('this_month'))
-  const [f, setF] = useState<Filters>(NO_FILTERS)
-  const set = (k: keyof Filters) => (v: string) => setF((x) => ({ ...x, [k]: v }))
+  // Period and register filters live in the address, so Back from an order returns to the same list.
+  const [period, setPeriod] = useUrlDateRange('this_month')
+  const [params, setParams] = useSearchParams()
+  const f: Filters = useMemo(() => Object.fromEntries((Object.keys(NO_FILTERS) as (keyof Filters)[])
+    .map((k) => [k, params.get(`f_${k}`) ?? NO_FILTERS[k]])) as unknown as Filters, [params])
+  const setF = (next: Filters | ((x: Filters) => Filters)) => {
+    const v = typeof next === 'function' ? next(f) : next
+    setParams((prev) => {
+      const p = new URLSearchParams(prev)
+      for (const k of Object.keys(NO_FILTERS) as (keyof Filters)[]) {
+        if (v[k] === NO_FILTERS[k]) p.delete(`f_${k}`)
+        else p.set(`f_${k}`, v[k])
+      }
+      return p
+    }, { replace: true })
+  }
+  const set = (k: keyof Filters) => (val: string) => setF((x) => ({ ...x, [k]: val }))
+  const { href } = useDrill('purchase_orders')
+  const periodCtx = { from: toIsoDate(period.from), to: toIsoDate(period.to) }
   const [notice, setNotice] = useState<string | null>((location.state as { message?: string } | null)?.message ?? null)
 
   const orders = useAsync(() => fetchPurchaseOrders(), [])
@@ -150,17 +165,17 @@ export default function PurchaseOrdersPage() {
       </div>
       {dash.error && <p role="alert" className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-800">Dashboard figures could not be loaded: {describeDataError(dash.error)}</p>}
       <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-        <KpiCard label="Total purchase orders" value={kpi(d?.total)} icon={ClipboardList} />
-        <KpiCard label="Draft" value={count('DRAFT')} icon={FileEdit} />
-        <KpiCard label="Pending approval" value={count('PENDING_APPROVAL')} icon={Clock} accent="pending" />
-        <KpiCard label="Approved, not sent" value={count('APPROVED')} icon={CheckCircle2} accent="manufacturing" />
-        <KpiCard label="Open (awaiting goods)" value={kpi(d?.open)} icon={Send} accent="manufacturing" hint={d && d.overdue > 0 ? `${d.overdue} past expected delivery` : 'Approved, sent or partially received'} />
-        <KpiCard label="Partially received" value={count('PARTIALLY_RECEIVED')} icon={PackageOpen} accent="pending" />
-        <KpiCard label="Fully received" value={count('RECEIVED')} icon={PackageCheck} accent="available" hint={d?.by_status.CLOSED ? `${d.by_status.CLOSED} short-closed` : undefined} />
-        <KpiCard label="Cancelled" value={count('CANCELLED')} icon={Ban} accent="shortage" />
-        <KpiCard label="Approved PO value" value={dash.loading || !d ? null : money(d.period_value)} icon={IndianRupee}
+        <KpiCard to={href('purchase.total')} label="Total purchase orders" value={kpi(d?.total)} icon={ClipboardList} />
+        <KpiCard to={href('purchase.status', { segment: 'DRAFT' })} label="Draft" value={count('DRAFT')} icon={FileEdit} />
+        <KpiCard to={href('purchase.status', { segment: 'PENDING_APPROVAL' })} label="Pending approval" value={count('PENDING_APPROVAL')} icon={Clock} accent="pending" />
+        <KpiCard to={href('purchase.status', { segment: 'APPROVED' })} label="Approved, not sent" value={count('APPROVED')} icon={CheckCircle2} accent="manufacturing" />
+        <KpiCard to={href('purchase.open')} label="Open (awaiting goods)" value={kpi(d?.open)} icon={Send} accent="manufacturing" hint={d && d.overdue > 0 ? `${d.overdue} past expected delivery` : 'Approved, sent or partially received'} />
+        <KpiCard to={href('purchase.status', { segment: 'PARTIALLY_RECEIVED' })} label="Partially received" value={count('PARTIALLY_RECEIVED')} icon={PackageOpen} accent="pending" />
+        <KpiCard to={href('purchase.status', { segment: 'RECEIVED' })} label="Fully received" value={count('RECEIVED')} icon={PackageCheck} accent="available" hint={d?.by_status.CLOSED ? `${d.by_status.CLOSED} short-closed` : undefined} />
+        <KpiCard to={href('purchase.status', { segment: 'CANCELLED' })} label="Cancelled" value={count('CANCELLED')} icon={Ban} accent="shortage" />
+        <KpiCard to={href('purchase.period', periodCtx)} label="Approved PO value" value={dash.loading || !d ? null : money(d.period_value)} icon={IndianRupee}
           hint={d ? `${d.period_orders} order(s) dated in the period, incl. GST` : undefined} />
-        <KpiCard label="Outstanding receipt value" value={dash.loading || !d ? null : money(d.outstanding_receipt_value)} icon={Truck} accent="pending"
+        <KpiCard to={href('purchase.pending_value')} label="Outstanding receipt value" value={dash.loading || !d ? null : money(d.outstanding_receipt_value)} icon={Truck} accent="pending"
           hint="Pending quantities of open orders × order price, incl. GST" />
       </div>
 

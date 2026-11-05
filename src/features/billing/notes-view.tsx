@@ -25,6 +25,7 @@ import { createNote, fetchInvoice, fetchInvoiceLines, fetchIssuedInvoices, fetch
 import { fetchReturnLines, fetchReturns } from '@/services/sales'
 import type { AdjustmentNoteListRow, NoteReason, NoteStatus, NoteType } from '@/types/database-billing'
 import type { CustomerReturnLineListRow } from '@/types/database-sales'
+import { useUrlEnum } from '@/hooks/use-url-state'
 
 type LineInput = { mode: 'qty' | 'amount'; value: string; returnLineId: string | null }
 
@@ -169,7 +170,8 @@ export function NotesView({ type }: { type: NoteType }) {
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
   const [creating, setCreating] = useState(Boolean(params.get('invoice')) && has('invoice_adjustments.create'))
-  const [tab, setTab] = useState<Tab>('ALL')
+  // Kept in the address, so Back from a record returns to the same tab.
+  const [tab, setTab] = useUrlEnum<Tab>('status', ['ALL', 'DRAFT', 'PENDING_APPROVAL', 'ISSUED', 'CANCELLED', 'DISCARDED'], 'ALL')
   const list = useAsync(() => fetchNotes({ type, status: tab === 'ALL' ? null : tab }), [type, tab])
   const Icon = type === 'CREDIT' ? FileMinus : FilePlus2
   const label = type === 'CREDIT' ? 'credit' : 'debit'

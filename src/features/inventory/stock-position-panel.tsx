@@ -23,6 +23,7 @@ import { describeDataError } from '@/lib/errors'
 import { formatDate, formatDateTime, toIsoDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { fetchStockPosition, fetchStockPositionDetail, fetchStockReconciliation, type StockPositionFilters, type StockPositionRow } from '@/services/inventory'
+import { useUrlEnum } from '@/hooks/use-url-state'
 
 export type PositionView = 'all' | 'low' | 'shortage' | 'pending' | 'discrepancy'
 
@@ -46,7 +47,8 @@ export function StockPositionPanel({ filters, stockStatus, onClearFilters, filte
   filtersActive: boolean
 }) {
   const { has } = usePermissions()
-  const [view, setView] = useState<PositionView>('all')
+  // Kept in the address, so Back from a record returns to the same tab.
+  const [view, setView] = useUrlEnum<PositionView>('show', ['all', 'low', 'shortage', 'pending', 'discrepancy'], 'all')
   const [sort, setSort] = useState<{ column: PositionSortKey; ascending: boolean }>({ column: 'sku', ascending: true })
   const [page, setPage] = useState(0)
   const [pageSize, setPageSize] = useState(25)

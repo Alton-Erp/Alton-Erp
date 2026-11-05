@@ -21,7 +21,7 @@ import {
   Truck,
   X,
 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 
 import { PermissionGate } from '@/auth/permission-gate'
@@ -53,7 +53,8 @@ import { productExportRows } from '@/features/products/product-export'
 import { PRODUCT_TYPES, PRODUCT_TYPE_LABELS, SOURCE_TYPES, SOURCE_TYPE_LABELS, type ProductType, type SourceType } from '@/features/products/product-model'
 import { DrillBanner } from '@/features/drilldown/drill-banner'
 import { contextFromParams, DASHBOARDS, METRICS, type DashboardKey } from '@/features/drilldown/drill-registry'
-import { useCompanyClock } from '@/features/drilldown/use-drill'
+import { useCompanyClock, useDrill } from '@/features/drilldown/use-drill'
+import { missingInfo } from '@/features/products/product-missing-info'
 import { useAsync } from '@/hooks/use-async'
 import { useDebouncedValue } from '@/hooks/use-debounced-value'
 import { describeDataError } from '@/lib/errors'
@@ -73,6 +74,10 @@ import { fetchSupplierOptions } from '@/services/suppliers'
 import type { ProductRow } from '@/types/database'
 
 type BoolFilter = 'any' | 'yes' | 'no'
+const BOOL_FILTERS: readonly BoolFilter[] = ['any', 'yes', 'no']
+const STATUS_FILTERS: readonly ProductStatusFilter[] = ['current', 'active', 'inactive', 'archived', 'all']
+const SORT_COLUMNS: readonly ProductSortColumn[] = ['sku', 'product_name', 'product_type', 'default_source_type', 'status', 'selling_price', 'updated_at']
+const PAGE_SIZES = [10, 25, 50, 100]
 const toBool = (v: BoolFilter) => (v === 'any' ? null : v === 'yes')
 
 type PendingAction = { product: ProductRow; kind: 'activate' | 'deactivate' | 'archive' | 'unarchive' }
@@ -98,31 +103,69 @@ export default function ProductsPage() {
   const navigate = useNavigate()
   const { has } = usePermissions()
 
-  const [search, setSearch] = useState('')
+  // Filters, sort and page live in the address, so Back from a product returns to the same list.
+  const [urlParams, setUrlParams] = useSearchParams()
+  const setParams = useCallback((changes: Record<string, string | null>, keepPage = false) => {
+    setUrlParams((prev) => {
+      const next = new URLSearchParams(prev)
+      for (const [k, v] of Object.entries(changes)) {
+        if (v === null || v === '') next.delete(k)
+        else next.set(k, v)
+      }
+      // Any filter change returns to the first page.
+      if (!keepPage) next.delete('page')
+      return next
+    }, { replace: true })
+  }, [setUrlParams])
+  const pick = <T extends string>(name: string, allowed: readonly T[], fallback: T): T => {
+    const v = urlParams.get(name)
+    return v !== null && (allowed as readonly string[]).includes(v) ? (v as T) : fallback
+  }
+  const q = urlParams.get('q') ?? ''
+  const [search, setSearch] = useState(q)
   const debouncedSearch = useDebouncedValue(search)
-  const [categoryId, setCategoryId] = useState<string>('all')
-  const [sourceType, setSourceType] = useState<SourceType | 'all'>('all')
-  const [productType, setProductType] = useState<ProductType | 'all'>('all')
-  const [status, setStatus] = useState<ProductStatusFilter>('current')
-  const [manufacturable, setManufacturable] = useState<BoolFilter>('any')
-  const [hasBom, setHasBom] = useState<BoolFilter>('any')
-  const [sort, setSort] = useState<{ column: ProductSortColumn; ascending: boolean }>({ column: 'sku', ascending: true })
-  const [page, setPage] = useState(0)
-  const [pageSize, setPageSize] = useState(25)
+  useEffect(() => {
+    if (debouncedSearch !== q) setParams({ q: debouncedSearch.trim() ? debouncedSearch : null })
+    // Only when the typed text settles.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSearch])
+  const categoryId = urlParams.get('category') || 'all'
+  const sourceType = pick<SourceType | 'all'>('source', [...SOURCE_TYPES, 'all'], 'all')
+  const productType = pick<ProductType | 'all'>('type', [...PRODUCT_TYPES, 'all'], 'all')
+  const status = pick<ProductStatusFilter>('status', STATUS_FILTERS, 'current')
+  const manufacturable = pick<BoolFilter>('mfg', BOOL_FILTERS, 'any')
+  const hasBom = pick<BoolFilter>('bom', BOOL_FILTERS, 'any')
+  const sortParam = urlParams.get('sort') ?? 'sku'
+  const sortName = sortParam.replace(/^-/, '')
+  const sortColumn: ProductSortColumn = (SORT_COLUMNS as readonly string[]).includes(sortName) ? (sortName as ProductSortColumn) : 'sku'
+  const sort = useMemo(() => ({ column: sortColumn, ascending: !sortParam.startsWith('-') }), [sortColumn, sortParam])
+  const page = Math.max(0, (Number(urlParams.get('page')) || 1) - 1)
+  const pageSize = PAGE_SIZES.includes(Number(urlParams.get('size'))) ? Number(urlParams.get('size')) : 25
+  const setCategoryId = (v: string) => setParams({ category: v === 'all' ? null : v })
+  const setSourceType = (v: SourceType | 'all') => setParams({ source: v === 'all' ? null : v })
+  const setProductType = (v: ProductType | 'all') => setParams({ type: v === 'all' ? null : v })
+  const setStatus = (v: ProductStatusFilter) => setParams({ status: v === 'current' ? null : v })
+  const setManufacturable = (v: BoolFilter) => setParams({ mfg: v === 'any' ? null : v })
+  const setHasBom = (v: BoolFilter) => setParams({ bom: v === 'any' ? null : v })
+  const setSort = (s: { column: ProductSortColumn; ascending: boolean }) => setParams({ sort: s.column === 'sku' && s.ascending ? null : `${s.ascending ? '' : '-'}${s.column}` })
+  const setPage = (p: number) => setParams({ page: p > 0 ? String(p + 1) : null }, true)
+  const setPageSize = (n: number) => setParams({ size: n === 25 ? null : String(n) })
   const [refreshKey, setRefreshKey] = useState(0)
   const [pending, setPending] = useState<PendingAction | null>(null)
   const [notice, setNotice] = useState<{ tone: 'success' | 'error'; text: string } | null>(null)
   const [exporting, setExporting] = useState(false)
 
-  // Opened from a dashboard figure (?drill=…): that figure's rule is applied on top of the filters below.
-  const [urlParams, setUrlParams] = useSearchParams()
+  // Opened from a figure (?drill=…: a Product Master card or a dashboard figure): its rule is applied on top of the filters.
   const clock = useCompanyClock()
+  const { href } = useDrill('product_master')
   const drillKey = urlParams.get('drill')
   const drillMetric = drillKey && METRICS[drillKey]?.target === 'products' ? METRICS[drillKey] : null
   const drillCtx = useMemo(() => contextFromParams(urlParams, clock), [urlParams, clock])
   const drill = useMemo(() => (drillMetric ? drillMetric.conditions(drillCtx) : null), [drillMetric, drillCtx])
   const via = urlParams.get('via') as DashboardKey | null
-  const clearDrill = () => setUrlParams(new URLSearchParams(), { replace: true })
+  // Removes the figure's rule only; the list's own filters stay.
+  const clearDrill = () => setParams({ drill: null, via: null, from: null, to: null, today: null, tz: null, seg: null, sf: null, st: null, unit: null })
+  const missingView = drillKey === 'pm.incomplete'
 
   const filters = useMemo<Omit<ProductListParams, 'page' | 'pageSize'>>(
     () => ({
@@ -139,13 +182,6 @@ export default function ProductsPage() {
     [debouncedSearch, categoryId, sourceType, productType, status, manufacturable, hasBom, sort, drill],
   )
 
-  // Any filter change returns to the first page.
-  const [lastFilters, setLastFilters] = useState(filters)
-  if (lastFilters !== filters) {
-    setLastFilters(filters)
-    setPage(0)
-  }
-
   const list = useAsync(() => listProducts({ ...filters, page, pageSize }), [filters, page, pageSize, refreshKey])
   const kpis = useAsync(fetchProductKpis, [refreshKey])
   const categories = useAsync(listCategories, [refreshKey])
@@ -156,12 +192,7 @@ export default function ProductsPage() {
 
   const clearFilters = () => {
     setSearch('')
-    setCategoryId('all')
-    setSourceType('all')
-    setProductType('all')
-    setStatus('current')
-    setManufacturable('any')
-    setHasBom('any')
+    setParams({ q: null, category: null, source: null, type: null, status: null, mfg: null, bom: null })
   }
 
   const refresh = () => setRefreshKey((k) => k + 1)
@@ -282,20 +313,20 @@ export default function ProductsPage() {
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
             <KpiCard
+              to={href('pm.active')}
+              active={drillKey === 'pm.active'}
+              testId="pm-card-active"
               label="Total Active Products"
               value={formatNumber(kpis.data?.active ?? 0)}
               hint={`${formatNumber(kpis.data?.in_house ?? 0)} in-house · ${formatNumber(kpis.data?.outsourced ?? 0)} outsourced · ${formatNumber(kpis.data?.hybrid ?? 0)} hybrid · ${formatNumber(kpis.data?.inactive ?? 0)} inactive`}
               icon={PackageCheck}
               accent="available"
             />
-            <KpiCard label="Finished Goods" value={formatNumber(kpis.data?.finished_goods ?? 0)} hint={`${formatNumber(kpis.data?.subassemblies ?? 0)} subassemblies`} icon={Factory} accent="manufacturing" />
-            <KpiCard label="Raw Materials" value={formatNumber(kpis.data?.raw_materials ?? 0)} hint={`${formatNumber(kpis.data?.packaging ?? 0)} packing · ${formatNumber(kpis.data?.consumables ?? 0)} consumables`} icon={Package} accent="neutral" />
-            <KpiCard label="Components" value={formatNumber(kpis.data?.components ?? 0)} hint={`${formatNumber(kpis.data?.outsourced_components ?? 0)} outsourced components`} icon={Truck} accent="outsourced" />
-            <button type="button" className="rounded-xl text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-              title="Show finished goods without a BOM" onClick={() => { setProductType('FINISHED_GOOD'); setHasBom('no') }}>
-              <KpiCard label="Without BOM" value={formatNumber(kpis.data?.without_bom ?? 0)} hint="Finished goods & subassemblies" icon={Blend} accent={(kpis.data?.without_bom ?? 0) > 0 ? 'pending' : 'neutral'} className="h-full" />
-            </button>
-            <KpiCard label="Missing Information" value={formatNumber(kpis.data?.incomplete ?? 0)} hint="No HSN, GST, category or price/cost" icon={Search} accent={(kpis.data?.incomplete ?? 0) > 0 ? 'pending' : 'neutral'} />
+            <KpiCard to={href('pm.finished_goods')} active={drillKey === 'pm.finished_goods'} label="Finished Goods" value={formatNumber(kpis.data?.finished_goods ?? 0)} hint={`${formatNumber(kpis.data?.subassemblies ?? 0)} subassemblies`} icon={Factory} accent="manufacturing" />
+            <KpiCard to={href('pm.raw_materials')} active={drillKey === 'pm.raw_materials'} label="Raw Materials" value={formatNumber(kpis.data?.raw_materials ?? 0)} hint={`${formatNumber(kpis.data?.packaging ?? 0)} packing · ${formatNumber(kpis.data?.consumables ?? 0)} consumables`} icon={Package} accent="neutral" />
+            <KpiCard to={href('pm.components')} active={drillKey === 'pm.components'} label="Components" value={formatNumber(kpis.data?.components ?? 0)} hint={`${formatNumber(kpis.data?.outsourced_components ?? 0)} outsourced components`} icon={Truck} accent="outsourced" />
+            <KpiCard to={href('pm.without_bom')} active={drillKey === 'pm.without_bom'} label="Without BOM" value={formatNumber(kpis.data?.without_bom ?? 0)} hint="Finished goods & subassemblies" icon={Blend} accent={(kpis.data?.without_bom ?? 0) > 0 ? 'pending' : 'neutral'} />
+            <KpiCard to={href('pm.incomplete')} active={missingView} testId="pm-card-incomplete" label="Missing Information" value={formatNumber(kpis.data?.incomplete ?? 0)} hint="No HSN, GST, category or price/cost" icon={Search} accent={(kpis.data?.incomplete ?? 0) > 0 ? 'pending' : 'neutral'} />
           </div>
         )}
       </section>
@@ -328,11 +359,11 @@ export default function ProductsPage() {
               value={status}
               onChange={setStatus}
               options={[
-                { value: 'current', label: 'All current' },
-                { value: 'active', label: 'Active' },
-                { value: 'inactive', label: 'Inactive' },
-                { value: 'archived', label: 'Archived' },
-                { value: 'all', label: 'Everything' },
+                { value: 'current', label: 'All current', count: kpis.data ? kpis.data.active + kpis.data.inactive : undefined },
+                { value: 'active', label: 'Active', count: kpis.data?.active },
+                { value: 'inactive', label: 'Inactive', count: kpis.data?.inactive },
+                { value: 'archived', label: 'Archived', count: kpis.data?.archived },
+                { value: 'all', label: 'Everything', count: kpis.data?.total },
               ]}
             />
           </div>
@@ -465,6 +496,7 @@ export default function ProductsPage() {
                   <TableHead className="text-right">MRP</TableHead>
                   <SortableHead column="selling_price" label="Selling Price" sort={sort} onSort={setSort} align="right" />
                   <SortableHead column="status" label="Status" sort={sort} onSort={setSort} />
+                  {missingView && <TableHead>Missing information</TableHead>}
                   <TableHead className="text-right">
                     <span className="sr-only">Actions</span>
                   </TableHead>
@@ -503,6 +535,15 @@ export default function ProductsPage() {
                     <TableCell>
                       <ProductStatusBadge product={p} />
                     </TableCell>
+                    {missingView && (() => {
+                      const c = missingInfo(p)
+                      return (
+                        <TableCell className="min-w-48 whitespace-normal" data-testid="pm-missing">
+                          <p className="text-sm text-amber-800">{c.missing.join(', ') || 'Nothing missing'}</p>
+                          <p className="text-xs text-muted-foreground">{c.done} of {c.total} complete ({c.percent}%) · <Link className="text-primary hover:underline" to={`/products/${p.id}/edit`}>Complete it</Link></p>
+                        </TableCell>
+                      )
+                    })()}
                     <TableCell className="text-right">
                       <RowActions product={p} onView={() => navigate(`/products/${p.id}`)} onEdit={() => navigate(`/products/${p.id}/edit`)} onAction={setPending} />
                     </TableCell>

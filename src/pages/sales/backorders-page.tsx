@@ -21,6 +21,7 @@ import { describeDataError } from '@/lib/errors'
 import { formatDate } from '@/lib/format'
 import { fetchOrderLines, releaseOrder, updateOrderLine } from '@/services/sales'
 import type { SalesOrderLineListRow } from '@/types/database-sales'
+import { useUrlEnum } from '@/hooks/use-url-state'
 
 type Tab = 'BACKORDERED' | 'OUTSTANDING'
 
@@ -65,7 +66,8 @@ function LineDialog({ line, onClose, onDone }: { line: SalesOrderLineListRow; on
 
 export default function BackordersPage() {
   const { has } = usePermissions()
-  const [tab, setTab] = useState<Tab>('BACKORDERED')
+  // Kept in the address, so Back from a record returns to the same tab.
+  const [tab, setTab] = useUrlEnum<Tab>('lines', ['BACKORDERED', 'OUTSTANDING'], 'BACKORDERED')
   const [refresh, setRefresh] = useState(0)
   const lines = useAsync(() => fetchOrderLines({ openOnly: true, backorderedOnly: tab === 'BACKORDERED' }), [tab, refresh])
   const [editing, setEditing] = useState<SalesOrderLineListRow | null>(null)

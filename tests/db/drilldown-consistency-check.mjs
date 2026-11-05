@@ -257,6 +257,44 @@ async function run(user) {
   await billCheck('DRAFT', null)
   await billCheck('CANCELLED', null)
 
+  // Product Master list cards (product_kpis)
+  const pk = await q(`${P('product_kpis')}()`)
+  for (const [k, f] of [['active', 'active'], ['finished_goods', 'finished_goods'], ['raw_materials', 'raw_materials'], ['components', 'components'],
+    ['without_bom', 'without_bom'], ['incomplete', 'incomplete'], ['inactive', 'inactive']]) {
+    await compare(`Product Master / ${k}`, `pm.${k}`, c, pk[f])
+  }
+
+  // Purchase Orders list: one card per status
+  for (const s of ['DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'SENT', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CLOSED', 'CANCELLED']) {
+    await compare(`Purchase Orders / status ${s}`, 'purchase.status', { ...c, segment: s }, (po.by_status ?? {})[s] ?? 0)
+  }
+
+  // Goods Received list
+  await compare('Goods Received / reversed', 'grn.reversed', c, g.reversed)
+  await compare('Goods Received / rejected quantity (all units)', 'grn.rejected_all', c,
+    await q(`select coalesce(sum(l.rejected_quantity), 0) from public.goods_receipt_lines l join public.goods_receipts r on r.id = l.goods_receipt_id where r.status = 'POSTED'`), 'total')
+
+  // Per-product stock card: every product with a balance
+  const stockRows = (await db.query(`select product_id::text id, on_hand, reserved, available, in_house_on_hand, outsourced_on_hand, unknown_source_on_hand
+    from public.inventory_product_stock where on_hand <> 0 or reserved <> 0`)).rows
+  if (!stockRows.length) for (const k of ['on_hand', 'reserved', 'available', 'in_house', 'outsourced', 'unknown']) await compare(`Stock card / ${k} (none)`, `stock.product_${k}`, { ...c, segment: '00000000-0000-0000-0000-000000000000' }, 0, 'total')
+  for (const s of stockRows) {
+    for (const [k, f] of [['on_hand', 'on_hand'], ['reserved', 'reserved'], ['available', 'available'], ['in_house', 'in_house_on_hand'], ['outsourced', 'outsourced_on_hand'], ['unknown', 'unknown_source_on_hand']]) {
+      await compare(`Stock card ${s.id.slice(0, 8)} / ${k}`, `stock.product_${k}`, { ...c, segment: s.id }, s[f], 'total')
+    }
+  }
+
+  // Ledger list cards (the page's ledgerSummary over ledger_parties rows)
+  const parties = `(select * from public.ledger_parties(null, null, null, null))`
+  for (const t of ['CUSTOMER', 'SUPPLIER', 'BOTH']) {
+    await compare(`Ledger list / ${t.toLowerCase()}`, `ledger.page_${t.toLowerCase()}`, c, await q(`select count(*) from ${parties} p where status = 'ACTIVE' and party_type = '${t}'`))
+  }
+  for (const scope of [null, 'CUSTOMER', 'SUPPLIER']) {
+    const where = scope ? `and party_type in ('${scope}', 'BOTH')` : ''
+    await compare(`Ledger list / parties with a balance (${scope ?? 'all'})`, 'ledger.page_with_balance', { ...c, segment: scope },
+      await q(`select count(*) from ${parties} p where (abs(coalesce(receivable, 0)) >= 0.005 or abs(coalesce(payable, 0)) >= 0.005) ${where}`))
+  }
+
   // Ledger
   const lg = await md('LEDGER')
   for (const [k, f] of [['customers', 'customers'], ['suppliers', 'suppliers'], ['both', 'both'], ['with_balance', 'with_balance']]) await compare(`Ledger / ${k}`, `ledger.${k}`, c, lg[f])

@@ -28,9 +28,11 @@ interface KpiCardProps {
   /** Drill-down: the list of records behind the figure. Without it (or without permission) the card is not a link. */
   to?: string | null
   testId?: string
+  /** The list currently shows this figure's records (selected styling). */
+  active?: boolean
 }
 
-export function KpiCard({ label, value, unit, hint, icon: Icon, accent = 'neutral', className, to, testId }: KpiCardProps) {
+export function KpiCard({ label, value, unit, hint, icon: Icon, accent = 'neutral', className, to, testId, active = false }: KpiCardProps) {
   const link = to && value !== null ? to : null
   const body = (
     <>
@@ -60,9 +62,9 @@ export function KpiCard({ label, value, unit, hint, icon: Icon, accent = 'neutra
     return <Card className={cn('gap-3 p-5', className)} data-testid={testId}>{body}</Card>
   }
   return (
-    <Link to={link} data-testid={testId} data-drill="kpi" aria-label={`${label}: ${value}${unit ? ` ${unit}` : ''} — view records`}
+    <Link to={link} data-testid={testId} data-drill="kpi" data-active={active || undefined} aria-current={active ? 'true' : undefined} aria-label={`${label}: ${value}${unit ? ` ${unit}` : ''} — view records`}
       className="group block rounded-xl outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
-      <Card className={cn('h-full cursor-pointer gap-3 p-5 transition-all duration-150 group-hover:-translate-y-0.5 group-hover:border-primary/40 group-hover:shadow-md motion-reduce:transform-none', className)}>
+      <Card className={cn('h-full cursor-pointer gap-3 p-5 transition-all duration-150 group-hover:-translate-y-0.5 group-hover:border-primary/40 group-hover:shadow-md motion-reduce:transform-none', active && 'border-primary ring-2 ring-primary/30', className)}>
         {body}
       </Card>
     </Link>

@@ -3,6 +3,8 @@ import { useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 
 import { usePermissions } from '@/auth/use-permissions'
+import { useDrill } from '@/features/drilldown/use-drill'
+import { useUrlEnum } from '@/hooks/use-url-state'
 import { DataTable, type DataTableColumn } from '@/components/common/data-table'
 import { FilterTabs } from '@/components/common/filter-tabs'
 import { KpiCard } from '@/components/common/kpi-card'
@@ -28,7 +30,9 @@ export default function GoodsReceiptsPage() {
   const { has } = usePermissions()
   const [refresh, setRefresh] = useState(0)
   const receipts = useAsync(() => fetchGoodsReceipts(), [refresh])
-  const [filter, setFilter] = useState<Filter>('ALL')
+  // Kept in the address, so Back from a receipt returns to the same tab.
+  const [filter, setFilter] = useUrlEnum<Filter>('view', ['ALL', 'PURCHASE_ORDER', 'DIRECT', 'REVERSED'], 'ALL')
+  const { href } = useDrill('goods_receipts')
   const [params] = useSearchParams()
   // ?receive=po|direct opens the receipt dialogs directly (quick actions).
   const [direct, setDirect] = useState(params.get('receive') === 'direct')
@@ -86,12 +90,12 @@ export default function GoodsReceiptsPage() {
         )}
       />
       <section aria-label="Goods received summary" className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
-        <KpiCard label="Total GRNs" value={receipts.data ? formatNumber(kpi.total) : null} hint="Posted receipts" icon={PackageCheck} accent="available" />
-        <KpiCard label="Received Today" value={receipts.data ? formatNumber(kpi.today) : null} icon={CalendarDays} accent="manufacturing" />
-        <KpiCard label="This Month" value={receipts.data ? formatNumber(kpi.month) : null} icon={CheckCircle2} />
-        <KpiCard label="Unlinked GRNs" value={receipts.data ? formatNumber(kpi.unlinked) : null} hint="Received without a purchase order" icon={AlertTriangle} accent={kpi.unlinked > 0 ? 'pending' : 'neutral'} />
-        <KpiCard label="Rejected Quantity" value={receipts.data ? formatQty(kpi.rejected) : null} hint="All units, posted receipts" icon={PackageX} accent={kpi.rejected > 0 ? 'shortage' : 'neutral'} />
-        <KpiCard label="Reversed" value={receipts.data ? formatNumber(kpi.reversed) : null} hint="Kept in the history" icon={Undo2} />
+        <KpiCard to={href('grn.total')} label="Total GRNs" value={receipts.data ? formatNumber(kpi.total) : null} hint="Posted receipts" icon={PackageCheck} accent="available" />
+        <KpiCard to={href('grn.today', { today })} label="Received Today" value={receipts.data ? formatNumber(kpi.today) : null} icon={CalendarDays} accent="manufacturing" />
+        <KpiCard to={href('grn.month', { today })} label="This Month" value={receipts.data ? formatNumber(kpi.month) : null} icon={CheckCircle2} />
+        <KpiCard to={href('grn.unlinked')} label="Unlinked GRNs" value={receipts.data ? formatNumber(kpi.unlinked) : null} hint="Received without a purchase order" icon={AlertTriangle} accent={kpi.unlinked > 0 ? 'pending' : 'neutral'} />
+        <KpiCard to={href('grn.rejected_all')} label="Rejected Quantity" value={receipts.data ? formatQty(kpi.rejected) : null} hint="All units, posted receipts" icon={PackageX} accent={kpi.rejected > 0 ? 'shortage' : 'neutral'} />
+        <KpiCard to={href('grn.reversed')} label="Reversed" value={receipts.data ? formatNumber(kpi.reversed) : null} hint="Kept in the history" icon={Undo2} />
       </section>
       <DataTable
         title="Goods received notes"

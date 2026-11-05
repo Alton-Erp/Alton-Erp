@@ -21,17 +21,21 @@ import { formatDate } from '@/lib/format'
 import { fetchCustomers } from '@/services/customer-po'
 import { fetchOrdersPage, type OrderStatusFilter } from '@/services/sales'
 import type { SalesOrderListRow } from '@/types/database-sales'
+import { useUrlEnum, useUrlPage } from '@/hooks/use-url-state'
 
 type Tab = 'ALL' | 'OPEN' | 'NEEDS_ACTION' | 'FULFILLED' | 'CANCELLED'
 
+const PAGE_KEY = ['page']
+
 export default function SalesOrdersPage() {
   const { has } = usePermissions()
-  const [tab, setTab] = useState<Tab>('OPEN')
+  // Kept in the address, so Back from a record returns to the same tab.
+  const [tab, setTab] = useUrlEnum<Tab>('tab', ['ALL', 'OPEN', 'NEEDS_ACTION', 'FULFILLED', 'CANCELLED'], 'OPEN', PAGE_KEY)
   const [customer, setCustomer] = useState('all')
   const [source, setSource] = useState('all')
   const [term, setTerm] = useState('')
   const search = useDebouncedValue(term, 300)
-  const [page, setPage] = useState(0)
+  const [page, setPage] = useUrlPage()
   const [pageSize, setPageSize] = useState(25)
   const customers = useAsync(() => (has('customers.read') || has('customer_po.read') ? fetchCustomers(true) : Promise.resolve([])), [])
   const status: OrderStatusFilter = tab === 'ALL' ? null : tab
@@ -72,7 +76,7 @@ export default function SalesOrdersPage() {
       } />
       <Card className="mb-4">
         <CardContent className="flex flex-wrap items-center gap-3 p-4">
-          <FilterTabs<Tab> label="Order status" value={tab} onChange={reset(setTab)} options={[
+          <FilterTabs<Tab> label="Order status" value={tab} onChange={setTab} options={[
             { value: 'OPEN', label: 'Open' }, { value: 'NEEDS_ACTION', label: 'Awaiting confirmation / on hold' }, { value: 'FULFILLED', label: 'Fulfilled' },
             { value: 'CANCELLED', label: 'Cancelled' }, { value: 'ALL', label: 'All' },
           ]} />

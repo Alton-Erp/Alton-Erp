@@ -31,6 +31,7 @@ import {
   type ReservationListRow,
 } from '@/services/inventory'
 import type { StockDetailRow } from '@/types/database-inventory'
+import { useUrlEnum } from '@/hooks/use-url-state'
 
 type StatusFilter = 'OPEN' | 'FULFILLED' | 'RELEASED' | 'CANCELLED' | 'EXPIRED' | 'ALL'
 
@@ -39,7 +40,8 @@ const remaining = (r: ReservationListRow) => Number(r.quantity) - Number(r.fulfi
 export default function ReservationsPage() {
   const { has } = usePermissions()
   const storage = useStorage()
-  const [status, setStatus] = useState<StatusFilter>('OPEN')
+  // Kept in the address, so Back from a record returns to the same tab.
+  const [status, setStatus] = useUrlEnum<StatusFilter>('status', ['OPEN', 'FULFILLED', 'RELEASED', 'CANCELLED', 'EXPIRED', 'ALL'], 'OPEN')
   const [refresh, setRefresh] = useState(0)
   const [expired, setExpired] = useState(0)
   const list = useAsync(() => fetchReservations(status === 'ALL' ? null : status), [status, refresh])

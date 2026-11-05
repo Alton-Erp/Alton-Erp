@@ -26,7 +26,8 @@ export function DrillBanner({ metric, ctx, via, total, onClear }: {
         </div>
       </div>
       <div className="flex shrink-0 gap-2">
-        <Button variant="outline" size="sm" asChild><Link to={dashboardHref(dash, ctx)}><ArrowLeft /> Dashboard</Link></Button>
+        {/* Opened from a card of this same list: no separate page to go back to. */}
+        {dash !== 'product_master' && <Button variant="outline" size="sm" asChild><Link to={dashboardHref(dash, ctx)}><ArrowLeft /> {DASHBOARDS[dash].label}</Link></Button>}
         <Button variant="outline" size="sm" onClick={onClear}><X /> Clear filters</Button>
       </div>
     </div>

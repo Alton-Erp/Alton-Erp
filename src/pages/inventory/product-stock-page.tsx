@@ -12,6 +12,7 @@ import { ReservationStatusBadge, StockSourceBadge, StockStatusBadge, Transaction
 import { formatQty } from '@/features/inventory/inventory-model'
 import { FractionFlag } from '@/features/inventory/fraction-flag'
 import { isFractionalForUnit } from '@/features/inventory/whole-units'
+import { useDrill } from '@/features/drilldown/use-drill'
 import { useAsync } from '@/hooks/use-async'
 import { getPresetRange } from '@/lib/date-range'
 import { describeDataError } from '@/lib/errors'
@@ -41,6 +42,9 @@ async function load(productId: string) {
 export default function ProductStockPage() {
   const { productId = '' } = useParams()
   const { data, loading, error, reload } = useAsync(() => load(productId), [productId])
+  // Each figure opens this product's stock lots behind it.
+  const { href } = useDrill('stock_card')
+  const drill = (key: string) => href(key, { segment: productId })
 
   if (loading && !data) return <LoadingState label="Loading stock…" />
   if (error || !data) {
@@ -98,12 +102,12 @@ export default function ProductStockPage() {
         </p>
       )}
       <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
-        <KpiCard label="On hand" value={formatQty(p.on_hand)} unit={u} icon={Warehouse} />
-        <KpiCard label="Reserved" value={formatQty(p.reserved)} unit={u} icon={Lock} accent="pending" />
-        <KpiCard label="Available" value={formatQty(p.available)} unit={u} icon={PackageCheck} accent="available" />
-        <KpiCard label="In-house" value={formatQty(p.in_house_on_hand)} unit={u} icon={Factory} accent="manufacturing" />
-        <KpiCard label="Outsourced" value={formatQty(p.outsourced_on_hand)} unit={u} icon={Truck} accent="outsourced" />
-        <KpiCard label="Unverified source" value={formatQty(p.unknown_source_on_hand)} unit={u} hint="Needs source review" icon={HelpCircle} accent="pending" />
+        <KpiCard to={drill('stock.product_on_hand')} label="On hand" value={formatQty(p.on_hand)} unit={u} icon={Warehouse} />
+        <KpiCard to={drill('stock.product_reserved')} label="Reserved" value={formatQty(p.reserved)} unit={u} icon={Lock} accent="pending" />
+        <KpiCard to={drill('stock.product_available')} label="Available" value={formatQty(p.available)} unit={u} icon={PackageCheck} accent="available" />
+        <KpiCard to={drill('stock.product_in_house')} label="In-house" value={formatQty(p.in_house_on_hand)} unit={u} icon={Factory} accent="manufacturing" />
+        <KpiCard to={drill('stock.product_outsourced')} label="Outsourced" value={formatQty(p.outsourced_on_hand)} unit={u} icon={Truck} accent="outsourced" />
+        <KpiCard to={drill('stock.product_unknown')} label="Unverified source" value={formatQty(p.unknown_source_on_hand)} unit={u} hint="Needs source review" icon={HelpCircle} accent="pending" />
       </div>
       <div className="space-y-6">
         <DataTable title="Stock by location and lot" columns={lotColumns} data={data.lots} getRowId={(r) => r.balance_id}

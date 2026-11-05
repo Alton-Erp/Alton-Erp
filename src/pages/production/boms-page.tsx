@@ -19,6 +19,7 @@ import { formatDate, formatNumber, toIsoDate } from '@/lib/format'
 import { fetchBomItemsFor, fetchBoms } from '@/services/production'
 import { fetchSupplierOptions } from '@/services/suppliers'
 import type { BomListRow, BomStatus } from '@/types/database-production'
+import { useUrlEnum } from '@/hooks/use-url-state'
 
 type Filter = 'ACTIVE' | BomStatus | 'ALL'
 
@@ -28,7 +29,8 @@ export default function BomsPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const productFilter = searchParams.get('product')
-  const [filter, setFilter] = useState<Filter>(productFilter ? 'ALL' : 'ACTIVE')
+  // Kept in the address, so Back from a record returns to the same tab.
+  const [filter, setFilter] = useUrlEnum<Filter>('status', ['ACTIVE', 'DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'REJECTED', 'ARCHIVED', 'ALL'], productFilter ? 'ALL' : 'ACTIVE')
   const [typeFilter, setTypeFilter] = useState('all')
   const [groupFilter, setGroupFilter] = useState('all')
   const [exporting, setExporting] = useState(false)

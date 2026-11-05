@@ -16,12 +16,14 @@ import { formatDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { fetchProductionOrders } from '@/services/production'
 import type { ProductionOrderListRow } from '@/types/database-production'
+import { useUrlEnum } from '@/hooks/use-url-state'
 
 type Filter = 'OPEN' | 'PENDING_APPROVAL' | 'RUNNING' | 'ON_HOLD' | 'COMPLETED' | 'CANCELLED' | 'ALL'
 
 export default function ProductionOrdersPage() {
   const navigate = useNavigate()
-  const [filter, setFilter] = useState<Filter>('OPEN')
+  // Kept in the address, so Back from a record returns to the same tab.
+  const [filter, setFilter] = useUrlEnum<Filter>('status', ['OPEN', 'PENDING_APPROVAL', 'RUNNING', 'ON_HOLD', 'COMPLETED', 'CANCELLED', 'ALL'], 'OPEN')
   const [creating, setCreating] = useState(false)
   const orders = useAsync(
     () => fetchProductionOrders(filter === 'ALL' || filter === 'RUNNING' ? (filter === 'RUNNING' ? 'OPEN' : null) : filter),

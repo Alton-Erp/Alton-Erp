@@ -64,3 +64,26 @@ No database migration, view, function or index was added.
 
 1. **Product-type filters.** "Finished goods produced", "Raw materials consumed" and "Components consumed" filter through the related product with a PostgREST join on a view (`product:products!product_id!inner(product_type)`). PostgREST infers this relationship from the base table, which works in recent versions, but it has not been checked against the hosted API. Open these three figures once on the hosted ERP.
 2. On the hosted ERP, open a few figures per dashboard and compare the card with the record count.
+
+## List pages: summary cards and tabs (2026-11-05)
+
+The summary cards on module list pages use the same registry. There are now **107 figures**, all compared with their source by `npm run test:db:drilldown` (509 checks).
+
+| Page | Card | Opens |
+|---|---|---|
+| Product Master (`/products`) | Total Active Products, Finished Goods, Raw Materials, Components, Without BOM, Missing Information (`pm.*`, from `product_kpis`) | Product Master filtered by the card's rule, with a banner and "Clear filters" |
+| Purchase Orders (`/purchase-orders`) | Total, Draft, Pending approval, Approved not sent, Open, Partially received, Fully received, Cancelled, Approved PO value, Outstanding receipt value | `/drilldown/…` (`purchase.status` per status; `purchase.total`, `.open`, `.period`, `.pending_value`) |
+| Goods Received (`/goods-receipts`) | Total, Received today, This month, Unlinked, Rejected quantity, Reversed | `grn.total`, `.today`, `.month`, `.unlinked`, `.rejected_all`, `.reversed` |
+| Ledger (`/ledger`, `/ledger/customers`, `/ledger/suppliers`) | Customers, Suppliers, Customer & Supplier, Receivables, Payables, Parties with a balance | `ledger.page_*`, `ledger.receivables`, `ledger.payables` (the ledger's scope is passed along) |
+| Product stock card (`/inventory/stock/:id`) | On hand, Reserved, Available, In-house, Outsourced, Unverified source | that product's stock lots (`stock.product_*`) |
+
+- **Missing Information** adds a column to the product list: the missing fields and "n of 4 complete". It uses `productGaps()`, the same rule as `product_kpis.incomplete`.
+- **The Without BOM card** previously filtered finished goods only, while its count also included subassemblies. It now opens exactly the counted products.
+- **Status tabs** on Product Master show their counts.
+- **The selected tab or filter is kept in the address on these list pages:**
+  - Product Master: all filters, sort, page and page size.
+  - Purchase Orders: period and register filters.
+  - Goods Received: receipt type tab.
+  - Ledger: type and status.
+  - Stock reservations, BOMs, production orders, sales orders (with the page), invoices (with the page), backorders, credit and debit notes, stock register position, and low-stock alerts.
+- **Result:** browser Back after opening a record returns to the same filtered list.

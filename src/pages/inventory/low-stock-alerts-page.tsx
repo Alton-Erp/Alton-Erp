@@ -23,6 +23,7 @@ import { acknowledgeAlert, fetchAlerts, refreshAlerts } from '@/services/invento
 import { fetchDisplayNames, listCategories } from '@/services/products'
 import { requireSupabase } from '@/lib/supabase'
 import type { AlertRow } from '@/types/database-inventory'
+import { useUrlEnum } from '@/hooks/use-url-state'
 
 type Tab = 'ACTIVE' | 'RESOLVED' | 'ALL'
 type View = 'alerts' | 'planning'
@@ -59,7 +60,8 @@ function AlertsView() {
   const { has } = usePermissions()
   const storage = useStorage()
   const categories = useAsync(listCategories, [])
-  const [tab, setTab] = useState<Tab>('ACTIVE')
+  // Kept in the address, so Back from a record returns to the same tab.
+  const [tab, setTab] = useUrlEnum<Tab>('status', ['ACTIVE', 'RESOLVED', 'ALL'], 'ACTIVE')
   const [type, setType] = useState('all')
   const [warehouseId, setWarehouseId] = useState('all')
   const [categoryId, setCategoryId] = useState('all')

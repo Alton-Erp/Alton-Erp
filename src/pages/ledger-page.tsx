@@ -11,7 +11,9 @@ import { StatusBadge } from '@/components/common/status-badge'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { PARTY_TYPE_LABELS, ledgerExportRows, ledgerSummary, type PartyRow, type PartyType } from '@/features/ledger/ledger-model'
+import { useDrill } from '@/features/drilldown/use-drill'
 import { useAsync } from '@/hooks/use-async'
+import { useUrlEnum } from '@/hooks/use-url-state'
 import { describeDataError } from '@/lib/errors'
 import { formatCurrency, formatNumber, toIsoDate } from '@/lib/format'
 import { fetchParties, syncParties } from '@/services/ledger'
@@ -39,8 +41,10 @@ export default function LedgerPage({ scope }: { scope?: LedgerScope }) {
   const navigate = useNavigate()
   const { has, hasAny } = usePermissions()
   const parties = useAsync(load, [])
-  const [type, setType] = useState<TypeFilter>('ALL')
-  const [status, setStatus] = useState<StatusFilter>('ACTIVE')
+  // Kept in the address, so Back from a party returns to the same list.
+  const [type, setType] = useUrlEnum<TypeFilter>('type', ['ALL', 'CUSTOMER', 'SUPPLIER', 'BOTH'], 'ALL')
+  const [status, setStatus] = useUrlEnum<StatusFilter>('status', ['ACTIVE', 'INACTIVE', 'ALL'], 'ACTIVE')
+  const { href } = useDrill('ledger_list')
   const [exporting, setExporting] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -98,12 +102,12 @@ export default function LedgerPage({ scope }: { scope?: LedgerScope }) {
       />
       {notice && <p role="status" className="mb-4 rounded-lg border bg-surface-muted/50 px-4 py-2.5 text-sm">{notice}</p>}
       <section aria-label="Ledger summary" className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
-        {scope !== 'SUPPLIER' && <KpiCard label="Customers" value={parties.data ? formatNumber(sum.customers) : null} hint="Active, customer only" icon={Users} accent="available" />}
-        {scope !== 'CUSTOMER' && <KpiCard label="Suppliers" value={parties.data ? formatNumber(sum.suppliers) : null} hint="Active, supplier only" icon={Building2} accent="outsourced" />}
-        <KpiCard label="Customer & Supplier" value={parties.data ? formatNumber(sum.both) : null} hint="Active, both roles" icon={Repeat} accent="hybrid" />
-        {scope !== 'SUPPLIER' && <KpiCard label="Total Receivables" value={parties.data ? formatCurrency(sum.receivable) : null} hint={sum.overdue > 0 ? `${formatCurrency(sum.overdue)} overdue` : 'Owed to us'} icon={ArrowDownLeft} accent={sum.overdue > 0 ? 'shortage' : 'manufacturing'} />}
-        {scope !== 'CUSTOMER' && <KpiCard label="Total Payables" value={parties.data ? formatCurrency(sum.payable) : null} hint="Owed by us (goods received less payments)" icon={ArrowUpRight} accent="pending" />}
-        <KpiCard label="Parties with a Balance" value={parties.data ? formatNumber(sum.withBalance) : null} hint={`${formatNumber(sum.inactive)} inactive parties`} icon={BookUser} />
+        {scope !== 'SUPPLIER' && <KpiCard to={href('ledger.page_customer')} label="Customers" value={parties.data ? formatNumber(sum.customers) : null} hint="Active, customer only" icon={Users} accent="available" />}
+        {scope !== 'CUSTOMER' && <KpiCard to={href('ledger.page_supplier')} label="Suppliers" value={parties.data ? formatNumber(sum.suppliers) : null} hint="Active, supplier only" icon={Building2} accent="outsourced" />}
+        <KpiCard to={href('ledger.page_both')} label="Customer & Supplier" value={parties.data ? formatNumber(sum.both) : null} hint="Active, both roles" icon={Repeat} accent="hybrid" />
+        {scope !== 'SUPPLIER' && <KpiCard to={href('ledger.receivables')} label="Total Receivables" value={parties.data ? formatCurrency(sum.receivable) : null} hint={sum.overdue > 0 ? `${formatCurrency(sum.overdue)} overdue` : 'Owed to us'} icon={ArrowDownLeft} accent={sum.overdue > 0 ? 'shortage' : 'manufacturing'} />}
+        {scope !== 'CUSTOMER' && <KpiCard to={href('ledger.payables')} label="Total Payables" value={parties.data ? formatCurrency(sum.payable) : null} hint="Owed by us (goods received less payments)" icon={ArrowUpRight} accent="pending" />}
+        <KpiCard to={href('ledger.page_with_balance', { segment: scope ?? null })} label="Parties with a Balance" value={parties.data ? formatNumber(sum.withBalance) : null} hint={`${formatNumber(sum.inactive)} inactive parties`} icon={BookUser} />
       </section>
       <DataTable
         title="Parties"

@@ -140,6 +140,8 @@ export const SOURCES: Record<SourceKey, DrillSource> = {
 // Dashboards
 // ---------------------------------------------------------------------------
 export type DashboardKey = 'management' | 'products' | 'inventory' | 'purchase' | 'grn' | 'production' | 'sales' | 'billing' | 'ledger'
+  // Module list pages with summary cards (a path segment ":segment" is replaced by the context's segment).
+  | 'product_master' | 'purchase_orders' | 'goods_receipts' | 'ledger_list' | 'stock_card'
 export const DASHBOARDS: Record<DashboardKey, { label: string; path: string; department: string }> = {
   management: { label: 'Management Dashboard', path: '/', department: 'Management' },
   products: { label: 'Product Dashboard', path: '/products/dashboard', department: 'Product Master' },
@@ -150,6 +152,11 @@ export const DASHBOARDS: Record<DashboardKey, { label: string; path: string; dep
   sales: { label: 'Sales Dashboard', path: '/sales/dashboard', department: 'Sales' },
   billing: { label: 'Invoice Dashboard', path: '/billing/dashboard', department: 'Billing & GST' },
   ledger: { label: 'Ledger Dashboard', path: '/ledger/dashboard', department: 'Ledger' },
+  product_master: { label: 'Product Master', path: '/products', department: 'Product Master' },
+  purchase_orders: { label: 'Purchase Orders', path: '/purchase-orders', department: 'Purchasing' },
+  goods_receipts: { label: 'Goods Received', path: '/goods-receipts', department: 'Purchasing' },
+  ledger_list: { label: 'Customer & Supplier Ledger', path: '/ledger', department: 'Ledger' },
+  stock_card: { label: 'Product stock', path: '/inventory/stock/:segment', department: 'Inventory' },
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +242,17 @@ const issued = eq('status', 'ISSUED')
 const BILL_USES: DrillMetric['uses'] = ['period', 'customer', 'status', 'payment']
 // Ledger (module_dashboard 'LEDGER'): rows of ledger_parties.
 const LEDGER = { dashboard: 'ledger' as const, permissions: ['ledger.read'], source: 'parties' as const, rpcArgs: () => ({ p_search: null, p_type: null, p_status: null, p_party_id: null }) }
+
+// Product Master list cards (product_kpis).
+const PM = { dashboard: 'product_master' as const, permissions: ['products.read'], source: 'products' as const, target: 'products' as const, measure: COUNT }
+/** product_kpis.incomplete: no HSN, GST rate or category, or no selling price (finished goods) / no cost (other types). */
+export const MISSING_INFO: Condition[] = [or(isNull('hsn_code'), isNull('gst_rate'), isNull('category_id'),
+  and(eq('product_type', 'FINISHED_GOOD'), isNull('selling_price')),
+  and(neq('product_type', 'FINISHED_GOOD'), isNull('standard_cost'), isNull('standard_manufacturing_cost')))]
+// Per-product stock card: the product's lots (inventory_stock_detail).
+const LOTS = { dashboard: 'stock_card' as const, permissions: ['inventory.read'], source: 'stock_detail' as const, uses: ['segment' as const] }
+/** Ledger list scope (/ledger/customers, /ledger/suppliers): parties of that side, incl. those that are both. */
+const ledgerScope = (c: DrillContext): Condition[] => (c.segment === 'CUSTOMER' || c.segment === 'SUPPLIER' ? [isIn('party_type', [c.segment, 'BOTH'])] : [])
 
 const list: DrillMetric[] = [
   // --- Product Master -------------------------------------------------------
@@ -430,6 +448,56 @@ const list: DrillMetric[] = [
     measure: money('grand_total'), basis: 'management_overview.kpis.sales_invoiced / invoices', conditions: (c) => [neq('status', 'DISCARDED'), issued, ...between('invoice_date', c.from, c.to)] },
   { ...BILL, dashboard: 'management', key: 'billing.outstanding_all', label: 'Outstanding payments', definition: 'Issued invoices with a balance still due (any date).', measure: money('balance_due'),
     basis: 'management_overview.kpis.customer_outstanding', conditions: () => [neq('status', 'DISCARDED'), issued, gt('balance_due', 0)] },
+
+  // --- Product Master list (product_kpis) -----------------------------------------------------
+  { ...PM, key: 'pm.active', label: 'Total Active Products', definition: 'Products with status Active.', basis: 'product_kpis.active',
+    conditions: () => [eq('status', 'ACTIVE')] },
+  { ...PM, key: 'pm.finished_goods', label: 'Finished Goods', definition: 'Active products of type Finished good.', basis: 'product_kpis.finished_goods',
+    conditions: () => [eq('status', 'ACTIVE'), eq('product_type', 'FINISHED_GOOD')] },
+  { ...PM, key: 'pm.raw_materials', label: 'Raw Materials', definition: 'Active products of type Raw material.', basis: 'product_kpis.raw_materials',
+    conditions: () => [eq('status', 'ACTIVE'), eq('product_type', 'RAW_MATERIAL')] },
+  { ...PM, key: 'pm.components', label: 'Components', definition: 'Active products of type Component.', basis: 'product_kpis.components',
+    conditions: () => [eq('status', 'ACTIVE'), eq('product_type', 'COMPONENT')] },
+  { ...PM, key: 'pm.without_bom', label: 'Without BOM', definition: 'Active finished goods and subassemblies with no approved BOM.', basis: 'product_kpis.without_bom',
+    conditions: () => [eq('status', 'ACTIVE'), isIn('product_type', ['FINISHED_GOOD', 'SUBASSEMBLY']), isFalse('has_bom')] },
+  { ...PM, key: 'pm.incomplete', label: 'Products with Missing Information',
+    definition: 'Active products without an HSN code, GST rate or category, or without the selling price (finished goods) or a cost (other types).',
+    basis: 'product_kpis.incomplete', conditions: () => [eq('status', 'ACTIVE'), ...MISSING_INFO] },
+  { ...PM, key: 'pm.inactive', label: 'Inactive Products', definition: 'Inactive products that are not archived.', basis: 'product_kpis.inactive',
+    conditions: () => [eq('status', 'INACTIVE'), isNull('archived_at')] },
+
+  // --- Purchase Orders list (purchase_order_dashboard.by_status) --------------------------------
+  { ...PO, dashboard: 'purchase_orders', key: 'purchase.status', label: 'Purchase Orders by Status', definition: 'Purchase orders in the chosen status.', uses: ['segment'],
+    measure: COUNT, basis: 'purchase_order_dashboard.by_status[status]', conditions: (c) => [eq('status', c.segment ?? '')] },
+
+  // --- Goods Received list ---------------------------------------------------------------------
+  { ...GRN, dashboard: 'goods_receipts', key: 'grn.rejected_all', label: 'Rejected Quantity', definition: 'Posted goods receipts with goods rejected (all units).',
+    measure: { kind: 'sum', columns: ['total_rejected'], format: 'quantity' }, basis: 'goods_receipt_lines.rejected_quantity of posted receipts',
+    conditions: () => [posted, gt('total_rejected', 0)] },
+  { ...GRN, dashboard: 'goods_receipts', key: 'grn.reversed', label: 'Reversed GRNs', definition: 'Goods receipts that were reversed (kept in the history).',
+    basis: 'module_dashboard(GRN).reversed', conditions: () => [eq('status', 'REVERSED')] },
+
+  // --- Per-product stock card (segment = product id) -------------------------------------------
+  { ...LOTS, key: 'stock.product_on_hand', label: 'Stock on Hand', definition: 'Stock lots of this product with quantity on hand.', measure: qty('on_hand', 'base_unit'),
+    basis: 'inventory_product_stock.on_hand', conditions: (c) => [eq('product_id', c.segment ?? ''), neq('on_hand', 0)] },
+  { ...LOTS, key: 'stock.product_reserved', label: 'Reserved Stock', definition: 'Stock lots of this product with quantity reserved.', measure: qty('reserved', 'base_unit'),
+    basis: 'inventory_product_stock.reserved', conditions: (c) => [eq('product_id', c.segment ?? ''), neq('reserved', 0)] },
+  { ...LOTS, key: 'stock.product_available', label: 'Available Stock', definition: 'Stock lots of this product available in storage locations (on hand minus reserved).',
+    measure: qty('available', 'base_unit'), basis: 'inventory_product_stock.available', conditions: (c) => [eq('product_id', c.segment ?? ''), neq('available', 0)] },
+  ...(['IN_HOUSE', 'OUTSOURCED', 'UNKNOWN'] as const).map((src): DrillMetric => ({ ...LOTS, key: `stock.product_${src.toLowerCase()}`,
+    label: src === 'IN_HOUSE' ? 'In-house Stock' : src === 'OUTSOURCED' ? 'Outsourced Stock' : 'Stock with Unverified Source',
+    definition: `Stock lots of this product with source ${src === 'UNKNOWN' ? 'not recorded' : src === 'IN_HOUSE' ? 'in-house' : 'outsourced'}.`, measure: qty('on_hand', 'base_unit'),
+    basis: `inventory_product_stock.${src === 'IN_HOUSE' ? 'in_house_on_hand' : src === 'OUTSOURCED' ? 'outsourced_on_hand' : 'unknown_source_on_hand'}`,
+    conditions: (c) => [eq('product_id', c.segment ?? ''), eq('source_type', src), neq('on_hand', 0)] })),
+
+  // --- Ledger list (ledgerSummary of ledger_parties rows; segment = CUSTOMER / SUPPLIER scope) ----
+  ...(['CUSTOMER', 'SUPPLIER', 'BOTH'] as const).map((type): DrillMetric => ({ ...LEDGER, dashboard: 'ledger_list', key: `ledger.page_${type.toLowerCase()}`,
+    label: type === 'CUSTOMER' ? 'Customers' : type === 'SUPPLIER' ? 'Suppliers' : 'Customer & Supplier', measure: COUNT,
+    definition: `Active parties that are ${type === 'BOTH' ? 'both a customer and a supplier' : `${type.toLowerCase()}s only`}.`, basis: 'ledgerSummary(ledger_parties)',
+    conditions: () => [eq('status', 'ACTIVE'), eq('party_type', type)] })),
+  { ...LEDGER, dashboard: 'ledger_list', key: 'ledger.page_with_balance', label: 'Parties with a Balance', uses: ['segment'], measure: COUNT,
+    definition: 'Parties with a receivable or payable balance (active and inactive).', basis: 'ledgerSummary(ledger_parties).withBalance',
+    conditions: (c) => [or(neq('receivable', 0), neq('payable', 0)), ...ledgerScope(c)] },
 
   // --- Ledger ---------------------------------------------------------------
   { ...LEDGER, key: 'ledger.customers', label: 'Total Customers', definition: 'Parties that are customers (incl. those that are also suppliers).', measure: COUNT,

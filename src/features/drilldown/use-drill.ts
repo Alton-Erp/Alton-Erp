@@ -54,7 +54,9 @@ export function dashboardHref(dashboard: DashboardKey, ctx: Partial<DrillContext
     if (v) p.set(k, v)
   }
   const s = p.toString()
-  return `${DASHBOARDS[dashboard].path}${s ? `?${s}` : ''}`
+  // A list page of one record (e.g. a product's stock card) has the record id in its path.
+  const path = DASHBOARDS[dashboard].path.replace(':segment', encodeURIComponent(ctx.segment ?? ''))
+  return `${path}${s ? `?${s}` : ''}`
 }
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/

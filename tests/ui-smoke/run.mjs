@@ -983,10 +983,43 @@ const REORDER_PLAN = (body) => ({ history_days: body.p_history_days ?? 90, as_of
     avg_daily: null, coverage_days: null, coverage_with_incoming_days: null, lead_time_days: null, reorder_level_days: null, legacy_reorder_quantity: null, status: 'NOT_CONFIGURED' }),
 ] })
 /** Minimal PostgREST-style filtering: col=eq.x and col=in.(a,b). */
+// PostgREST logic trees ("or=(a.is.null,and(b.eq.X,c.is.null))"): enough of the grammar for the ERP's filters.
+function splitTop(s) {
+  const parts = []
+  let depth = 0, quoted = false, cur = ''
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (ch === '\\' && quoted) { cur += ch + s[++i]; continue }
+    if (ch === '"') quoted = !quoted
+    if (!quoted && ch === '(') depth++
+    if (!quoted && ch === ')') depth--
+    if (!quoted && ch === ',' && depth === 0) { parts.push(cur); cur = ''; continue }
+    cur += ch
+  }
+  if (cur) parts.push(cur)
+  return parts
+}
+function logicTerm(row, term) {
+  const m = /^(or|and)\((.*)\)$/s.exec(term)
+  if (m) return m[1] === 'or' ? splitTop(m[2]).some((t) => logicTerm(row, t)) : splitTop(m[2]).every((t) => logicTerm(row, t))
+  const [, col, not, op, raw] = /^([a-z_.]+)\.(not\.)?(eq|neq|is|ilike|gt|lt|gte|lte)\.(.*)$/s.exec(term) ?? []
+  if (!col) return true
+  const value = raw.startsWith('"') ? raw.slice(1, -1).replace(/\\(.)/g, '$1') : raw
+  const v = row[col]
+  let r
+  if (op === 'is') r = value === 'null' ? v === null || v === undefined : String(v) === value
+  else if (op === 'eq') r = String(v) === value
+  else if (op === 'neq') r = v !== null && v !== undefined && String(v) !== value
+  else if (op === 'ilike') r = v !== null && v !== undefined && String(v).toLowerCase().includes(value.replace(/^%|%$/g, '').replace(/\\(.)/g, '$1').toLowerCase())
+  else r = true
+  return not ? !r : r
+}
+
 function filterRows(rows, params) {
   let out = rows
   for (const [key, value] of params) {
-    if (['select', 'order', 'limit', 'offset', 'or', 'and'].includes(key)) continue
+    if (key === 'or') { out = out.filter((r) => logicTerm(r, `or${value}`)); continue }
+    if (['select', 'order', 'limit', 'offset', 'and'].includes(key)) continue
     if (value === 'is.null') out = out.filter((r) => r[key] === null || r[key] === undefined)
     else if (value.startsWith('eq.')) out = out.filter((r) => String(r[key]) === value.slice(3))
     else if (value.startsWith('in.(')) {
@@ -1323,6 +1356,11 @@ const api = http.createServer((req, res) => {
             outsourced: active.filter((p) => p.default_source_type === 'OUTSOURCED').length,
             hybrid: active.filter((p) => p.default_source_type === 'HYBRID').length,
             inactive: products.filter((p) => p.status === 'INACTIVE').length, archived: 0, total: products.length,
+            finished_goods: active.filter((p) => p.product_type === 'FINISHED_GOOD').length, raw_materials: active.filter((p) => p.product_type === 'RAW_MATERIAL').length,
+            components: active.filter((p) => p.product_type === 'COMPONENT').length,
+            // Same rule as product_kpis.incomplete.
+            incomplete: active.filter((p) => !p.hsn_code || p.gst_rate === null || !p.category_id
+              || (p.product_type === 'FINISHED_GOOD' ? p.selling_price === null : p.standard_cost === null && (p.standard_manufacturing_cost ?? null) === null)).length,
           })
         }
         case 'product_category_counts':
@@ -4932,6 +4970,100 @@ await step('Drill-down 5: the other dashboards link their figures; the period an
   await click('a[data-drill=kpi]', 'Pending Orders')
   await waitFor(`location.pathname === '/drilldown/sales.pending' && !!document.querySelector('[data-testid=drill-count]')`, 'sales records (status computed by the database)')
   assert(rpcCalls('sales_orders_v2_list').length > 0, 'sales list not read from the database function')
+})
+
+// ---------------------------------------------------------------------------
+// List pages: summary cards open their records; tabs survive Back
+// ---------------------------------------------------------------------------
+const pressed = (label) => `[...document.querySelectorAll('[role=group] button[aria-pressed=true]')].some((b) => b.innerText.startsWith(${JSON.stringify(label)}))`
+
+await step('List cards 1: every Product Master card is a link; Missing Information shows the products, their missing fields and completion; Clear removes it', async () => {
+  await goto('/products')
+  await waitFor(`document.querySelectorAll('a[data-drill=kpi]').length === 6`, 'six clickable cards')
+  await waitFor(`[...document.querySelectorAll('[role=group][aria-label=Status] button')].some((b) => /Active\\s*\\d+/.test(b.innerText))`, 'status tabs with counts')
+  const shown = await evaluate(`document.querySelector('[data-testid=pm-card-incomplete]').innerText.match(/Missing Information\\s+(\\d+)/)[1]`)
+  await click('[data-testid=pm-card-incomplete]')
+  await waitFor(`location.pathname === '/products' && location.search.includes('drill=pm.incomplete') && !!document.querySelector('[data-testid=drill-banner]')`, 'filtered Product Master')
+  // Table headings are styled in capitals; the column itself is checked below.
+  await waitFor(bodyHas('Products with Missing Information'), 'filter heading')
+  assert(await evaluate(`document.querySelector('[data-testid=pm-card-incomplete]').dataset.active === 'true'`), 'selected card not highlighted')
+  const q = lastQuery('/rest/v1/products')
+  assert(q.includes('status=eq.ACTIVE') && q.includes('or=(hsn_code.is.null,gst_rate.is.null,category_id.is.null,and(product_type.eq.FINISHED_GOOD,selling_price.is.null)'), q)
+  await waitFor(`document.querySelectorAll('[data-testid=pm-missing]').length > 0`, 'missing fields per product')
+  assert(await evaluate(`[...document.querySelectorAll('[data-testid=pm-missing]')].every((c) => /of 4 complete/.test(c.innerText))`), 'completion not shown')
+  assert(await evaluate(`document.querySelectorAll('[data-testid=pm-missing]').length === ${shown}`), `the list does not have ${shown} products`)
+  await screenshot('150-missing-information')
+  await click('[data-testid=drill-banner] button', 'Clear filters')
+  await waitFor(`!document.querySelector('[data-testid=drill-banner]') && !location.search.includes('drill=') && !document.querySelector('[data-testid=pm-missing]')`, 'cleared')
+})
+
+await step('List cards 2: Product Master filters live in the address: a free-format SKU search and the status tab survive opening a product and Back', async () => {
+  await click('[role=group][aria-label=Status] button', 'Inactive')
+  await waitFor(`new URLSearchParams(location.search).get('status') === 'inactive'`, 'status in the address')
+  await click('[role=group][aria-label=Status] button', 'All current')
+  await fill('input[aria-label="Search products"]', 'WC 200 #A')
+  await waitFor(`new URLSearchParams(location.search).get('q') === 'WC 200 #A'`, 'search in the address')
+  for (let i = 0; i < 30 && !lastQuery('/rest/v1/products').includes('"%WC 200 #A%"'); i++) await sleep(100)
+  assert(lastQuery('/rest/v1/products').includes('sku.ilike."%WC 200 #A%"'), 'free-format search not sent as typed: ' + lastQuery('/rest/v1/products'))
+  await fill('input[aria-label="Search products"]', '')
+  await click('[role=group][aria-label=Status] button', 'Active')
+  await waitFor(`new URLSearchParams(location.search).get('status') === 'active' && document.querySelectorAll('tbody a[href^="/products/"]').length > 0`, 'active list')
+  await click('tbody a[href^="/products/"]')
+  await waitFor(`/^\\/products\\/[^/]+$/.test(location.pathname)`, 'product details')
+  await evaluate('history.back()')
+  await waitFor(`location.pathname === '/products' && new URLSearchParams(location.search).get('status') === 'active' && ${pressed('Active')}`, 'Back keeps the tab')
+})
+
+await step('List cards 3: Purchase Orders, Goods Received, Ledger and the stock card: each card opens its records with the same rule', async () => {
+  await goto('/purchase-orders')
+  await waitFor(`[...document.querySelectorAll('a[data-drill=kpi]')].length === 10`, 'ten PO cards are links')
+  await click('a[data-drill=kpi]', 'Draft')
+  await waitFor(`location.pathname === '/drilldown/purchase.status' && new URLSearchParams(location.search).get('seg') === 'DRAFT'`, 'drafts')
+  await waitFor(`!!document.querySelector('[data-testid=drill-count]') && ${bodyHas('Purchase Orders')}`, 'records page, back to Purchase Orders')
+  assert(lastQuery('/rest/v1/purchase_order_list_v2').includes('status=eq.DRAFT'), lastQuery('/rest/v1/purchase_order_list_v2'))
+  assert(await evaluate(`[...document.querySelectorAll('nav[aria-label=Breadcrumb] a')].some((a) => a.innerText === 'Purchase Orders' && a.getAttribute('href').startsWith('/purchase-orders'))`), 'breadcrumb')
+
+  await goto('/goods-receipts')
+  await waitFor(`[...document.querySelectorAll('a[data-drill=kpi]')].length === 6`, 'six GRN cards')
+  await click('[role=group][aria-label="Receipt type"] button', 'Unlinked')
+  await waitFor(`new URLSearchParams(location.search).get('view') === 'DIRECT'`, 'tab in the address')
+  await click('a[data-drill=kpi]', 'Reversed')
+  await waitFor(`location.pathname === '/drilldown/grn.reversed'`, 'reversed receipts')
+  assert(lastQuery('/rest/v1/goods_receipt_list_v2').includes('status=eq.REVERSED'), lastQuery('/rest/v1/goods_receipt_list_v2'))
+  await evaluate('history.back()')
+  await waitFor(`location.pathname === '/goods-receipts' && ${pressed('Unlinked')}`, 'Back keeps the GRN tab')
+
+  await goto('/ledger')
+  await waitFor(`[...document.querySelectorAll('a[data-drill=kpi]')].length === 6`, 'six ledger cards')
+  await click('a[data-drill=kpi]', 'Customers')
+  await waitFor(`location.pathname === '/drilldown/ledger.page_customer' && !!document.querySelector('[data-testid=drill-count]')`, 'customers')
+  assert(rpcCalls('ledger_parties').length > 0, 'parties not read from the ledger function')
+
+  await goto('/inventory/stock/p1')
+  await waitFor(`[...document.querySelectorAll('a[data-drill=kpi]')].length === 6`, 'six stock card figures')
+  await click('a[data-drill=kpi]', 'Available')
+  await waitFor(`location.pathname === '/drilldown/stock.product_available' && new URLSearchParams(location.search).get('seg') === 'p1'`, 'this product\'s lots')
+  assert(lastQuery('/rest/v1/inventory_stock_detail').includes('product_id=eq.p1') && lastQuery('/rest/v1/inventory_stock_detail').includes('available=neq.0'), lastQuery('/rest/v1/inventory_stock_detail'))
+  assert(await evaluate(`[...document.querySelectorAll('nav[aria-label=Breadcrumb] a')].some((a) => a.getAttribute('href').startsWith('/inventory/stock/p1'))`), 'breadcrumb back to the stock card')
+})
+
+await step('List cards 4: department status tabs are kept in the address, so Back returns to the same tab', async () => {
+  for (const [path, group, label, param, value] of [
+    ['/production/orders', 'Order status', 'Completed', 'status', 'COMPLETED'],
+    ['/sales/orders', 'Order status', 'Cancelled', 'tab', 'CANCELLED'],
+    ['/billing/invoices', 'Invoice status', 'Overdue', 'tab', 'OVERDUE'],
+    ['/inventory/reservations', 'Status', 'Released', 'status', 'RELEASED'],
+    ['/production/boms', 'BOM status', 'Draft', 'status', 'DRAFT'],
+  ]) {
+    await goto(path)
+    await waitFor(`!!document.querySelector('[role=group][aria-label="${group}"]')`, `${path} tabs`)
+    await click(`[role=group][aria-label="${group}"] button`, label)
+    await waitFor(`new URLSearchParams(location.search).get('${param}') === '${value}'`, `${path}: tab in the address`)
+    await goto('/')
+    await waitFor(bodyHas('Management Dashboard'), 'away')
+    await evaluate('history.back()')
+    await waitFor(`location.pathname === '${path}' && ${pressed(label)}`, `${path}: Back keeps the ${label} tab`)
+  }
 })
 
 await step('Drill-down 6: records stay behind permissions; unknown figures are refused', async () => {
