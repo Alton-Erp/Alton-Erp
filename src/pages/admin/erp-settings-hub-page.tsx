@@ -15,6 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { useErpPreferences } from '@/features/management/erp-preferences'
 import { REPORTS, reportSheet } from '@/features/management/report-defs'
+import { MATCH_KEYS } from '@/features/products/product-import'
 import { useAsync } from '@/hooks/use-async'
 import { DATE_PATTERNS } from '@/lib/date-pattern'
 import { describeDataError, errorReference, logDataError } from '@/lib/errors'
@@ -175,6 +176,25 @@ function SettingsForm({ tab, data, onSaved }: { tab: Tab; data: ErpSettings; onS
                 <Field key={t} label={`${l} prefix`} htmlFor={`es-sku-${t}`}><Input id={`es-sku-${t}`} maxLength={4} value={sv('product.sku_prefixes')[t] ?? ''}
                   onChange={(e) => setSetting('product.sku_prefixes', { ...sv('product.sku_prefixes'), [t]: e.target.value.toUpperCase() })} /></Field>
               ))}</div>
+            </CardContent></Card>
+          <Card data-testid="import-match-key-setting"><CardHeader><div><CardTitle>Excel import: match existing products by</CardTitle>
+            <CardDescription>The field the Product Master Excel import uses to find a product that already exists. The match field is never changed by an
+              import; every other field can be ticked under "Fields to Modify in Existing Products".</CardDescription></div></CardHeader>
+            <CardContent>
+              {(() => {
+                const known = 'product.import_match_key' in data.settings || 'product.import_match_key' in s
+                const current = sv('product.import_match_key') ?? 'SKU'
+                return (
+                  <Field label="Match key" htmlFor="es-match" hint={MATCH_KEYS.find((m) => m.key === current)?.hint}>
+                    <Select value={current} disabled={!known}
+                      onValueChange={(v) => { if (v) setSetting('product.import_match_key', v as ErpSettingsValues['product.import_match_key']) }}>
+                      <SelectTrigger id="es-match" className="w-72"><SelectValue /></SelectTrigger>
+                      <SelectContent>{MATCH_KEYS.map((m) => <SelectItem key={m.key} value={m.key}>{m.key === 'SKU' ? 'SKU (recommended)' : m.label}</SelectItem>)}</SelectContent>
+                    </Select>
+                    {!known && <p className="text-xs text-amber-800">Available after database update 20261122090000 is applied; the import matches by SKU until then.</p>}
+                  </Field>
+                )
+              })()}
             </CardContent></Card>
           <Card><CardHeader><div><CardTitle>Units, HSN codes and GST</CardTitle><CardDescription>Offered when creating products. Each product keeps its own unit, HSN and GST rate.</CardDescription></div></CardHeader>
             <CardContent className="grid gap-4 sm:grid-cols-2">

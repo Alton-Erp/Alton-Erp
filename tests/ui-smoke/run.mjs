@@ -600,7 +600,7 @@ const ERP_DEFAULTS = {
   'product.units': ['PCS', 'NOS', 'SET', 'KG', 'LTR'], 'product.default_gst_rate': 18, 'product.hsn_codes': [{ code: '6910', description: 'Ceramic sanitary ware', gst_rate: 18 }],
   'inventory.adjustment_reasons': ['Damaged', 'Count correction'], 'purchase.default_payment_terms': 'DAYS_30', 'purchase.default_delivery_terms': null,
   'production.default_wastage_percent': 0, 'production.consumption_prefill': 'STANDARD', 'sales.default_payment_terms': null, 'sales.default_delivery_instructions': null,
-  'sales.default_warehouse_id': null, 'import.date_order': 'DMY',
+  'sales.default_warehouse_id': null, 'import.date_order': 'DMY', 'product.import_match_key': 'SKU',
 }
 const ERP_SETTINGS = {
   company: { id: COMPANY_ID, legal_name: 'Test Co', display_name: 'Test Co', company_code: 'TEST', legal_address: 'Mock Road, Pune', state: 'Maharashtra', country: 'India',
@@ -1513,6 +1513,8 @@ const api = http.createServer((req, res) => {
           return send(res, 200, MODULE_DASHBOARDS[body.p_module] ?? null)
         case 'erp_settings_get':
           return send(res, 200, ERP_SETTINGS)
+        case 'product_import_match_key':
+          return send(res, 200, ERP_SETTINGS.settings['product.import_match_key'] ?? 'SKU')
         case 'erp_settings_save': {
           if (body.p_settings?.['numbering.po_prefix'] === 'X') return send(res, 400, { code: 'P0001', message: 'Number prefixes are 2 to 5 capital letters (e.g. PO).' })
           Object.assign(ERP_SETTINGS.company, body.p_company ?? {})
@@ -2530,6 +2532,7 @@ await step('categories page lists categories with counts', async () => {
 const xlsxPath = path.join(outDir, 'import-test.xlsx')
 const xlsxAgainPath = path.join(outDir, 'import-again.xlsx')
 const xlsxFieldsPath = path.join(outDir, 'import-fields.xlsx')
+const xlsxBarcodePath = path.join(outDir, 'import-barcode.xlsx')
 {
   const write = (file, rows) => {
     const wb = XLSX.utils.book_new()
@@ -2557,6 +2560,8 @@ const xlsxFieldsPath = path.join(outDir, 'import-fields.xlsx')
     ['imp-2', 'Imported Seat', '', 'Component', 'Outsourced', 'Nos', '', ''],
     ['MOCK-CLAY', 'Mock ceramic body', '', 'Raw Material', '', 'kg', '', ''],
   ])
+  // Match key Barcode: MOCK-WC-1 (barcode 8901234567890) with a new SKU and a new price.
+  write(xlsxBarcodePath, [['SKU', 'Product Name', 'Barcode', 'Selling Price'], ['WC-RENAMED', '', '8901234567890', '9991']])
   // Field selection: name, GST and price differ for MOCK-WC-1; a near-miss SKU and a name in other capitals.
   write(xlsxFieldsPath, [head,
     ['mock-wc-1 ', 'Renamed closet', '', 'Finished Good', '', '', '12', '9990'],
@@ -2691,6 +2696,56 @@ await step('import field selection: only the ticked field is updated; near-miss 
   assert(patches.length === 1 && JSON.stringify(Object.keys(patches[0].body).sort()) === '["change_reason","selling_price"]' && patches[0].body.selling_price === 9990,
     'update not limited to the selected field: ' + JSON.stringify(patches.map((p) => p.body)))
   assert(patches[0].query.includes('company_id=eq.') && patches[0].query.includes('updated_at=eq.'), 'update not tied to the company and check time: ' + patches[0].query)
+})
+
+await step('import match key from ERP Settings: Barcode finds the product, the SKU is selectable and changes only when ticked', async () => {
+  ERP_SETTINGS.settings['product.import_match_key'] = 'BARCODE'
+  try {
+    await uploadImportFile(xlsxBarcodePath)
+    await waitFor(`!!document.querySelector('[data-testid=modify-fields]') && !!document.querySelector('[data-testid=match-key]')`, 'fields to modify')
+    assert((await evaluate(`document.querySelector('[data-testid=match-key]').innerText`)) === 'Barcode', 'banner does not name the match key')
+    const locked = await evaluate(`(() => { const s = document.querySelector('[data-testid=modify-sku]'); return s.dataset.field + '|' + s.disabled + '|' + s.closest('label').innerText })()`)
+    assert(locked.startsWith('barcode|true|') && locked.includes('Barcode') && locked.includes('match key (locked)'), locked)
+    const sku = `document.querySelector('[data-testid=modify-field][data-field=sku]')`
+    assert(await evaluate(`!!${sku} && ${sku}.dataset.state === 'unchecked'`), 'SKU must be selectable and start unticked')
+    // Not ticked: the price changes, the SKU does not.
+    let before = writes().length
+    await click('button', 'Validate')
+    await waitFor(`!!document.querySelector('[data-testid=import-summary]')`, 'preview')
+    assert((await groupCount('modified')) === 1 && (await groupCount('new')) === 0, 'not matched by barcode')
+    assert(await evaluate(bodyHas('the SKU is not changed (not selected)')), 'SKU note missing')
+    await click('button', 'Add 0 new and update 1')
+    await waitFor(`document.querySelector('[role=alertdialog]')`, 'confirm')
+    await click('[role=alertdialog] button', 'Save changes')
+    await waitFor(bodyHas('Import finished'), 'summary')
+    let patches = writes().slice(before).filter((r) => r.method === 'PATCH')
+    assert(patches.length === 1 && patches[0].query.includes('id=eq.p1') && !('sku' in patches[0].body) && patches[0].body.selling_price === 9991,
+      'barcode update: ' + JSON.stringify(patches.map((p) => [p.query, p.body])))
+    assert(!writes().slice(before).some((r) => r.method === 'POST'), 'a product was created')
+    // Ticked: the SKU changes too.
+    await uploadImportFile(xlsxBarcodePath)
+    await waitFor(`!!${sku}`, 'SKU checkbox')
+    await click('[data-testid=modify-field][data-field=sku]')
+    await waitFor(`${sku}.dataset.state === 'checked'`, 'SKU ticked')
+    before = writes().length
+    await click('button', 'Validate')
+    await waitFor(`!!document.querySelector('[data-testid=import-summary]')`, 'preview')
+    const skuRow = await evaluate(`document.querySelector('[data-testid=import-comparison] tr[data-field=sku]')?.innerText.replace(/\\s+/g, ' ') ?? ''`)
+    assert(skuRow.includes('MOCK-WC-1') && skuRow.includes('WC-RENAMED') && skuRow.includes('Update'), skuRow)
+    await click('button', 'Add 0 new and update 1')
+    await waitFor(`document.querySelector('[role=alertdialog]')`, 'confirm')
+    await click('[role=alertdialog] button', 'Save changes')
+    await waitFor(bodyHas('Import finished'), 'summary')
+    patches = writes().slice(before).filter((r) => r.method === 'PATCH')
+    assert(patches.length === 1 && patches[0].body.sku === 'WC-RENAMED', 'SKU not sent when ticked: ' + JSON.stringify(patches.map((p) => p.body)))
+    // None: existing products cannot be updated.
+    ERP_SETTINGS.settings['product.import_match_key'] = 'NONE'
+    await uploadImportFile(xlsxBarcodePath)
+    await waitFor(bodyHas('Matching is switched off in ERP Settings'), 'none banner')
+    assert(await evaluate(`document.querySelector('input[name=dup-mode][value=update]').disabled && !document.querySelector('[data-testid=modify-fields]')`), 'update still offered with match key None')
+  } finally {
+    ERP_SETTINGS.settings['product.import_match_key'] = 'SKU'
+  }
 })
 
 await step('Product Master form: no red mandatory marks; a missing name still shows a message on save', async () => {
@@ -3868,6 +3923,14 @@ await step('ERP settings: company profile, date format and numbering saved throu
   await waitFor(bodyHas('Settings saved and recorded in the audit log.'), 'saved')
   const save1 = rpcCalls('erp_settings_save').at(-1).body
   assert(save1.p_company.pan === 'AAAAA0000A' && save1.p_settings['general.date_format'] === 'DD/MM/YYYY', JSON.stringify(save1))
+  await click('[role=tab]', 'Products')
+  await waitFor(`!!document.querySelector('[data-testid=import-match-key-setting] #es-match')`, 'match key setting')
+  await choose('#es-match', 'Model Number')
+  await waitFor(bodyHas('a model number used by several products is reported'), 'match key hint')
+  await click('button', 'Save settings')
+  await waitFor(bodyHas('Settings saved and recorded in the audit log.'), 'match key saved')
+  assert(rpcCalls('erp_settings_save').at(-1).body.p_settings['product.import_match_key'] === 'MODEL_NUMBER', 'match key not saved')
+  ERP_SETTINGS.settings['product.import_match_key'] = 'SKU'
   await click('[role=tab]', 'Purchase')
   await waitFor(`!!document.querySelector('#es-po')`, 'purchase tab')
   assert(await evaluate(bodyHas('Next: PO-000004')), 'next PO number not shown')

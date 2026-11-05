@@ -116,9 +116,12 @@ r = await attempt(`update public.products set standard_manufacturing_cost = 475,
 const after = await ownerRow('IMP-100')
 ok('the update applies once', !r.error && r.affected === 1, r)
 // The fixtures run in one transaction (now() does not move); each import save is its own request.
-await db.exec('commit; begin')
-await db.exec(`update public.products set mrp = mrp where id = '${stored.id}'`)
-ok('a save moves the product\'s updated_at', String((await ownerRow('IMP-100')).updated_at) !== String(stored.updated_at))
+await db.exec('commit')
+await new Promise((res) => setTimeout(res, 50)) // the in-memory database clock can repeat within a few milliseconds
+await db.exec('begin')
+// Someone else edits the product after the file was checked.
+await db.exec(`update public.products set remarks = 'Edited elsewhere' where id = '${stored.id}'`)
+ok('the other edit moves the product\'s updated_at', (await val(`select updated_at > $2::timestamptz from public.products where id = $1`, [stored.id, stored.updated_at])) === true)
 ok('the selected fields change', Number(after.standard_manufacturing_cost) === 475 && Number(after.mrp) === 900, after)
 ok('unselected fields, the id and the SKU are unchanged', after.id === stored.id && after.sku === 'IMP-100' && Number(after.gst_rate) === 18
   && after.hsn_code === '84818020' && Number(after.selling_price) === 700 && after.product_name === stored.product_name, after)
@@ -128,6 +131,54 @@ ok('a second save with the old check time changes nothing (optimistic concurrenc
 await asOwner()
 ok('the change is in the audit log', (await val(`select count(*)::int from public.audit_logs where resource_id = $1`, [stored.id])) > 0)
 ok('company B\'s product with the same SKU is untouched', Number((await ownerRow('IMP-100', 'company_b')).mrp ?? 0) === 0 || (await ownerRow('IMP-100', 'company_b')).mrp === null)
+
+console.log('Match key setting (migration 20261122090000)')
+const matchKey = async (user) => { await asUser(user); return attempt(`select public.product_import_match_key() as k`) }
+r = await matchKey('op')
+ok('the default match key is SKU', r.rows?.[0]?.k === 'SKU', r)
+await asUser('op')
+r = await attempt(`select public.erp_settings_save('{}'::jsonb, jsonb_build_object('product.import_match_key', 'BARCODE'))`)
+ok('a Super Admin saves Barcode in ERP Settings', !r.error, r)
+r = await matchKey('op')
+ok('the import reads Barcode', r.rows?.[0]?.k === 'BARCODE', r)
+await asUser('op')
+r = await attempt(`select (public.erp_settings_get() -> 'settings' ->> 'product.import_match_key') as k`)
+ok('ERP Settings shows the saved value', r.rows?.[0]?.k === 'BARCODE', r)
+await asUser('op')
+r = await attempt(`select public.erp_settings_save('{}'::jsonb, jsonb_build_object('product.import_match_key', 'COLOUR'))`)
+ok('an unknown match key is refused', /match key/i.test(r.error ?? ''), r)
+await asOwner()
+r = await attempt(`insert into public.company_settings (company_id, setting_key, setting_value) values (rls_test.id('company_b'), 'product.import_match_key', '"sku"'::jsonb)`)
+ok('the value is validated on every write path', /match key/i.test(r.error ?? ''), r)
+for (const k of ['EAN', 'MODEL_NUMBER', 'PRODUCT_NAME', 'NONE', 'SKU']) {
+  await asUser('op')
+  r = await attempt(`select public.erp_settings_save('{}'::jsonb, jsonb_build_object('product.import_match_key', $1::text))`, [k])
+  if (r.error) break
+}
+ok('every offered match key can be saved', !r.error && (await matchKey('op')).rows?.[0]?.k === 'SKU', r)
+await asUser('op')
+await attempt(`select public.erp_settings_save('{}'::jsonb, jsonb_build_object('product.import_match_key', 'NONE'))`)
+r = await matchKey('b_op')
+ok('another company keeps its own match key', r.rows?.[0]?.k === 'SKU', r)
+await asOwner()
+ok('anonymous users cannot read the match key',
+  (await val(`select has_function_privilege('anon', 'public.product_import_match_key()', 'execute')`)) === false)
+ok('the lookup is SECURITY DEFINER with an empty search_path', (await val(`select prosecdef and proconfig @> array['search_path=""'] from pg_proc where proname = 'product_import_match_key'`)) === true)
+
+console.log('Rollback script')
+await db.exec(await read(path.join(root, 'supabase', 'rollback', '20261122090000_product_import_match_key_down.sql')))
+await db.exec('begin') // the rollback script commits its own transaction
+ok('rollback removes the lookup and the setting', (await val(`select count(*)::int from pg_proc where proname = 'product_import_match_key'`)) === 0
+  && (await val(`select private.erp_setting_defaults() ? 'product.import_match_key'`)) === false
+  && (await val(`select private.erp_setting_defaults() ? 'product.group_heads'`)) === true)
+await asUser('op')
+r = await attempt(`select public.erp_settings_save('{}'::jsonb, jsonb_build_object('product.group_heads', jsonb_build_array('Sanitary')))`)
+ok('other settings still save after the rollback', !r.error, r)
+await asOwner()
+await db.exec(await read(path.join(migDir, '20261122090000_product_import_match_key.sql')))
+await db.exec(await read(path.join(migDir, '20261122090000_product_import_match_key.sql')))
+r = await matchKey('op')
+ok('the migration applies again, twice; the saved value (None) is kept', r.rows?.[0]?.k === 'NONE', r)
 
 console.log(`${failed === 0 ? '✓' : '✗'} product import safety check: ${passed} passed, ${failed} failed`)
 process.exit(failed === 0 ? 0 : 1)

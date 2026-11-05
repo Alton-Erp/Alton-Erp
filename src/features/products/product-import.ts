@@ -31,6 +31,7 @@ import {
   defaultSourceFor,
   findUnit,
   looseSkuKey,
+  normalizeEan,
   parseProductType,
   parseSourceType,
   skuKey,
@@ -164,6 +165,41 @@ export interface ImportContext {
   modifyFields?: ReadonlySet<ImportFieldKey>
   /** A new SKU whose product name is already in the ERP is added as a separate product (otherwise ambiguous). */
   allowSameName?: boolean
+  /** Field that finds existing products (ERP Settings → Products; default SKU). NONE: existing products are never changed. */
+  matchKey?: MatchKey
+  /** For match keys other than SKU / NONE: stored products by matchValue(). More than one = ambiguous. */
+  matchIndex?: Map<string, ExistingProduct[]>
+  /** Product id of each stored SKU by skuKey(): a SKU change must not take another product's SKU. */
+  skuOwners?: Map<string, string>
+}
+
+/** Which field the import uses to find existing products (ERP Settings → Products → product.import_match_key). */
+export type MatchKey = 'SKU' | 'BARCODE' | 'EAN' | 'MODEL_NUMBER' | 'PRODUCT_NAME' | 'NONE'
+
+export const MATCH_KEYS: { key: MatchKey; label: string; column: ImportFieldKey | null; hint: string }[] = [
+  { key: 'SKU', label: 'SKU', column: 'sku', hint: 'Recommended: unique per company, case and spaces ignored.' },
+  { key: 'BARCODE', label: 'Barcode', column: 'barcode', hint: 'Unique per company. Rows without a barcode are treated as new products.' },
+  { key: 'EAN', label: 'EAN', column: 'ean', hint: 'Unique per company. Rows without an EAN are treated as new products.' },
+  { key: 'MODEL_NUMBER', label: 'Model Number', column: 'model_number', hint: 'Not unique: a model number used by several products is reported, never guessed.' },
+  { key: 'PRODUCT_NAME', label: 'Product Name', column: 'product_name', hint: 'Not unique: case and spaces ignored; a name used by several products is reported, never guessed.' },
+  { key: 'NONE', label: 'None (N/A)', column: null, hint: 'No matching: the import only adds new products and never changes existing ones.' },
+]
+
+export const matchKeyLabel = (key: MatchKey) => MATCH_KEYS.find((m) => m.key === key)?.label ?? key
+export const matchColumn = (key: MatchKey): ImportFieldKey | null => MATCH_KEYS.find((m) => m.key === key)?.column ?? null
+export const isMatchKey = (v: unknown): v is MatchKey => MATCH_KEYS.some((m) => m.key === v)
+
+/** A match-key value as compared: SKU / barcode trimmed and case-insensitive, EAN digits only, model number and name like nameKey(). */
+export function matchValue(key: MatchKey, raw: string | null | undefined): string {
+  const v = raw ?? ''
+  switch (key) {
+    case 'SKU': return skuKey(v)
+    case 'BARCODE': return cleanSku(v).toLowerCase()
+    case 'EAN': return normalizeEan(v)
+    case 'MODEL_NUMBER':
+    case 'PRODUCT_NAME': return nameKey(v)
+    default: return ''
+  }
 }
 
 /** Product names compared for duplicates: trimmed, case-insensitive, inner spaces collapsed. */
@@ -225,8 +261,9 @@ export function splitAtHeader(rows: string[][], headerIndex: number) {
  * Columns that must be mapped. With a SKU column in smart import, existing products need only
  * the SKU and the fields to change; a new product missing its name or type is reported on its row.
  */
-export function missingRequiredFields(mapping: ColumnMapping, mode: DuplicateMode = 'skip'): string[] {
-  if (mode === 'update' && mapping.sku !== null) return []
+export function missingRequiredFields(mapping: ColumnMapping, mode: DuplicateMode = 'skip', matchKey: MatchKey = 'SKU'): string[] {
+  const col = matchColumn(matchKey)
+  if (mode === 'update' && col && mapping[col] !== null) return []
   return IMPORT_FIELDS.filter((f) => f.required && mapping[f.key] === null).map((f) => f.label)
 }
 
@@ -241,9 +278,14 @@ export const IMPORT_FIELD_TARGET: Record<ImportFieldKey, keyof ProductInput> = {
   preferred_supplier: 'preferred_supplier_id', remarks: 'remarks',
 }
 
-/** Mapped columns that can modify existing products (every mapped column except the SKU, which is never changed). */
-export function modifiableFields(mapping: ColumnMapping): { key: ImportFieldKey; label: string }[] {
-  return IMPORT_FIELDS.filter((f) => f.key !== 'sku' && mapping[f.key] !== null).map((f) => ({ key: f.key, label: f.label }))
+/**
+ * Mapped columns that can modify existing products: every mapped column except the match key (which finds the
+ * product and is never changed). The SKU can be modified only when another field is the match key. NONE: no column.
+ */
+export function modifiableFields(mapping: ColumnMapping, matchKey: MatchKey = 'SKU'): { key: ImportFieldKey; label: string }[] {
+  if (matchKey === 'NONE') return []
+  const locked = matchColumn(matchKey)
+  return IMPORT_FIELDS.filter((f) => f.key !== locked && mapping[f.key] !== null).map((f) => ({ key: f.key, label: f.label }))
 }
 
 function parseBoolean(value: string): boolean | null | undefined {
@@ -348,15 +390,24 @@ export function validateImportRows(
   }
 
   const isBlank = (row: string[]) => mappedIndexes.every((i) => String(row[i] ?? '').trim() === '')
-  // Rows of each SKU (and of each product name without a SKU) in the file.
+  // Match key (ERP Settings): NONE behaves like the SKU key with existing products left alone.
+  const matchKey: MatchKey = ctx.matchKey ?? 'SKU'
+  const byOther = matchKey !== 'SKU' && matchKey !== 'NONE'
+  const matchCol = matchColumn(matchKey)
+  const keyLabel = matchKeyLabel(matchKey)
+  const mode: DuplicateMode = matchKey === 'NONE' ? 'skip' : ctx.duplicateMode
+  // Rows of each SKU (and of each product name without a SKU, and of each match value) in the file.
   const skuRows = new Map<string, number[]>()
   const nameRows = new Map<string, number[]>()
+  const valueRows = new Map<string, number[]>()
   rows.forEach((row, index) => {
     if (isBlank(row)) return
     const k = skuKey(cell(row, 'sku'))
     const n = nameKey(cell(row, 'product_name'))
     if (k) skuRows.set(k, [...(skuRows.get(k) ?? []), index + firstDataRowNumber])
     else if (n) nameRows.set(n, [...(nameRows.get(n) ?? []), index + firstDataRowNumber])
+    const mv = byOther && matchCol ? matchValue(matchKey, cell(row, matchCol)) : ''
+    if (mv) valueRows.set(mv, [...(valueRows.get(mv) ?? []), index + firstDataRowNumber])
   })
   const categoryName = new Map(ctx.categories.map((c) => [c.id, c.name]))
   const supplierName = new Map((ctx.suppliers ?? []).map((s) => [s.id, `${s.display_name || s.legal_name} (${s.supplier_code})`]))
@@ -394,15 +445,43 @@ export function validateImportRows(
         errors: [`Duplicate SKU in this file: rows ${sameSku.join(', ')} have SKU ${sku}. Keep one row per SKU.`] })
       return
     }
-    const exists = Boolean(key) && ctx.existingSkus.has(key)
+    // Find the existing product: by SKU, or by the match key chosen in ERP Settings.
+    let exists = Boolean(key) && ctx.existingSkus.has(key)
+    let found: ExistingProduct | undefined
+    if (byOther) {
+      exists = false
+      const mv = matchCol ? matchValue(matchKey, cell(row, matchCol)) : ''
+      const sameValue = mv ? (valueRows.get(mv) ?? []) : []
+      const candidates = mv ? (ctx.matchIndex?.get(mv) ?? []) : []
+      if (sameValue.length > 1) {
+        ambiguous.push(`Duplicate ${keyLabel} in this file: rows ${sameValue.join(', ')} have the same ${keyLabel}. Keep one row per product.`)
+      } else if (candidates.length > 1) {
+        ambiguous.push(`${candidates.length} products have this ${keyLabel} (SKUs ${candidates.map((c) => c.sku).sort().join(', ')}). `
+          + `The row is not matched to any of them; make the ${keyLabel} unique or change the match key in ERP Settings.`)
+      } else if (candidates.length === 1) {
+        exists = true
+        found = candidates[0]
+      } else if (key && ctx.existingSkus.has(key)) {
+        // Not found by the match key, but the SKU is taken: never a second product with the same SKU.
+        ambiguous.push(`SKU ${sku} already belongs to a product whose ${keyLabel} does not match this row. Not created: a SKU is never used twice. `
+          + `Correct the ${keyLabel} or the SKU.`)
+      }
+      // A SKU change must not take another product's SKU.
+      if (found && key && key !== skuKey(found.sku) && (!ctx.modifyFields || ctx.modifyFields.has('sku'))) {
+        const owner = ctx.skuOwners?.get(key)
+        if (owner && owner !== found.id) ambiguous.push(`SKU ${sku} is already used by another product; ${found.sku} cannot be renamed to it.`)
+      }
+    }
     const n = nameKey(name)
     const storedForName = n ? ctx.existingNames?.get(n) : undefined
     // A row without a SKU is a new product: it must not repeat another row or an existing product.
-    if (!key) {
+    if (exists || ambiguous.length > 0) {
+      // Matched (or already reported): no new-product checks.
+    } else if (!key) {
       const sameName = n ? (nameRows.get(n) ?? []) : []
       if (sameName.length > 1) ambiguous.push(`Duplicate product in this file: rows ${sameName.join(', ')} have the same name and no SKU.`)
       if (storedForName) ambiguous.push(`A product with this name already exists (SKU ${storedForName}). Enter its SKU on this row to update it, or use a different name for a new product.`)
-    } else if (!exists) {
+    } else {
       // A new SKU: not a near-miss of a stored SKU, and not the name of a stored product.
       const near = ctx.looseSkus?.get(looseSkuKey(sku))
       if (near) {
@@ -415,29 +494,35 @@ export function validateImportRows(
         warnings.push(`Added as a separate product: a product with the same name already exists (SKU ${storedForName}).`)
       }
     }
-    const existing = exists && ctx.duplicateMode === 'update' ? ctx.existingProducts?.get(key) : undefined
+    const existing = exists && mode === 'update' ? (byOther ? found : ctx.existingProducts?.get(key)) : undefined
     const isUpdate = Boolean(existing)
     if (ambiguous.length > 0) {
       results.push({ rowNumber, sku, productName: name, status: 'error', issue: 'ambiguous', errors: ambiguous, warnings: [], input: null })
       return
     }
 
-    if (exists && ctx.duplicateMode === 'skip') {
-      results.push({ rowNumber, sku, productName: cell(row, 'product_name'), status: 'skipped', skipReason: 'exists', errors: [],
-        warnings: ['SKU already exists — row skipped (existing product not changed).'], input: null })
+    if (exists && mode === 'skip') {
+      results.push({ rowNumber, sku: found?.sku ?? sku, productName: cell(row, 'product_name'), status: 'skipped', skipReason: 'exists', errors: [],
+        warnings: [`${byOther ? `Already in the Product Master (matched by ${keyLabel})` : 'SKU already exists'} — row skipped (existing product not changed).`], input: null })
       return
     }
-    if (exists && ctx.duplicateMode === 'error') errors.push('SKU already exists in the product master.')
-    if (exists && ctx.duplicateMode === 'update' && !existing) errors.push('SKU exists but the stored product could not be loaded. Validate again.')
+    if (exists && mode === 'error') errors.push('SKU already exists in the product master.')
+    if (exists && mode === 'update' && !existing) errors.push(`${byOther ? keyLabel : 'SKU'} exists but the stored product could not be loaded. Validate again.`)
 
     // Existing products: only the columns selected to modify are read; every other column keeps the stored value.
-    const selected = (col: ImportFieldKey) => !existing || !ctx.modifyFields || ctx.modifyFields.has(col)
+    // The match key column finds the product and is never modified.
+    const selected = (col: ImportFieldKey) => !existing || (col !== matchCol && (!ctx.modifyFields || ctx.modifyFields.has(col)))
     const val = (col: ImportFieldKey) => (selected(col) ? cell(row, col) : '')
 
     // Start from the stored values (update) or a blank form (create); only cells with a value change anything.
     const values: ProductFormValues = existing ? { ...existing.values } : { ...EMPTY_PRODUCT_FORM, base_unit: '' }
     const provided = new Set<keyof ProductInput>()
     values.sku = existing ? existing.sku : sku
+    // Matched by another field: the SKU may change when it is selected; otherwise a different SKU in the file is only noted.
+    if (existing && byOther && sku && sku !== existing.sku) {
+      if (selected('sku')) { values.sku = sku; provided.add('sku') }
+      else warnings.push(`The file's SKU ${sku} differs from the stored SKU ${existing.sku}; the SKU is not changed (not selected).`)
+    }
 
     for (const [col, field] of TEXT_FIELDS) {
       const v = val(col)
@@ -540,7 +625,7 @@ export function validateImportRows(
       const before = validateProduct(existing.values).input
       compared = []
       const update: Partial<ProductInput> = {}
-      for (const field of UPDATABLE) {
+      for (const field of (byOther ? ['sku', ...UPDATABLE] : UPDATABLE) as (keyof ProductInput)[]) {
         const label = FIELD_LABELS[field as ProductField] ?? field
         const from = before?.[field] ?? null
         if (!provided.has(field)) {
@@ -629,6 +714,22 @@ export interface ProductIdentity {
   id: string
   sku: string
   product_name: string
+  barcode?: string | null
+  ean?: string | null
+  model_number?: string | null
+}
+
+/** Ids of the stored products for each match value (match keys other than SKU / NONE). */
+export function matchIds(products: ProductIdentity[], key: MatchKey): Map<string, string[]> {
+  const out = new Map<string, string[]>()
+  const raw = (p: ProductIdentity) =>
+    key === 'BARCODE' ? p.barcode : key === 'EAN' ? p.ean : key === 'MODEL_NUMBER' ? p.model_number : key === 'PRODUCT_NAME' ? p.product_name : null
+  if (key === 'SKU' || key === 'NONE') return out
+  for (const p of products) {
+    const v = matchValue(key, raw(p))
+    if (v) out.set(v, [...(out.get(v) ?? []), p.id])
+  }
+  return out
 }
 
 /** Lookups for duplicate checks: SKUs (exact and without separators) and names, all case-insensitive. */

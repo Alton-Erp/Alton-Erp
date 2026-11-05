@@ -165,6 +165,8 @@ export interface ErpSettingsValues {
   'product.hsn_codes': { code: string; description?: string | null; gst_rate?: number | null }[]
   /** Group Head choices for products and BOMs (migration 20261114090000). */
   'product.group_heads': string[]
+  /** Field the product Excel import matches existing products by (migration 20261122090000). */
+  'product.import_match_key': 'SKU' | 'BARCODE' | 'EAN' | 'MODEL_NUMBER' | 'PRODUCT_NAME' | 'NONE'
   'inventory.adjustment_reasons': string[]
   'purchase.default_payment_terms': 'IMMEDIATE' | 'DAYS_7' | 'DAYS_15' | 'DAYS_30' | 'DAYS_45'
   'purchase.default_delivery_terms': string | null

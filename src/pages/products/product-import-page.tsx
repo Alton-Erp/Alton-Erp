@@ -25,6 +25,11 @@ import {
   buildFailedRowsReport,
   detectHeaderRow,
   identityMaps,
+  isMatchKey,
+  matchColumn,
+  matchIds,
+  matchKeyLabel,
+  matchValue,
   legacyQuantityColumns,
   missingRequiredFields,
   modifiableFields,
@@ -39,6 +44,7 @@ import {
   type ExistingProduct,
   type ImportFieldKey,
   type ImportRowResult,
+  type MatchKey,
   type RowKind,
 } from '@/features/products/product-import'
 import { PRODUCT_TYPE_LABELS, SOURCE_TYPE_LABELS, STANDARD_GST_RATES, UNITS, normalizeEan, skuKey } from '@/features/products/product-model'
@@ -49,6 +55,7 @@ import { formatNumber, toIsoDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { recordImportJob, type ImportJobRowInput } from '@/services/admin'
 import {
+  fetchImportMatchKey,
   fetchProductIdentities,
   fetchProductsByIds,
   findExistingEans,
@@ -90,7 +97,13 @@ export default function ProductImportPage() {
   const [duplicateMode, setDuplicateMode] = useState<DuplicateMode>(() => (canUpdate ? 'update' : 'skip'))
   // Fields to modify in existing products: every mapped column unless unticked (kept as the unticked set,
   // so a column mapped later starts ticked).
-  const [unticked, setUnticked] = useState<Set<ImportFieldKey>>(() => new Set())
+  const [unticked, setUnticked] = useState<Set<ImportFieldKey>>(() => new Set(['sku']))
+  // Field that finds existing products (ERP Settings → Products); SKU until the setting exists.
+  const matchKeyQ = useAsync(fetchImportMatchKey, [])
+  const matchKey: MatchKey = isMatchKey(matchKeyQ.data) ? matchKeyQ.data : 'SKU'
+  const keyLabel = matchKeyLabel(matchKey)
+  const keyCol = matchColumn(matchKey)
+  const byOther = matchKey !== 'SKU' && matchKey !== 'NONE'
   // A new SKU whose name is already in the ERP is added as a separate product only when the user says so.
   const [allowSameName, setAllowSameName] = useState(false)
   const [results, setResults] = useState<RowResult[]>([])
@@ -103,8 +116,10 @@ export default function ProductImportPage() {
 
   const split = useMemo(() => splitAtHeader(allRows, headerIndex), [allRows, headerIndex])
   const dataRowCount = split.data.filter((r) => r.some((c) => c !== '')).length
-  const missing = mapping ? missingRequiredFields(mapping, duplicateMode) : []
-  const modifiable = mapping ? modifiableFields(mapping) : []
+  // No match key: the import only adds new products.
+  const mode: DuplicateMode = matchKey === 'NONE' ? 'skip' : duplicateMode
+  const missing = mapping ? missingRequiredFields(mapping, mode, matchKey) : []
+  const modifiable = mapping ? modifiableFields(mapping, matchKey) : []
   const modifyFields = new Set(modifiable.filter((f) => !unticked.has(f.key)).map((f) => f.key))
   const notModified = modifiable.filter((f) => unticked.has(f.key)).map((f) => f.label)
   const modifyLabels = modifiable.filter((f) => modifyFields.has(f.key)).map((f) => f.label)
@@ -119,7 +134,7 @@ export default function ProductImportPage() {
     setResults([])
     setFinal(null)
     setError(null)
-    setUnticked(new Set())
+    setUnticked(new Set(['sku']))
     setAllowSameName(false)
   }
 
@@ -164,7 +179,7 @@ export default function ProductImportPage() {
       // Read-only lookups: which SKUs/barcodes already exist, the stored products to compare in update mode, and suppliers.
       const existing = await findExistingIdentifiers([...new Set(col('sku').map(skuKey))], [...new Set(col('barcode'))])
       const existingProducts = new Map<string, ExistingProduct>()
-      if (duplicateMode === 'update' && existing.skuIds.size > 0) {
+      if (mode === 'update' && matchKey === 'SKU' && existing.skuIds.size > 0) {
         for (const p of await fetchProductsByIds([...existing.skuIds.values()], companyId)) {
           existingProducts.set(skuKey(p.sku), { id: p.id, sku: p.sku, values: productRowToFormValues(p), updatedAt: p.updated_at })
         }
@@ -172,7 +187,20 @@ export default function ProductImportPage() {
       const suppliers = mapping.preferred_supplier === null ? [] : await fetchSupplierOptions(true).catch(() => [])
       const eanOwners = await findExistingEans([...new Set(col('ean').map(normalizeEan))])
       // Every SKU and name of the company: new rows must not repeat a name or a near-identical SKU.
-      const identities = identityMaps(await fetchProductIdentities(companyId))
+      const identityRows = await fetchProductIdentities(companyId)
+      const identities = identityMaps(identityRows)
+      // Another match key: the stored products whose value appears in the file (several = ambiguous, reported).
+      const matchIndex = new Map<string, ExistingProduct[]>()
+      if (byOther && keyCol && mapping[keyCol] !== null) {
+        const ids = matchIds(identityRows, matchKey)
+        const wanted = new Set(split.data.map((r) => matchValue(matchKey, r[mapping[keyCol]!])).filter(Boolean))
+        const needed = [...new Set([...wanted].flatMap((v) => ids.get(v) ?? []))]
+        const rowsById = new Map((needed.length ? await fetchProductsByIds(needed, companyId) : []).map((p) => [p.id, p]))
+        for (const v of wanted) {
+          const list = (ids.get(v) ?? []).map((id) => rowsById.get(id)).filter((p): p is NonNullable<typeof p> => Boolean(p))
+          if (list.length) matchIndex.set(v, list.map((p) => ({ id: p.id, sku: p.sku, values: productRowToFormValues(p), updatedAt: p.updated_at })))
+        }
+      }
       setResults(
         validateImportRows(
           split.data,
@@ -189,7 +217,10 @@ export default function ProductImportPage() {
             modifyFields,
             allowSameName: sameName,
             suppliers,
-            duplicateMode,
+            duplicateMode: mode,
+            matchKey,
+            matchIndex,
+            skuOwners: identities.skuIds,
           },
           split.firstDataRowNumber,
         ),
@@ -222,7 +253,7 @@ export default function ProductImportPage() {
       const createFailures = new Map(blocked)
       for (const [i, message] of insertFailures) createFailures.set(creates.indexOf(toInsert[i]), message)
       const updateFailures = await updateProductsFromImport(
-        changes.map((r) => ({ id: r.productId!, changes: r.input as ProductUpdate, expectedUpdatedAt: r.productUpdatedAt })),
+        changes.map((r) => ({ id: r.productId!, changes: r.input as ProductUpdate, expectedUpdatedAt: r.productUpdatedAt, allowSkuChange: byOther })),
         (n) => setProgress(creates.length + n),
         companyId,
       )
@@ -349,8 +380,10 @@ export default function ProductImportPage() {
 
       <p className="mb-4 flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm text-blue-900">
         <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
-        Imports change product master records only; they never create, change or reserve stock. Rows are matched to existing products by
-        SKU: new products are added, unchanged rows are skipped, and only changed fields are updated, after you have reviewed every change.
+        Imports change product master records only; they never create, change or reserve stock. {matchKey === 'NONE'
+          ? ' Matching is switched off in ERP Settings → Products, so new products are added and existing products are never changed.'
+          : <> Rows are matched to existing products by <b data-testid="match-key">{keyLabel}</b> (ERP Settings → Products): new products are added, unchanged rows are
+            skipped, and only the selected, changed fields are updated, after you have reviewed every change.</>}
       </p>
 
       {error && (
@@ -427,14 +460,16 @@ export default function ProductImportPage() {
               </div>
               <fieldset className="space-y-1.5">
                 <legend className="text-sm font-medium">Existing products</legend>
-                {(['update', 'skip'] as const).map((mode) => (
-                  <label key={mode} className="flex items-start gap-2 text-sm">
-                    <input type="radio" name="dup-mode" value={mode} checked={duplicateMode === mode} onChange={() => setDuplicateMode(mode)} className="mt-1 accent-primary"
-                      disabled={mode === 'update' && !canUpdate} />
-                    {mode === 'update' ? 'Add new products and update changed ones (skip unchanged rows)' : 'Add new products only (leave existing products unchanged)'}
+                {(['update', 'skip'] as const).map((m) => (
+                  <label key={m} className="flex items-start gap-2 text-sm">
+                    <input type="radio" name="dup-mode" value={m} checked={mode === m} onChange={() => setDuplicateMode(m)} className="mt-1 accent-primary"
+                      disabled={m === 'update' && (!canUpdate || matchKey === 'NONE')} />
+                    {m === 'update' ? 'Add new products and update changed ones (skip unchanged rows)' : 'Add new products only (leave existing products unchanged)'}
                   </label>
                 ))}
-                {duplicateMode === 'update' ? (
+                {matchKey === 'NONE' ? (
+                  <p className="text-xs text-muted-foreground">The match key is None (ERP Settings → Products): existing products cannot be updated by an import.</p>
+                ) : mode === 'update' ? (
                   <p className="text-xs text-muted-foreground">Only fields whose values differ are updated; blank cells keep the stored value. You will see every change before saving.</p>
                 ) : !canUpdate ? (
                   <p className="text-xs text-muted-foreground">You can add new products; updating existing products needs permission to edit the Product Master.</p>
@@ -447,7 +482,7 @@ export default function ProductImportPage() {
             <CardHeader>
               <div>
                 <CardTitle>Column mapping</CardTitle>
-                <CardDescription>Match each product field to a spreadsheet column. New products need a Product Name and a Product Type; existing products are matched by SKU.</CardDescription>
+                <CardDescription>Match each product field to a spreadsheet column. New products need a Product Name and a Product Type{matchKey === 'NONE' ? '.' : `; existing products are matched by ${keyLabel}.`}</CardDescription>
               </div>
             </CardHeader>
             {legacyQuantityColumns(allRows[headerIndex] ?? []).length > 0 && (
@@ -484,22 +519,24 @@ export default function ProductImportPage() {
                 Map these columns to continue: {missing.join(', ')}.
               </p>
             )}
-            {duplicateMode === 'update' && mapping.sku === null && (
+            {mode === 'update' && keyCol && mapping[keyCol] === null && (
               <p role="alert" className="mx-5 mb-5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="sku-unmapped">
-                The SKU column is not mapped, so no row can be matched to an existing product: every row is treated as a new product, and rows whose
-                name is already in the Product Master are reported as duplicates. Map the SKU column to update existing products.
+                The {keyLabel} column (the match key) is not mapped, so no row can be matched to an existing product: every row is treated as a new
+                product, and rows whose SKU or name is already in the Product Master are reported as duplicates. Map the {keyLabel} column to update
+                existing products.
               </p>
             )}
           </Card>
 
-          {duplicateMode === 'update' && (
+          {mode === 'update' && (
             <Card data-testid="modify-fields">
               <CardHeader>
                 <div>
                   <CardTitle>Fields to Modify in Existing Products</CardTitle>
                   <CardDescription>
-                    Existing products (matched by SKU) get only the ticked fields, and only where the Excel value differs. Unticked fields keep their
-                    stored value, blank cells never erase data, and the SKU is never changed. New products use every mapped column.
+                    Existing products (matched by {keyLabel}, set in ERP Settings → Products) get only the ticked fields, and only where the Excel value
+                    differs. Unticked fields keep their stored value, blank cells never erase data, and the {keyLabel} is never changed. New products use
+                    every mapped column.{byOther && ' The SKU can be changed only while the product has no transactions.'}
                   </CardDescription>
                 </div>
               </CardHeader>
@@ -512,7 +549,7 @@ export default function ProductImportPage() {
                       <span className="font-medium tabular-nums" data-testid="modify-count">
                         {formatNumber(modifyFields.size)} of {formatNumber(modifiable.length)} fields selected
                       </span>
-                      {mapping.sku !== null && <span className="text-xs text-muted-foreground">+ SKU (used to match, never changed)</span>}
+                      {keyCol && mapping[keyCol] !== null && <span className="text-xs text-muted-foreground">+ {keyLabel} (used to match, never changed)</span>}
                       <Button type="button" size="sm" variant="outline" onClick={() => setUnticked(new Set())} disabled={modifyFields.size === modifiable.length}>
                         Select All
                       </Button>
@@ -521,15 +558,17 @@ export default function ProductImportPage() {
                       </Button>
                     </div>
                     <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                      {/* SKU finds the existing product, so it is always used and never changed by the import. */}
-                      <label className="flex items-center gap-2 text-sm text-muted-foreground"
-                        title={mapping.sku === null ? 'Map the SKU column to match existing products' : 'Used to find the existing product; never changed by the import'}>
-                        <Checkbox checked={mapping.sku !== null} disabled data-testid="modify-sku" aria-label="SKU (match key, never changed)" />
-                        <span>
-                          <span className="font-medium text-foreground">SKU</span>{' '}
-                          {mapping.sku === null ? '— not mapped' : '— match key (locked)'}
-                        </span>
-                      </label>
+                      {/* The match key finds the existing product, so it is always used and never changed by the import. */}
+                      {keyCol && (
+                        <label className="flex items-center gap-2 text-sm text-muted-foreground"
+                          title={mapping[keyCol] === null ? `Map the ${keyLabel} column to match existing products` : 'Used to find the existing product; never changed by the import. Change the match key in ERP Settings → Products.'}>
+                          <Checkbox checked={mapping[keyCol] !== null} disabled data-testid="modify-sku" data-field={keyCol} aria-label={`${keyLabel} (match key, never changed)`} />
+                          <span>
+                            <span className="font-medium text-foreground">{keyLabel}</span>{' '}
+                            {mapping[keyCol] === null ? '— not mapped' : '— match key (locked)'}
+                          </span>
+                        </label>
+                      )}
                       {modifiable.map((f) => (
                         <label key={f.key} className="flex items-center gap-2 text-sm">
                           <Checkbox
@@ -644,7 +683,7 @@ export default function ProductImportPage() {
             <KpiCard label="Total Excel rows" value={formatNumber(summary.total)} icon={FileSpreadsheet} />
             <KpiCard label={done ? 'New products added' : 'New products'} value={formatNumber(done && final ? final.imported : summary.creates)} icon={CheckCircle2} accent="available" />
             <KpiCard label={done ? 'Products updated' : 'Modified products'} value={formatNumber(done && final ? final.updated : summary.updates)} icon={CheckCircle2} accent="manufacturing" />
-            <KpiCard label="Unchanged — skipped" value={formatNumber(summary.skipped)} hint={duplicateMode === 'update' ? 'Same as the Product Master' : 'Existing SKUs left unchanged'} icon={Info} />
+            <KpiCard label="Unchanged — skipped" value={formatNumber(summary.skipped)} hint={mode === 'update' ? 'Same as the Product Master' : 'Existing products left unchanged'} icon={Info} />
             <KpiCard label="Duplicate / ambiguous" value={formatNumber(summary.ambiguous)} hint="Not saved: needs your decision" icon={Info} accent="shortage" />
             <KpiCard label={done ? 'Failed rows' : 'Invalid rows'} value={formatNumber(groups.invalid.length)} icon={Info} accent="shortage" />
           </div>
@@ -661,7 +700,7 @@ export default function ProductImportPage() {
             <RowGroup kind="skipped" title="Unchanged products — skipped" rows={groups.skipped}>
               {(rows) => (
                 <SimpleRows rows={rows} lastHeader="Reason"
-                  last={(r) => (r.skipReason === 'exists' ? 'SKU already exists — not changed (add new products only)'
+                  last={(r) => (r.skipReason === 'exists' ? `Already in the Product Master — not changed (${matchKey === 'NONE' ? 'match key: None' : 'add new products only'})`
                     : r.skipReason === 'no-fields' ? 'No fields selected to modify — existing product not changed'
                     : 'No changes in the selected fields: the file matches the Product Master')} />
               )}
@@ -738,7 +777,7 @@ export default function ProductImportPage() {
             {summary.updates > 0 && (
               <span className="block">
                 Fields that may change in existing products: {modifyLabels.join(', ') || 'none'}. Only the changes listed above are saved and each is
-                recorded in the audit log. {notModified.length > 0 && `Not modified: ${notModified.join(', ')}.`} SKUs are never changed.
+                recorded in the audit log. {notModified.length > 0 && `Not modified: ${notModified.join(', ')}.`} Products are matched by {keyLabel}, which is never changed.
               </span>
             )}
             <span className="block">Matching is checked again just before saving. Stock is not affected.</span>

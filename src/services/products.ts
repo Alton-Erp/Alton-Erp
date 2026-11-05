@@ -371,16 +371,17 @@ export async function fetchProductsByIds(ids: string[], companyId?: string): Pro
  * its changed fields). Returns the error message per failed index.
  */
 export async function updateProductsFromImport(
-  updates: { id: string; changes: ProductUpdate; expectedUpdatedAt?: string }[],
+  updates: { id: string; changes: ProductUpdate; expectedUpdatedAt?: string; allowSkuChange?: boolean }[],
   onProgress?: (done: number) => void,
   companyId?: string,
 ): Promise<Map<number, string>> {
   const failures = new Map<number, string>()
   for (const [i, u] of updates.entries()) {
     try {
-      // An import never changes a product's identity: SKU, id and company are dropped from any payload.
-      const { sku: _sku, id: _id, company_id: _company, ...fields } = u.changes as ProductUpdate & { sku?: unknown; id?: unknown; company_id?: unknown }
-      const changes = { ...fields, change_reason: fields.change_reason ?? 'Updated by Excel import' }
+      // An import never changes a product's id or company. The SKU changes only when another field is the
+      // match key and the SKU was selected to modify (the database refuses it once transactions use the product).
+      const { sku, id: _id, company_id: _company, ...fields } = u.changes as ProductUpdate & { sku?: string; id?: unknown; company_id?: unknown }
+      const changes = { ...fields, ...(u.allowSkuChange && sku ? { sku } : {}), change_reason: fields.change_reason ?? 'Updated by Excel import' }
       if (!u.expectedUpdatedAt) {
         await updateProduct(u.id, changes)
       } else {
@@ -401,15 +402,39 @@ export async function updateProductsFromImport(
   return failures
 }
 
+export interface ProductIdentityRow {
+  id: string
+  sku: string
+  product_name: string
+  barcode: string | null
+  ean: string | null
+  model_number: string | null
+}
+
+/**
+ * Field the product import uses to find existing products (ERP Settings → Products, migration 20261122090000).
+ * SKU while that migration is not applied.
+ */
+export async function fetchImportMatchKey(): Promise<string> {
+  const { data, error } = await untypedRpc('product_import_match_key', {})
+  if (error) {
+    const e = error as { code?: string; message?: string }
+    // Function not installed yet: the import keeps matching by SKU.
+    if (e.code === 'PGRST202' || e.code === '42883' || /could not find the function|does not exist/i.test(e.message ?? '')) return 'SKU'
+    throw error
+  }
+  return typeof data === 'string' ? data : 'SKU'
+}
+
 /**
  * SKU and name of every product of the company (archived included), for the import's duplicate checks.
  * Names and SKUs are compared case-insensitively in the browser, so "WASH BASIN" matches "Wash Basin".
  */
-export async function fetchProductIdentities(companyId: string): Promise<{ id: string; sku: string; product_name: string }[]> {
-  const out: { id: string; sku: string; product_name: string }[] = []
+export async function fetchProductIdentities(companyId: string): Promise<ProductIdentityRow[]> {
+  const out: ProductIdentityRow[] = []
   const PAGE = 1000
   for (let from = 0; ; from += PAGE) {
-    const { data, error } = await requireSupabase().from('products').select('id, sku, product_name')
+    const { data, error } = await requireSupabase().from('products').select('id, sku, product_name, barcode, ean, model_number')
       .eq('company_id', companyId).order('id').range(from, from + PAGE - 1)
     if (error) throw error
     out.push(...(data ?? []))
