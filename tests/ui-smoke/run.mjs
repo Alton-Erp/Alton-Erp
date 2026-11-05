@@ -2352,7 +2352,8 @@ await step('search and sort are sent to the database (server-side)', async () =>
   await sleep(600)
   const searched = requests.slice(before).find((r) => r.path === '/rest/v1/products' && r.query.includes('ilike'))
   assert(searched, 'no ilike filter request')
-  assert(decodeURIComponent(searched.query).includes('or=(sku.ilike.%WC%'), `unexpected search query ${searched.query}`)
+  // Quoted value: SKUs are free format, so any character is searched literally (20261120090000).
+  assert(decodeURIComponent(searched.query).includes('or=(sku.ilike."%WC%"'), `unexpected search query ${searched.query}`)
   await click('th button', 'SKU')
   await sleep(400)
   assert(requests.slice(before).some((r) => r.path === '/rest/v1/products' && r.query.includes('order=sku.desc')), 'no sort request')

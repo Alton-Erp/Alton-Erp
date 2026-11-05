@@ -538,9 +538,18 @@ select rls_test.expect_error('products: invalid HSN rejected',
 select rls_test.expect_error('products: GST rate above 100 rejected',
   format($q$ insert into public.products (company_id, sku, product_name, product_type, default_source_type, base_unit, gst_rate)
              values (%L, 'BAD-7', 'Bad', 'FINISHED_GOOD', 'IN_HOUSE', 'PCS', 150) $q$, rls_test.id('company_a')));
-select rls_test.expect_error('products: SKU with spaces rejected',
-  format($q$ insert into public.products (company_id, sku, product_name, product_type, default_source_type, base_unit)
-             values (%L, 'WC 200', 'Bad', 'FINISHED_GOOD', 'IN_HOUSE', 'PCS') $q$, rls_test.id('company_a')));
+-- SKUs are free format (20261120090000): spaces and symbols are accepted. The insert is undone at once
+-- (so later product counts are unchanged); the check passes only if the insert itself succeeded.
+do $$
+begin
+  begin
+    insert into public.products (company_id, sku, product_name, product_type, default_source_type, base_unit)
+    values (rls_test.id('company_a'), 'WC 200 #A (White)', 'Free-format SKU', 'FINISHED_GOOD', 'IN_HOUSE', 'PCS');
+    raise exception 'sku-accepted';
+  exception when others then
+    perform rls_test.ok('products: SKU with spaces and symbols accepted (free format)', sqlerrm = 'sku-accepted', sqlerrm);
+  end;
+end $$;
 select rls_test.expect_error('products: category from another company rejected',
   format($q$ insert into public.products (company_id, sku, product_name, product_type, default_source_type, base_unit, category_id)
              values (%L, 'BAD-8', 'Bad', 'FINISHED_GOOD', 'IN_HOUSE', 'PCS', %L) $q$, rls_test.id('company_a'), rls_test.id('cat_b')));

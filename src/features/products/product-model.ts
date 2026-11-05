@@ -106,7 +106,6 @@ export const UNITS: { code: string; label: string; aliases: string[] }[] = [
  */
 export const STANDARD_GST_RATES = [0, 0.1, 0.25, 1, 1.5, 3, 5, 6, 12, 18, 28, 40]
 
-export const SKU_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,49}$/
 export const BARCODE_RE = /^[A-Za-z0-9-]{4,64}$/
 export const HSN_RE = /^(\d{4}|\d{6}|\d{8})$/
 export const CATEGORY_CODE_RE = /^[A-Z0-9][A-Z0-9_-]{0,29}$/

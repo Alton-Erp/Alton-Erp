@@ -1,4 +1,5 @@
 import { applyConditions, type Condition, type FilterBuilder } from '@/features/drilldown/drill-conditions'
+import { productSearchPattern } from '@/features/products/product-search'
 import { categoryCodeFor, type ProductInput, type ProductType, type SourceType } from '@/features/products/product-model'
 import { describeProductError } from '@/lib/errors'
 import { requireSupabase } from '@/lib/supabase'
@@ -48,17 +49,11 @@ export interface ProductKpis {
   incomplete: number
 }
 
-/** Characters allowed in search terms (keeps PostgREST filter syntax safe). */
-function sanitizeSearch(value: string): string {
-  return value.replace(/[^\p{L}\p{N} ._/-]/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 80)
-}
-
 function buildQuery(params: Omit<ProductListParams, 'page' | 'pageSize' | 'sort'>, columns: string, count: boolean) {
   let query = requireSupabase().from('products').select(columns, count ? { count: 'exact' } : undefined)
 
-  const term = sanitizeSearch(params.search)
-  if (term) {
-    const like = `%${term}%`
+  const like = productSearchPattern(params.search)
+  if (like) {
     query = query.or(
       ['sku', 'product_name', 'barcode', 'ean', 'model_number', 'brand', 'supplier_model_number', 'supplier_product_name', 'group_head'].map((c) => `${c}.ilike.${like}`).join(','),
     )

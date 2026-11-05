@@ -78,8 +78,17 @@ describe('validateProduct', () => {
     assert.ok(validateProduct({ ...base, selling_price: '100', minimum_selling_price: '150' }).errors.minimum_selling_price)
   })
 
-  it('rejects invalid SKU, HSN and expiry without batches', () => {
-    assert.ok(validateProduct({ ...base, sku: 'WC 1' }).errors.sku)
+  it('accepts any SKU (spaces, symbols, any length), trimmed', () => {
+    for (const sku of ['WC 1', 'Basin#12/A+B', 'टाइल-01', '-dash first', 'x'.repeat(120)]) {
+      const r = validateProduct({ ...base, sku })
+      assert.equal(r.errors.sku, undefined, sku)
+      assert.equal(r.input?.sku, sku)
+    }
+    assert.equal(validateProduct({ ...base, sku: '  WC 1  ' }).input?.sku, 'WC 1')
+    assert.equal(validateProduct({ ...base, sku: '   ' }).input?.sku, null, 'blank → automatic code')
+  })
+
+  it('rejects invalid HSN and expiry without batches', () => {
     assert.ok(validateProduct({ ...base, hsn_code: '12' }).errors.hsn_code)
     assert.ok(validateProduct({ ...base, track_expiry: true, track_batches: false }).errors.track_expiry)
   })
@@ -204,5 +213,17 @@ describe('spreadsheet import', () => {
     assert.equal(report.length, 2)
     const csv = toCsv(report as (string | number)[][])
     assert.ok(csv.includes(`"'=HYPERLINK(""http://evil"")"`), csv)
+  })
+})
+
+describe('Product Master search', () => {
+  it('any characters are searched literally and cannot change the filter', async () => {
+    const { productSearchPattern } = await import('../../src/features/products/product-search.ts')
+    assert.equal(productSearchPattern('  '), null)
+    assert.equal(productSearchPattern('WC 200 (White)'), '"%WC 200 (White)%"')
+    assert.equal(productSearchPattern('A,B.C'), '"%A,B.C%"')
+    // LIKE escape (\%) inside a quoted PostgREST value, where the backslash itself is escaped (\\%).
+    assert.equal(productSearchPattern('50%_off'), '"%50\\\\%\\\\_off%"')
+    assert.equal(productSearchPattern('say "hi"'), '"%say \\"hi\\"%"')
   })
 })

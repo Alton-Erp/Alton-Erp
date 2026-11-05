@@ -5,7 +5,6 @@
 import {
   BARCODE_RE,
   HSN_RE,
-  SKU_RE,
   STANDARD_GST_RATES,
   UNITS,
   defaultSourceFor,
@@ -125,11 +124,9 @@ export function validateProduct(values: ProductFormValues): ValidationResult {
   const errors: ValidationResult['errors'] = {}
   const warnings: string[] = []
 
+  // Any SKU is accepted (spaces and symbols included); it is saved without leading or trailing spaces.
   // A blank SKU is allowed: the database assigns the next code for the type.
   const sku = values.sku.trim()
-  if (sku && !SKU_RE.test(sku)) {
-    errors.sku = 'Use 1–50 letters, digits or . _ / - (no spaces), starting with a letter or digit.'
-  }
 
   const name = values.product_name.trim()
   if (!name) errors.product_name = 'Product name is required.'
