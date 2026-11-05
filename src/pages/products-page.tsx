@@ -55,7 +55,7 @@ import { PRODUCT_TYPES, PRODUCT_TYPE_LABELS, SOURCE_TYPES, SOURCE_TYPE_LABELS, t
 import { DrillBanner } from '@/features/drilldown/drill-banner'
 import { contextFromParams, DASHBOARDS, METRICS, type DashboardKey } from '@/features/drilldown/drill-registry'
 import { useCompanyClock, useDrill } from '@/features/drilldown/use-drill'
-import { formatCost, gstText, hsnText } from '@/features/products/product-list-format'
+import { formatCost, formatMrp, gstText, hsnText } from '@/features/products/product-list-format'
 import { missingInfo } from '@/features/products/product-missing-info'
 import { useAsync } from '@/hooks/use-async'
 import { useDebouncedValue } from '@/hooks/use-debounced-value'
@@ -79,7 +79,7 @@ type BoolFilter = 'any' | 'yes' | 'no'
 const BOOL_FILTERS: readonly BoolFilter[] = ['any', 'yes', 'no']
 const STATUS_FILTERS: readonly ProductStatusFilter[] = ['current', 'active', 'inactive', 'archived', 'all']
 const SORT_COLUMNS: readonly ProductSortColumn[] = ['sku', 'product_name', 'product_type', 'default_source_type', 'status', 'selling_price', 'updated_at',
-  'standard_manufacturing_cost', 'hsn_code', 'gst_rate', 'base_unit']
+  'standard_manufacturing_cost', 'mrp', 'hsn_code', 'gst_rate', 'base_unit']
 const PAGE_SIZES = [10, 25, 50, 100]
 const toBool = (v: BoolFilter) => (v === 'any' ? null : v === 'yes')
 
@@ -493,6 +493,7 @@ export default function ProductsPage() {
                   <SortableHead column="sku" label="SKU" sort={sort} onSort={setSort} />
                   <TableHead>Category</TableHead>
                   <SortableHead column="standard_manufacturing_cost" label="Cost" sort={sort} onSort={setSort} align="right" />
+                  <SortableHead column="mrp" label="MRP" sort={sort} onSort={setSort} align="right" />
                   <SortableHead column="hsn_code" label="HSN" sort={sort} onSort={setSort} />
                   <SortableHead column="gst_rate" label="GST" sort={sort} onSort={setSort} align="right" />
                   <SortableHead column="base_unit" label="Unit" sort={sort} onSort={setSort} />
@@ -526,6 +527,7 @@ export default function ProductsPage() {
                     </TableCell>
                     <TableCell className="text-muted-foreground">{p.category_id ? (categoryName.get(p.category_id) ?? '—') : '—'}</TableCell>
                     <TableCell className="text-right tabular-nums" data-col="cost">{formatCost(p.standard_manufacturing_cost)}</TableCell>
+                    <TableCell className="text-right tabular-nums" data-col="mrp">{formatMrp(p.mrp)}</TableCell>
                     <TableCell className="tabular-nums" data-col="hsn">{hsnText(p.hsn_code) ?? <MissingValue />}</TableCell>
                     <TableCell className="text-right tabular-nums" data-col="gst">{gstText(p.gst_rate) ?? <MissingValue />}</TableCell>
                     <TableCell>{p.base_unit}</TableCell>

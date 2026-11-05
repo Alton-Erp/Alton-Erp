@@ -77,11 +77,14 @@ describe('Product Master Excel: EAN', () => {
       ['FG-1', '', '', '', '', '', ''].map((c, i) => (i === 0 ? 'fg-1' : c)),
       ['FG-2', '', '', '', '96385074', '', ''],
     ], autoMapColumns(headers), { ...ctx(), existingSkus: new Set(['fg-1', 'fg-2']) }, 2)
-    assert.equal(rows[0].status, 'valid', rows[0].errors.join())
-    assert.deepEqual(rows[0].changes?.map((c) => c.label), ['Group Head'], 'its own EAN is not a duplicate and not a change')
-    assert.equal(rows[1].errors[0], 'Duplicate SKU in this file (first seen on row 2).')
+    // FG-1 twice in the file: both rows are invalid.
+    assert.equal(rows[0].errors[0], 'Duplicate SKU in this file: rows 2, 3 have SKU FG-1. Keep one row per SKU.')
+    assert.equal(rows[1].errors[0], 'Duplicate SKU in this file: rows 2, 3 have SKU fg-1. Keep one row per SKU.')
     assert.equal(rows[2].status, 'valid')
     assert.deepEqual(rows[2].input, { ean: '96385074' })
+    const [own] = validateImportRows([['FG-1', '', '', '', '4006381333931', 'Faucets', '']], autoMapColumns(headers), ctx(), 2)
+    assert.equal(own.status, 'valid', own.errors.join())
+    assert.deepEqual(own.changes?.map((c) => c.label), ['Group Head'], 'its own EAN is not a duplicate and not a change')
   })
   it('a blank EAN cell in an update file leaves the stored EAN untouched', () => {
     const [r] = validateImportRows([['FG-1', 'Renamed', '', '', '', '', '']], autoMapColumns(headers), ctx(), 2)

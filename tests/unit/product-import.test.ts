@@ -157,19 +157,19 @@ describe('spreadsheet import', () => {
 
     assert.equal(results.length, 11, 'blank row is ignored')
     assert.equal(byRow.get(11)?.sku, 'EXISTING-1', 'row numbers after a blank row still match the spreadsheet')
-    assert.equal(byRow.get(2)?.status, 'valid')
-    assert.equal(byRow.get(2)?.input?.category_id, 'cat-basins')
-    assert.equal(byRow.get(2)?.input?.default_source_type, 'IN_HOUSE')
-    assert.equal(byRow.get(2)?.input?.selling_price, 4600)
+    // WB-001 is on rows 2 and 4 (any case): both rows are invalid, neither is imported.
+    for (const n of [2, 4]) {
+      assert.equal(byRow.get(n)?.status, 'error')
+      assert.deepEqual(byRow.get(n)?.errors, ['Duplicate SKU in this file: rows 2, 4 have SKU ' + byRow.get(n)?.sku + '. Keep one row per SKU.'])
+    }
     assert.equal(byRow.get(3)?.status, 'valid', 'category matched by code; blank commercial fields ok')
     assert.equal(byRow.get(3)?.input?.base_unit, 'SET')
     assert.ok(byRow.get(3)?.warnings.some((w) => w.includes('Preferred Supplier')))
-    assert.ok(byRow.get(4)?.errors.some((e) => e.includes('Duplicate SKU') && e.includes('row 2')))
     assert.ok(byRow.get(5)?.errors.some((e) => e.includes('Source Type "Factory"')))
     assert.ok(byRow.get(6)?.errors.some((e) => e.startsWith('Selling Price')))
     assert.ok(byRow.get(7)?.errors.some((e) => e.includes('does not exist')))
     assert.ok(byRow.get(8)?.errors.some((e) => e.includes('inactive')))
-    assert.ok(byRow.get(9)?.errors.some((e) => e.includes('Duplicate barcode')))
+    assert.equal(byRow.get(9)?.status, 'valid', 'its barcode is only shared with the invalid duplicate rows')
     assert.equal(byRow.get(11)?.status, 'skipped')
     // V2: a row without a SKU is imported; the database assigns the next FG- code.
     assert.equal(byRow.get(12)?.status, 'valid')
@@ -203,7 +203,16 @@ describe('spreadsheet import', () => {
     const existing = results.find((r) => r.sku === 'EXISTING-1')
     assert.equal(existing?.status, 'error')
     assert.ok(existing?.errors.some((e) => e.includes('already exists')))
-    assert.ok(results.find((r) => r.rowNumber === 2)?.errors.some((e) => e.includes('Barcode is already used')))
+    assert.ok(results.find((r) => r.rowNumber === 9)?.errors.some((e) => e.includes('Barcode is already used')))
+  })
+
+  it('reports a barcode used twice in the file', () => {
+    const results = validateImportRows([
+      ['B-1', 'One', '', '890100000001', 'Finished Good', '', '', '', '', '', '', ''],
+      ['B-2', 'Two', '', '890100000001', 'Finished Good', '', '', '', '', '', '', ''],
+    ], autoMapColumns(header), { categories: CATEGORIES, existingSkus: new Set(), existingBarcodes: new Set(), duplicateMode: 'update' })
+    assert.equal(results[0].status, 'valid')
+    assert.ok(results[1].errors.some((e) => e.includes('Duplicate barcode in this file (first seen on row 2)')))
   })
 
   it('builds an error report and escapes formulas in CSV', () => {

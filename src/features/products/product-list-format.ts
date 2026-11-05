@@ -7,6 +7,9 @@ const blank = (v: unknown) => v === null || v === undefined || v === ''
 /** Standard manufacturing cost in rupees with two decimals; "—" when not entered. No other field is used instead. */
 export const formatCost = (v: number | string | null | undefined): string => (blank(v) || !Number.isFinite(Number(v)) ? '—' : inr.format(Number(v)))
 
+/** MRP in rupees with two decimals; "—" when not entered. Only the MRP field is used (never a price or cost). */
+export const formatMrp = (v: number | string | null | undefined): string => formatCost(v)
+
 /** The HSN code exactly as stored (leading zeros kept); null when missing. */
 export const hsnText = (v: string | null | undefined): string | null => (blank(v) ? null : String(v))
 

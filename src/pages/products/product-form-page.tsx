@@ -326,13 +326,13 @@ function ProductForm({ existing, categories, suppliers }: { existing: ProductRow
       >
         <div className="space-y-6">
           <Section letter="A" title="Basic Information">
-            <Field label="SKU / Item Code" htmlFor="p-sku" required={Boolean(existing)} error={errors.sku}
+            <Field label="SKU / Item Code" htmlFor="p-sku" error={errors.sku}
               hint={existing
                 ? 'Changing a SKU is allowed only while no transactions reference the product.'
                 : `Leave blank to get the next ${values.product_type ? `${SKU_PREFIXES[values.product_type]}-` : ''}code automatically, or enter your own. Uniqueness ignores letter case.`}>
               <Input {...bind('sku')} maxLength={50} autoComplete="off" />
             </Field>
-            <Field label="Product Name" htmlFor="p-product_name" required error={errors.product_name}>
+            <Field label="Product Name" htmlFor="p-product_name" error={errors.product_name}>
               <Input {...bind('product_name')} maxLength={200} />
             </Field>
             <Field label="Description" htmlFor="p-description" full error={errors.description}>
@@ -372,7 +372,7 @@ function ProductForm({ existing, categories, suppliers }: { existing: ProductRow
           </Section>
 
           <Section letter="B" title="Classification">
-            <Field label="Product Type" htmlFor="p-type" required error={errors.product_type}>
+            <Field label="Product Type" htmlFor="p-type" error={errors.product_type}>
               <Select value={values.product_type} onValueChange={(v) => set('product_type', v as ProductFormValues['product_type'])}>
                 <SelectTrigger id="p-type" aria-invalid={Boolean(errors.product_type)}>
                   <SelectValue placeholder="Select product type" />
@@ -386,7 +386,7 @@ function ProductForm({ existing, categories, suppliers }: { existing: ProductRow
                 </SelectContent>
               </Select>
             </Field>
-            <Field label="Unit of Measurement" htmlFor="p-unit" required error={errors.base_unit}>
+            <Field label="Unit of Measurement" htmlFor="p-unit" error={errors.base_unit}>
               <Select value={values.base_unit} onValueChange={(v) => set('base_unit', v)}>
                 <SelectTrigger id="p-unit">
                   <SelectValue />
@@ -692,10 +692,9 @@ function Section({ letter, title, description, children }: { letter: string; tit
   )
 }
 
-function Field({ label, htmlFor, required, full, error, hint, children }: {
+function Field({ label, htmlFor, full, error, hint, children }: {
   label: string
   htmlFor: string
-  required?: boolean
   full?: boolean
   error?: string | null
   hint?: string
@@ -703,10 +702,7 @@ function Field({ label, htmlFor, required, full, error, hint, children }: {
 }) {
   return (
     <div className={cn('space-y-1.5', full && 'sm:col-span-2')}>
-      <Label htmlFor={htmlFor}>
-        {label}
-        {required && <span className="text-shortage">*</span>}
-      </Label>
+      <Label htmlFor={htmlFor}>{label}</Label>
       {children}
       {error ? <p className="text-xs text-shortage">{error}</p> : hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
     </div>

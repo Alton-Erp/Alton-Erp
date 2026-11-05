@@ -1994,8 +1994,8 @@ const api = http.createServer((req, res) => {
       if (req.method === 'PATCH') {
         // The standard manufacturing cost of an edit is kept, so the list shows the saved value. Other fields are
         // not kept: later steps (purchase orders, GST previews, deactivation) use the original catalogue.
-        if (body && 'standard_manufacturing_cost' in body) {
-          for (const p of filterRows(products, url.searchParams)) p.standard_manufacturing_cost = body.standard_manufacturing_cost
+        for (const field of ['standard_manufacturing_cost', 'mrp']) {
+          if (body && field in body) for (const p of filterRows(products, url.searchParams)) p[field] = body[field]
         }
         return send(res, 204, undefined, { 'Content-Range': '*/1' })
       }
@@ -2497,58 +2497,128 @@ await step('categories page lists categories with counts', async () => {
 
 // Spreadsheet with valid, invalid, duplicate and existing rows.
 const xlsxPath = path.join(outDir, 'import-test.xlsx')
+const xlsxAgainPath = path.join(outDir, 'import-again.xlsx')
 {
-  const wb = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+  const write = (file, rows) => {
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Products')
+    writeFileSync(file, Buffer.from(XLSX.write(wb, { bookType: 'xlsx', type: 'array' })))
+  }
+  const head = ['SKU', 'Product Name', 'Category', 'Product Type', 'Source Type', 'UOM', 'GST %', 'Selling Price']
+  write(xlsxPath, [
     ['Alton product list (test)'],
     [],
-    ['SKU', 'Product Name', 'Category', 'Product Type', 'Source Type', 'UOM', 'GST %', 'Selling Price'],
+    head,
+    ['IMP-1', 'Imported Basin', 'Wash Basins', 'Finished Good', 'In House', 'pcs', '18', '4600'], // new
+    ['IMP-2', 'Imported Seat', '', 'Component', 'Outsourced', 'Nos', '', ''], // new
+    ['IMP-5', 'Twice A', '', 'Finished Good', 'Outsourced', 'pcs', '', ''], // SKU twice in the file: both invalid
+    ['IMP-3', 'Bad source', '', 'Finished Good', 'Factory', 'pcs', '', ''], // invalid
+    ['MOCK-WC-1', 'Mock Closet 1', '', 'Finished Good', '', '', '18', '9950'], // modified: selling price only
+    ['MOCK-CLAY', 'Mock ceramic body', '', 'Raw Material', '', 'kg', '', ''], // unchanged: skipped
+    [' imp-5 ', 'Twice B', '', 'Finished Good', 'Outsourced', 'pcs', '', ''],
+    ['IMP-4', 'Negative price', '', 'Finished Good', 'Outsourced', 'pcs', '', '-5'], // invalid
+    ['', 'Mock glaze', '', 'Raw Material', '', 'kg', '', ''], // no SKU, name already in the master: invalid
+  ])
+  // The same products again after the import: nothing is new or changed.
+  write(xlsxAgainPath, [head,
     ['IMP-1', 'Imported Basin', 'Wash Basins', 'Finished Good', 'In House', 'pcs', '18', '4600'],
-    ['IMP-2', 'Imported Seat', '', 'Component', 'Outsourced', 'Nos', '', ''],
-    ['imp-1', 'Duplicate of IMP-1', '', 'Finished Good', 'Outsourced', 'pcs', '', ''],
-    ['IMP-3', 'Bad source', '', 'Finished Good', 'Factory', 'pcs', '', ''],
-    ['MOCK-WC-1', 'Already exists', '', 'Finished Good', 'Outsourced', 'pcs', '', ''],
-    ['IMP-4', 'Negative price', '', 'Finished Good', 'Outsourced', 'pcs', '', '-5'],
-  ]), 'Products')
-  writeFileSync(xlsxPath, Buffer.from(XLSX.write(wb, { bookType: 'xlsx', type: 'array' })))
+    ['imp-2', 'Imported Seat', '', 'Component', 'Outsourced', 'Nos', '', ''],
+    ['MOCK-CLAY', 'Mock ceramic body', '', 'Raw Material', '', 'kg', '', ''],
+  ])
 }
 
-await step('import: upload, detect header, map, validate without writing', async () => {
+async function uploadImportFile(file) {
   await goto('/products/import')
   await waitFor(`document.querySelector('input[type=file]')`, 'file input')
   const { root: doc } = await cdp('DOM.getDocument')
   const { nodeId } = await cdp('DOM.querySelector', { nodeId: doc.nodeId, selector: 'input[type=file]' })
-  await cdp('DOM.setFileInputFiles', { nodeId, files: [xlsxPath] })
+  await cdp('DOM.setFileInputFiles', { nodeId, files: [file] })
   await waitFor(bodyHas('Column mapping'), 'mapping step')
+}
+const groupCount = (kind) => evaluate(`Number(document.querySelector('[data-testid=import-group-${kind}]')?.dataset.count ?? -1)`)
+
+await step('smart import: preview classifies rows as new, modified, unchanged (skipped) and invalid without writing', async () => {
+  await uploadImportFile(xlsxPath)
   assert(await evaluate(`document.querySelector('#imp-header').value === '3'`), 'header row not detected as row 3')
+  assert(await evaluate(`document.querySelector('input[name=dup-mode][value=update]').checked`), 'smart import is not the default')
+  // No red mandatory marks on the mapping.
+  assert(!(await evaluate(`[...document.querySelectorAll('label')].some((l) => l.innerText.includes('*'))`)), 'a label still has a * mark')
+  assert(!(await evaluate(`[...document.querySelectorAll('[id^=map-]')].some((el) => el.getAttribute('aria-invalid') === 'true')`)), 'an unmapped field is marked red')
   await screenshot('06-import-mapping')
   const before = writes().length
   await click('button', 'Validate')
-  await waitFor(bodyHas('Row results'), 'review step')
+  await waitFor(`!!document.querySelector('[data-testid=import-summary]')`, 'preview')
   assert(writes().length === before, 'validation wrote to the database')
   assert(requests.some((r) => r.path === '/rest/v1/rpc/check_product_identifiers'), 'existing SKU lookup not performed')
-  for (const text of ['Duplicate SKU in this file (first seen on row 4)', 'Source Type "Factory"', 'SKU already exists', 'Import 2 valid products']) {
+  const loaded = requests.filter((r) => r.path === '/rest/v1/products' && r.query.includes('id=in.')).at(-1)
+  assert(loaded && loaded.query.includes('company_id=eq.'), 'stored products not limited to the company: ' + loaded?.query)
+  for (const text of ['Total Excel rows', 'New products', 'Modified products', 'Unchanged — skipped', 'Invalid rows']) assert(await evaluate(bodyHas(text)), `missing "${text}"`)
+  const counts = { new: await groupCount('new'), modified: await groupCount('modified'), skipped: await groupCount('skipped'), invalid: await groupCount('invalid') }
+  assert(JSON.stringify(counts) === JSON.stringify({ new: 2, modified: 1, skipped: 1, invalid: 5 }), JSON.stringify(counts))
+  // Modified: existing value next to the Excel value; only the changed field is highlighted.
+  const cmp = await evaluate(`[...document.querySelectorAll('[data-testid=import-comparison][data-sku="MOCK-WC-1"] tbody tr')].map((tr) => [tr.dataset.field, tr.dataset.changed, tr.innerText.replace(/\\s+/g, ' ').trim()])`)
+  const price = cmp.find((c) => c[0] === 'selling_price')
+  assert(price && price[1] === 'true' && price[2].includes('₹9,800.00') && price[2].includes('₹9,950.00'), JSON.stringify(cmp))
+  assert(cmp.filter((c) => c[1] === 'true').length === 1, 'unchanged fields highlighted: ' + JSON.stringify(cmp))
+  assert(cmp.some((c) => c[0] === 'gst_rate' && c[1] === 'false' && c[2].includes('18%')), 'GST comparison missing')
+  // Invalid rows are listed with their reasons (open by default).
+  for (const text of ['Duplicate SKU in this file: rows 6, 10', 'Source Type "Factory"', 'A product with this name already exists (SKU MOCK-GLZ)']) {
     assert(await evaluate(bodyHas(text)), `missing "${text}"`)
   }
+  await click('[data-testid=import-group-skipped] button', 'Unchanged products')
+  await waitFor(bodyHas('No changes: the file matches the Product Master'), 'skipped list expands')
+  assert(await evaluate(bodyHas('Add 2 new and update 1')), 'import button')
   await screenshot('07-import-review')
 })
 
-await step('import: confirm inserts only valid rows and reports a summary', async () => {
+await step('smart import: confirm adds the new products, updates only changed fields, skips the rest; failed rows downloadable', async () => {
   const before = writes().length
   const requestsBefore = requests.length
-  await click('button', 'Import 2 valid products')
+  await click('button', 'Add 2 new and update 1')
   await waitFor(`document.querySelector('[role=alertdialog]')`, 'confirm')
   assert(writes().length === before, 'imported before confirmation')
-  await click('[role=alertdialog] button', 'Import products')
+  await click('[role=alertdialog] button', 'Save changes')
   await waitFor(bodyHas('Import finished'), 'summary')
-  const inserted = writes().slice(before).flatMap((r) => (Array.isArray(r.body) ? r.body : [r.body]))
-  assert(inserted.length === 2, `expected 2 inserted rows, got ${inserted.length}`)
-  assert(inserted.map((r) => r.sku).sort().join() === 'IMP-1,IMP-2', 'wrong rows inserted')
-  assert(inserted[0].category_id === 'c1', 'category not resolved')
+  const made = writes().slice(before)
+  const inserted = made.filter((r) => r.method === 'POST').flatMap((r) => (Array.isArray(r.body) ? r.body : [r.body]))
+  assert(inserted.map((r) => r.sku).sort().join() === 'IMP-1,IMP-2', 'wrong rows inserted: ' + inserted.map((r) => r.sku).join())
+  assert(inserted.find((r) => r.sku === 'IMP-1').category_id === 'c1', 'category not resolved')
+  const patches = made.filter((r) => r.method === 'PATCH')
+  assert(patches.length === 1, `expected 1 update, got ${patches.length}`)
+  assert(patches[0].query.includes('id=eq.p1') && patches[0].query.includes('updated_at=eq.'), 'update not tied to the checked product: ' + patches[0].query)
+  assert(JSON.stringify(Object.keys(patches[0].body).sort()) === JSON.stringify(['change_reason', 'selling_price']) && patches[0].body.selling_price === 9950,
+    'update is not limited to the changed field: ' + JSON.stringify(patches[0].body))
+  assert(!made.some((r) => r.query.includes('p3')), 'the unchanged product was written')
   assert(requests.some((r) => r.path === '/rest/v1/rpc/log_product_import'), 'import not logged')
   assert(!requests.slice(requestsBefore).some((r) => /stock|inventory/.test(r.path)), 'import touched stock')
-  assert(await evaluate(bodyHas('2 created and 0 updated, of 6 rows')), 'summary text')
+  assert(await evaluate(bodyHas('2 new products added and 1 existing product updated, of 9 rows')), 'summary text')
+  assert(await evaluate(bodyHas('1 unchanged rows skipped · 5 failed')), 'skipped / failed counts')
+  assert(await evaluate(`[...document.querySelectorAll('button')].some((b) => b.innerText.includes('Download failed rows'))`), 'no failed-row download')
   await screenshot('08-import-summary')
+})
+
+await step('smart import: uploading the same products again creates and updates nothing', async () => {
+  await uploadImportFile(xlsxAgainPath)
+  const before = writes().length
+  await click('button', 'Validate')
+  await waitFor(`!!document.querySelector('[data-testid=import-summary]')`, 'preview')
+  const counts = [await groupCount('new'), await groupCount('modified'), await groupCount('skipped'), await groupCount('invalid')]
+  assert(JSON.stringify(counts) === JSON.stringify([0, 0, 3, 0]), JSON.stringify(counts))
+  assert(await evaluate(bodyHas('Nothing to import: every row is unchanged or invalid.')), 'nothing-to-import note')
+  assert(await evaluate(`[...document.querySelectorAll('button')].find((b) => b.innerText.includes('Import 0 new'))?.disabled === true`), 'import button not disabled')
+  assert(writes().length === before, 'a repeated upload wrote data')
+})
+
+await step('Product Master form: no red mandatory marks; a missing name still shows a message on save', async () => {
+  await goto('/products/new')
+  await waitFor(`!!document.querySelector('#p-product_name')`, 'form')
+  assert(!(await evaluate(`[...document.querySelectorAll('label')].some((l) => l.innerText.includes('*'))`)), 'a form label still has a * mark')
+  const nameError = `(document.querySelector('label[for=p-product_name]')?.parentElement?.querySelector('p.text-shortage')?.innerText ?? '')`
+  assert((await evaluate(nameError)) === '', 'a message is shown before saving')
+  const posts = writes().length
+  await click('button[type=submit]')
+  await waitFor(`${nameError} !== ''`, 'validation message on save')
+  assert(writes().length === posts, 'saved without a name')
 })
 
 await step('export downloads the filtered list as CSV', async () => {
@@ -5021,22 +5091,35 @@ await step('List cards 2: Product Master filters live in the address: a free-for
   await waitFor(`location.pathname === '/products' && new URLSearchParams(location.search).get('status') === 'active' && ${pressed('Active')}`, 'Back keeps the tab')
 })
 
-await step('Product Master columns: Product Name, SKU, Category, Cost, HSN, GST, Unit, Status; missing values flagged; Cost sorts on the server; an edit shows at once', async () => {
+await step('Product Master columns: Product Name, SKU, Category, Cost, MRP, HSN, GST, Unit, Status; missing values flagged; Cost sorts on the server; an edit shows at once', async () => {
   await goto('/products')
   await waitFor(`document.querySelectorAll('tbody tr').length > 0`, 'product rows')
   const heads = await evaluate(`[...document.querySelectorAll('thead th')].map((th) => th.innerText.trim().toLowerCase()).filter(Boolean)`)
-  assert(JSON.stringify(heads.slice(0, 8)) === JSON.stringify(['product name', 'sku', 'category', 'cost', 'hsn', 'gst', 'unit', 'status']), JSON.stringify(heads))
+  assert(JSON.stringify(heads.slice(0, 9)) === JSON.stringify(['product name', 'sku', 'category', 'cost', 'mrp', 'hsn', 'gst', 'unit', 'status']), JSON.stringify(heads))
   assert(await evaluate(`[...document.querySelectorAll('td[data-col=gst]')].some((c) => c.innerText.trim() === '18%')`), 'GST shown as a percentage')
   assert(await evaluate(`[...document.querySelectorAll('td[data-col=hsn]')].some((c) => c.innerText.trim() === '6910')`), 'HSN shown as stored')
   // Products without an HSN code or GST rate show "Missing"; a cost that is not entered shows "—".
   assert(await evaluate(`[...document.querySelectorAll('td[data-col=hsn], td[data-col=gst]')].some((c) => c.innerText.includes('Missing'))`), 'missing values not flagged')
   assert(await evaluate(`[...document.querySelectorAll('td[data-col=cost]')].some((c) => c.innerText.trim() === '—')`), 'missing cost not shown as —')
+  assert(await evaluate(`[...document.querySelectorAll('td[data-col=mrp]')].some((c) => c.innerText.trim() === '—')`), 'missing MRP not shown as —')
+  // MRP comes from the MRP field only: a product with a selling price and no MRP shows "—".
+  assert(await evaluate(`[...document.querySelectorAll('tbody tr')].some((r) => r.innerText.includes('MOCK-WC-1') && r.querySelector('td[data-col=mrp]').innerText.trim() === '—')`), 'MRP replaced by another price')
   assert(!(await evaluate(bodyHas('HSN / GST'))), 'the old combined column is still there')
   const before = requests.length
   await click('th button', 'COST') // headings are styled in capitals
   await waitFor(`new URLSearchParams(location.search).get('sort') === 'standard_manufacturing_cost'`, 'sorted by cost')
   for (let i = 0; i < 30 && !requests.slice(before).some((r) => r.path === '/rest/v1/products' && r.query.includes('order=standard_manufacturing_cost.asc')); i++) await sleep(100)
   assert(requests.slice(before).some((r) => r.path === '/rest/v1/products' && r.query.includes('order=standard_manufacturing_cost.asc')), 'cost sort not sent to the database')
+  await click('th button', 'MRP')
+  await waitFor(`new URLSearchParams(location.search).get('sort') === 'mrp'`, 'sorted by MRP')
+  for (let i = 0; i < 30 && !requests.some((r) => r.path === '/rest/v1/products' && r.query.includes('order=mrp.asc')); i++) await sleep(100)
+  assert(requests.some((r) => r.path === '/rest/v1/products' && r.query.includes('order=mrp.asc')), 'MRP sort not sent to the database')
+  await click('th button', 'MRP')
+  await waitFor(`new URLSearchParams(location.search).get('sort') === '-mrp'`, 'MRP descending')
+  await goto('/')
+  await waitFor(bodyHas('Management Dashboard'), 'away')
+  await evaluate('history.back()')
+  await waitFor(`location.pathname === '/products' && new URLSearchParams(location.search).get('sort') === '-mrp' && [...document.querySelectorAll('th button')].some((b) => b.innerText.includes('GST'))`, 'Back keeps the MRP sort')
   await click('th button', 'GST')
   await waitFor(`new URLSearchParams(location.search).get('sort') === 'gst_rate'`, 'sorted by GST')
   await screenshot('155-product-columns')
@@ -5044,14 +5127,15 @@ await step('Product Master columns: Product Name, SKU, Category, Cost, HSN, GST,
   await goto('/products/p2/edit')
   await waitFor(`!!document.querySelector('#p-standard_manufacturing_cost')`, 'edit form')
   await fill('#p-standard_manufacturing_cost', '1234.5')
+  await fill('#p-mrp', '1250')
   await fill('#p-change-reason', 'New moulding cost')
   await click('button[type=submit]')
   await waitFor(`location.pathname === '/products/p2'`, 'saved')
   await goto('/products?q=MOCK-WC-2')
-  await waitFor(`[...document.querySelectorAll('tbody tr')].some((r) => r.innerText.includes('MOCK-WC-2') && r.querySelector('td[data-col=cost]')?.innerText.trim() === '₹1,234.50')`, 'edited cost shown')
+  await waitFor(`[...document.querySelectorAll('tbody tr')].some((r) => r.innerText.includes('MOCK-WC-2') && r.querySelector('td[data-col=cost]')?.innerText.trim() === '₹1,234.50' && r.querySelector('td[data-col=mrp]')?.innerText.trim() === '₹1,250.00')`, 'edited cost and MRP shown')
   // A drill-down list (Missing Information) has the same columns.
   await goto('/products?drill=pm.incomplete')
-  await waitFor(`!!document.querySelector('[data-testid=drill-banner]') && !!document.querySelector('td[data-col=cost]') && !!document.querySelector('td[data-col=hsn]') && !!document.querySelector('td[data-col=gst]')`, 'columns in a drill-down list')
+  await waitFor(`!!document.querySelector('[data-testid=drill-banner]') && !!document.querySelector('td[data-col=cost]') && !!document.querySelector('td[data-col=mrp]') && !!document.querySelector('td[data-col=hsn]') && !!document.querySelector('td[data-col=gst]')`, 'columns in a drill-down list')
 })
 
 await step('List cards 3: Purchase Orders, Goods Received, Ledger and the stock card: each card opens its records with the same rule', async () => {

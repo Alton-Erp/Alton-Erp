@@ -188,7 +188,7 @@ export function AddCategoryDialog({
         <form noValidate className="space-y-3" onSubmit={(e) => { e.preventDefault(); void save() }}>
           {error && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</p>}
           <div className="space-y-1.5">
-            <Label htmlFor="new-cat-name">Category Name<span className="text-shortage">*</span></Label>
+            <Label htmlFor="new-cat-name">Category Name</Label>
             <Input id="new-cat-name" autoFocus maxLength={100} value={name} onChange={(e) => setName(e.target.value)} aria-invalid={Boolean(error) && !name.trim()} />
           </div>
           <div className="space-y-1.5">

@@ -12,7 +12,7 @@ import type { Database, ProductCategoryRow, ProductRow } from '@/types/database'
 
 export type ProductStatusFilter = 'current' | 'active' | 'inactive' | 'archived' | 'all'
 export type ProductSortColumn = 'sku' | 'product_name' | 'product_type' | 'default_source_type' | 'status' | 'selling_price' | 'updated_at'
-  | 'standard_manufacturing_cost' | 'hsn_code' | 'gst_rate' | 'base_unit'
+  | 'standard_manufacturing_cost' | 'mrp' | 'hsn_code' | 'gst_rate' | 'base_unit'
 
 export interface ProductListParams {
   search: string
@@ -323,11 +323,13 @@ export async function fetchGroupHeadOptions(): Promise<string[]> {
   return [...(data?.configured ?? []), ...(data?.in_use ?? [])]
 }
 
-/** Stored products by id (for "update existing products" imports). */
-export async function fetchProductsByIds(ids: string[]): Promise<ProductRow[]> {
+/** Stored products by id (for "update existing products" imports). With a company id, only that company's products. */
+export async function fetchProductsByIds(ids: string[], companyId?: string): Promise<ProductRow[]> {
   const rows: ProductRow[] = []
   for (let i = 0; i < ids.length; i += 200) {
-    const { data, error } = await requireSupabase().from('products').select('*').in('id', ids.slice(i, i + 200))
+    let query = requireSupabase().from('products').select('*').in('id', ids.slice(i, i + 200))
+    if (companyId) query = query.eq('company_id', companyId)
+    const { data, error } = await query
     if (error) throw error
     rows.push(...(data ?? []))
   }
@@ -339,19 +341,46 @@ export async function fetchProductsByIds(ids: string[]): Promise<ProductRow[]> {
  * its changed fields). Returns the error message per failed index.
  */
 export async function updateProductsFromImport(
-  updates: { id: string; changes: ProductUpdate }[],
+  updates: { id: string; changes: ProductUpdate; expectedUpdatedAt?: string }[],
   onProgress?: (done: number) => void,
 ): Promise<Map<number, string>> {
   const failures = new Map<number, string>()
   for (const [i, u] of updates.entries()) {
     try {
-      await updateProduct(u.id, { ...u.changes, change_reason: u.changes.change_reason ?? 'Updated by Excel import' })
+      const changes = { ...u.changes, change_reason: u.changes.change_reason ?? 'Updated by Excel import' }
+      if (!u.expectedUpdatedAt) {
+        await updateProduct(u.id, changes)
+      } else {
+        // Only if the product is still as it was when the file was checked (no overwrite of a newer edit, no repeat).
+        const { error, count } = await requireSupabase().from('products').update(changes, { count: 'exact' })
+          .eq('id', u.id).eq('updated_at', u.expectedUpdatedAt)
+        if (error) throw error
+        if (count === 0) {
+          failures.set(i, 'Not updated: this product was changed after the file was checked (or you cannot edit it). Check the file again and re-import.')
+        }
+      }
     } catch (error) {
       failures.set(i, describeProductError(error))
     }
     onProgress?.(i + 1)
   }
   return failures
+}
+
+/**
+ * Stored SKU of each product whose name is one of these (exact, trimmed), keyed by
+ * nameKey() — a row without a SKU must not create a second product of the same name.
+ */
+export async function findExistingNames(names: string[]): Promise<Map<string, string>> {
+  const owners = new Map<string, string>()
+  // Names with quotes or backslashes cannot be sent safely in an in() list; they are not looked up.
+  const safe = [...new Set(names.map((n) => n.trim()).filter((n) => n && !/["\\]/.test(n)))]
+  for (let i = 0; i < safe.length; i += 100) {
+    const { data, error } = await requireSupabase().from('products').select('id, sku, product_name').in('product_name', safe.slice(i, i + 100))
+    if (error) throw error
+    for (const p of data ?? []) owners.set(p.product_name.trim().replace(/\s+/g, ' ').toLowerCase(), p.sku)
+  }
+  return owners
 }
 
 /**

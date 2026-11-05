@@ -1,16 +1,13 @@
-import { CheckCircle2, Download, FileSpreadsheet, Info, Loader2, ScanSearch, Upload } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { CheckCircle2, ChevronRight, Download, FileSpreadsheet, Info, Loader2, ScanSearch, Upload } from 'lucide-react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 
 import { useAuth } from '@/auth/use-auth'
 import { usePermissions } from '@/auth/use-permissions'
 import { ConfirmDialog } from '@/components/common/confirm-dialog'
-import { DataTable, type DataTableColumn } from '@/components/common/data-table'
 import { FileUploadPanel } from '@/components/common/file-upload-panel'
-import { FilterTabs } from '@/components/common/filter-tabs'
 import { KpiCard } from '@/components/common/kpi-card'
 import { PageHeader } from '@/components/common/page-header'
-import { StatusBadge } from '@/components/common/status-badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -24,10 +21,13 @@ import {
   MAX_IMPORT_ROWS,
   autoMapColumns,
   buildErrorReport,
+  buildFailedRowsReport,
   detectHeaderRow,
   legacyQuantityColumns,
   missingRequiredFields,
+  nameKey,
   productRowToFormValues,
+  rowKind,
   splitAtHeader,
   summarizeImport,
   validateImportRows,
@@ -36,6 +36,7 @@ import {
   type ExistingProduct,
   type ImportFieldKey,
   type ImportRowResult,
+  type RowKind,
 } from '@/features/products/product-import'
 import { PRODUCT_TYPE_LABELS, SOURCE_TYPE_LABELS, STANDARD_GST_RATES, UNITS, normalizeEan, skuKey } from '@/features/products/product-model'
 import type { ParsedWorkbook } from '@/features/products/spreadsheet'
@@ -48,6 +49,7 @@ import {
   fetchProductsByIds,
   findExistingEans,
   findExistingIdentifiers,
+  findExistingNames,
   insertProducts,
   listCategories,
   logProductImport,
@@ -58,7 +60,6 @@ import { fetchSupplierOptions } from '@/services/suppliers'
 
 type Step = 'upload' | 'map' | 'review' | 'done'
 type RowResult = ImportRowResult & { saveError?: string }
-type ResultFilter = 'all' | 'error' | 'warning' | 'skipped' | 'valid'
 
 const columnLetter = (i: number) => {
   let s = ''
@@ -82,13 +83,13 @@ export default function ProductImportPage() {
   const [allRows, setAllRows] = useState<string[][]>([])
   const [headerIndex, setHeaderIndex] = useState(0)
   const [mapping, setMapping] = useState<ColumnMapping | null>(null)
-  const [duplicateMode, setDuplicateMode] = useState<DuplicateMode>('skip')
+  // Smart import (new → added, changed → updated, unchanged → skipped) for users who may update products.
+  const [duplicateMode, setDuplicateMode] = useState<DuplicateMode>(() => (canUpdate ? 'update' : 'skip'))
   const [results, setResults] = useState<RowResult[]>([])
   const [busy, setBusy] = useState<null | 'reading' | 'validating' | 'importing'>(null)
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
-  const [resultFilter, setResultFilter] = useState<ResultFilter>('all')
   const [final, setFinal] = useState<{ imported: number; updated: number; skipped: number; failed: number; logError: boolean } | null>(null)
   const [importKey, setImportKey] = useState(() => crypto.randomUUID())
 
@@ -150,12 +151,17 @@ export default function ProductImportPage() {
       const existing = await findExistingIdentifiers([...new Set(col('sku').map(skuKey))], [...new Set(col('barcode'))])
       const existingProducts = new Map<string, ExistingProduct>()
       if (duplicateMode === 'update' && existing.skuIds.size > 0) {
-        for (const p of await fetchProductsByIds([...existing.skuIds.values()])) {
-          existingProducts.set(skuKey(p.sku), { id: p.id, sku: p.sku, values: productRowToFormValues(p) })
+        for (const p of await fetchProductsByIds([...existing.skuIds.values()], companyId)) {
+          existingProducts.set(skuKey(p.sku), { id: p.id, sku: p.sku, values: productRowToFormValues(p), updatedAt: p.updated_at })
         }
       }
       const suppliers = mapping.preferred_supplier === null ? [] : await fetchSupplierOptions(true).catch(() => [])
       const eanOwners = await findExistingEans([...new Set(col('ean').map(normalizeEan))])
+      // Rows without a SKU are new products: their names are checked against the product master.
+      const unnamedSku = mapping.product_name === null ? [] : split.data
+        .filter((r) => (mapping.sku === null || !(r[mapping.sku] ?? '').trim()) && (r[mapping.product_name!] ?? '').trim())
+        .map((r) => r[mapping.product_name!])
+      const existingNames = await findExistingNames(unnamedSku)
       setResults(
         validateImportRows(
           split.data,
@@ -167,13 +173,13 @@ export default function ProductImportPage() {
             barcodeOwners: existing.barcodeOwners,
             eanOwners,
             existingProducts,
+            existingNames,
             suppliers,
             duplicateMode,
           },
           split.firstDataRowNumber,
         ),
       )
-      setResultFilter('all')
       setStep('review')
     } catch (err) {
       setError(describeDataError(err))
@@ -189,9 +195,19 @@ export default function ProductImportPage() {
     setProgress(0)
     setError(null)
     try {
-      const createFailures = await insertProducts(companyId, creates.map((r) => r.input!), setProgress)
+      // A product without a SKU added meanwhile (e.g. the same file imported in another tab) is not created twice.
+      const addedMeanwhile = await findExistingNames(creates.filter((r) => !r.input!.sku).map((r) => r.input!.product_name))
+      const blocked = new Map<number, string>()
+      creates.forEach((r, i) => {
+        const sku = !r.input!.sku ? addedMeanwhile.get(nameKey(r.input!.product_name)) : undefined
+        if (sku) blocked.set(i, `Not created: a product with this name was added meanwhile (SKU ${sku}).`)
+      })
+      const toInsert = creates.filter((_, i) => !blocked.has(i))
+      const insertFailures = await insertProducts(companyId, toInsert.map((r) => r.input!), setProgress)
+      const createFailures = new Map(blocked)
+      for (const [i, message] of insertFailures) createFailures.set(creates.indexOf(toInsert[i]), message)
       const updateFailures = await updateProductsFromImport(
-        changes.map((r) => ({ id: r.productId!, changes: r.input as ProductUpdate })),
+        changes.map((r) => ({ id: r.productId!, changes: r.input as ProductUpdate, expectedUpdatedAt: r.productUpdatedAt })),
         (n) => setProgress(creates.length + n),
       )
       const updated = results.map((r) => {
@@ -241,6 +257,12 @@ export default function ProductImportPage() {
     await downloadSheets([{ name: 'Import report', rows: buildErrorReport(results) }], `product-import-report-${toIsoDate(new Date())}`, 'xlsx')
   }
 
+  const downloadFailedRows = async () => {
+    const { downloadSheets } = await import('@/features/products/spreadsheet')
+    await downloadSheets([{ name: 'Failed rows', rows: buildFailedRowsReport(results, split.headers, split.data, split.firstDataRowNumber) }],
+      `product-import-failed-rows-${toIsoDate(new Date())}`, 'xlsx')
+  }
+
   const downloadTemplate = async () => {
     const { downloadSheets } = await import('@/features/products/spreadsheet')
     const header = IMPORT_FIELDS.map((f) => f.label)
@@ -266,8 +288,8 @@ export default function ProductImportPage() {
             ['Supplier Model No. / Supplier Product Name', 'The supplier\'s own model number and name (optional). The SKU and product name are not changed by them.'],
             ['Manufacturable', 'Yes or No (optional)'],
             ['Preferred Supplier', 'Supplier code or name of an active supplier (optional). Unknown suppliers are reported and left blank.'],
-            ['Updating existing products', 'Choose "Update existing products". Only cells with a value are changed; blank cells keep the stored value. Every change is listed for review before saving.'],
-            ['Export compatibility', `An export from the product list uses the columns: ${EXPORT_COLUMNS.join(', ')}. Correct it and import it again in update mode.`],
+            ['Updating existing products', 'Rows are matched to existing products by SKU (spaces and capitals ignored). New SKUs are added, rows that match the stored product are skipped, and only the fields whose values differ are updated. Blank cells keep the stored value and the SKU is never changed. Every change is listed for review before saving.'],
+            ['Export compatibility', `An export from the product list uses the columns: ${EXPORT_COLUMNS.join(', ')}. Correct it and import it again: only the changed values are saved.`],
           ],
         },
       ],
@@ -277,61 +299,11 @@ export default function ProductImportPage() {
   }
 
   const summary = summarizeImport(results)
-  const filteredResults = results.filter((r) =>
-    resultFilter === 'all'
-      ? true
-      : resultFilter === 'warning'
-        ? r.status === 'valid' && r.warnings.length > 0
-        : resultFilter === 'error'
-          ? r.status === 'error' || Boolean(r.saveError)
-          : r.status === resultFilter,
-  )
-
-  const resultColumns: DataTableColumn<RowResult>[] = [
-    { id: 'row', header: 'Row', cell: (r) => <span className="tabular-nums">{r.rowNumber}</span>, searchValue: (r) => String(r.rowNumber) },
-    { id: 'sku', header: 'SKU', cell: (r) => <span className="font-medium">{r.sku || '—'}</span>, searchValue: (r) => r.sku },
-    { id: 'name', header: 'Product Name', cell: (r) => r.productName || '—', searchValue: (r) => r.productName },
-    {
-      id: 'status',
-      header: 'Result',
-      cell: (r) =>
-        r.saveError ? (
-          <StatusBadge label="Failed" tone="danger" />
-        ) : r.status === 'error' ? (
-          <StatusBadge label="Error" tone="danger" />
-        ) : r.status === 'skipped' ? (
-          <StatusBadge label="Skipped" tone="neutral" />
-        ) : step === 'done' ? (
-          <StatusBadge label={r.action === 'update' ? 'Updated' : 'Created'} tone="success" />
-        ) : r.action === 'update' ? (
-          <StatusBadge label={`Update · ${r.changes?.length ?? 0} change(s)`} tone="info" />
-        ) : r.warnings.length > 0 ? (
-          <StatusBadge label="Valid · warning" tone="warning" />
-        ) : (
-          <StatusBadge label="Valid" tone="success" />
-        ),
-    },
-    {
-      id: 'messages',
-      header: 'Messages',
-      cell: (r) => (
-        <ul className="max-w-xl space-y-0.5 whitespace-normal text-xs">
-          {[...r.errors, ...(r.saveError ? [r.saveError] : [])].map((m) => (
-            <li key={m} className="text-red-700">{m}</li>
-          ))}
-          {(r.changes ?? []).map((c) => (
-            <li key={c.field} className="text-blue-800">
-              <span className="font-medium">{c.label}:</span> <span className="line-through opacity-70">{c.from}</span> → {c.to}
-            </li>
-          ))}
-          {r.warnings.map((m) => (
-            <li key={m} className="text-amber-800">{m}</li>
-          ))}
-        </ul>
-      ),
-      searchValue: (r) => [...r.errors, ...r.warnings, ...(r.changes ?? []).map((c) => c.label)].join(' '),
-    },
-  ]
+  // After saving, a row that could not be saved is listed with the failed rows.
+  const groupOf = (r: RowResult): RowKind => (r.saveError ? 'invalid' : rowKind(r))
+  const groups = { new: [] as RowResult[], modified: [] as RowResult[], skipped: [] as RowResult[], invalid: [] as RowResult[] }
+  for (const r of results) groups[groupOf(r)].push(r)
+  const done = step === 'done'
 
   return (
     <>
@@ -361,8 +333,8 @@ export default function ProductImportPage() {
 
       <p className="mb-4 flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm text-blue-900">
         <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
-        Imports change product master records only; they never create, change or reserve stock. Existing products are changed only in
-        "Update existing products" mode, and only after you have reviewed every change.
+        Imports change product master records only; they never create, change or reserve stock. Rows are matched to existing products by
+        SKU: new products are added, unchanged rows are skipped, and only changed fields are updated, after you have reviewed every change.
       </p>
 
       {error && (
@@ -438,15 +410,19 @@ export default function ProductImportPage() {
                 <p className="text-xs text-muted-foreground">Detected automatically; change it if the headers are elsewhere.</p>
               </div>
               <fieldset className="space-y-1.5">
-                <legend className="text-sm font-medium">Existing SKUs</legend>
-                {(['skip', 'update', 'error'] as const).map((mode) => (
-                  <label key={mode} className="flex items-center gap-2 text-sm">
-                    <input type="radio" name="dup-mode" checked={duplicateMode === mode} onChange={() => setDuplicateMode(mode)} className="accent-primary"
+                <legend className="text-sm font-medium">Existing products</legend>
+                {(['update', 'skip'] as const).map((mode) => (
+                  <label key={mode} className="flex items-start gap-2 text-sm">
+                    <input type="radio" name="dup-mode" value={mode} checked={duplicateMode === mode} onChange={() => setDuplicateMode(mode)} className="mt-1 accent-primary"
                       disabled={mode === 'update' && !canUpdate} />
-                    {mode === 'skip' ? 'Skip rows whose SKU already exists' : mode === 'update' ? 'Update existing products (matched by SKU)' : 'Treat existing SKUs as errors'}
+                    {mode === 'update' ? 'Add new products and update changed ones (skip unchanged rows)' : 'Add new products only (leave existing products unchanged)'}
                   </label>
                 ))}
-                {duplicateMode === 'update' && <p className="text-xs text-muted-foreground">Only cells with a value are changed. You will see every change before saving.</p>}
+                {duplicateMode === 'update' ? (
+                  <p className="text-xs text-muted-foreground">Only fields whose values differ are updated; blank cells keep the stored value. You will see every change before saving.</p>
+                ) : !canUpdate ? (
+                  <p className="text-xs text-muted-foreground">You can add new products; updating existing products needs permission to edit the Product Master.</p>
+                ) : null}
               </fieldset>
             </CardContent>
           </Card>
@@ -455,7 +431,7 @@ export default function ProductImportPage() {
             <CardHeader>
               <div>
                 <CardTitle>Column mapping</CardTitle>
-                <CardDescription>Match each product field to a spreadsheet column. Fields marked * are required.</CardDescription>
+                <CardDescription>Match each product field to a spreadsheet column. New products need a Product Name and a Product Type; existing products are matched by SKU.</CardDescription>
               </div>
             </CardHeader>
             {legacyQuantityColumns(allRows[headerIndex] ?? []).length > 0 && (
@@ -467,15 +443,12 @@ export default function ProductImportPage() {
             <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {IMPORT_FIELDS.map((field) => (
                 <div key={field.key} className="space-y-1">
-                  <Label htmlFor={`map-${field.key}`}>
-                    {field.label}
-                    {field.required && <span className="text-shortage">*</span>}
-                  </Label>
+                  <Label htmlFor={`map-${field.key}`}>{field.label}</Label>
                   <Select
                     value={mapping[field.key] === null ? 'none' : String(mapping[field.key])}
                     onValueChange={(v) => setMapping({ ...mapping, [field.key]: v === 'none' ? null : Number(v) })}
                   >
-                    <SelectTrigger id={`map-${field.key}`} aria-invalid={field.required && mapping[field.key] === null}>
+                    <SelectTrigger id={`map-${field.key}`}>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -492,7 +465,7 @@ export default function ProductImportPage() {
             </CardContent>
             {missing.length > 0 && (
               <p className="mx-5 mb-5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                Map the required fields: {missing.join(', ')}.
+                Map these columns to continue: {missing.join(', ')}.
               </p>
             )}
           </Card>
@@ -545,22 +518,29 @@ export default function ProductImportPage() {
 
       {(step === 'review' || step === 'done') && (
         <div className="space-y-6">
-          {step === 'done' && final && (
+          {done && final && (
             <Card>
               <CardContent className="flex flex-col gap-3 py-5 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-start gap-3">
                   <CheckCircle2 aria-hidden className="mt-0.5 size-5 shrink-0 text-available" />
                   <div>
                     <p className="font-semibold">
-                      Import finished: {formatNumber(final.imported)} created and {formatNumber(final.updated)} updated, of {formatNumber(summary.total)} rows
+                      Import finished: {formatNumber(final.imported)} new {final.imported === 1 ? 'product' : 'products'} added and {formatNumber(final.updated)} existing{' '}
+                      {final.updated === 1 ? 'product' : 'products'} updated, of {formatNumber(summary.total)} rows
                     </p>
                     <p className="text-sm text-muted-foreground">
-                      {formatNumber(final.skipped)} skipped · {formatNumber(final.failed)} not imported because of errors.
+                      {formatNumber(final.skipped)} unchanged rows skipped · {formatNumber(final.failed)} failed.
                       {final.logError && ' (The import summary could not be written to the audit log or import history; each product was still audited.)'}
                     </p>
                   </div>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
+                  {final.failed > 0 && (
+                    <Button variant="outline" onClick={() => void downloadFailedRows()}>
+                      <Download />
+                      Download failed rows
+                    </Button>
+                  )}
                   <Button variant="outline" onClick={reset}>
                     <Upload />
                     Import another file
@@ -573,61 +553,67 @@ export default function ProductImportPage() {
             </Card>
           )}
 
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-            <KpiCard label="Total rows" value={formatNumber(summary.total)} icon={FileSpreadsheet} />
-            <KpiCard label="Valid rows" value={formatNumber(summary.valid)} hint={`${formatNumber(summary.creates)} new · ${formatNumber(summary.updates)} updates · ${formatNumber(summary.withWarnings)} with warnings`} icon={CheckCircle2} accent="available" />
-            {step === 'done' && final ? (
-              <KpiCard label="Created / updated" value={`${formatNumber(final.imported)} / ${formatNumber(final.updated)}`} icon={CheckCircle2} accent="manufacturing" />
-            ) : (
-              <KpiCard label="Warnings" value={formatNumber(summary.withWarnings)} icon={Info} accent="pending" />
-            )}
-            <KpiCard label="Skipped" value={formatNumber(summary.skipped)} hint={duplicateMode === 'update' ? 'Existing SKUs with no changes' : 'Existing SKUs'} icon={Info} />
-            <KpiCard label={step === 'done' ? 'Failed' : 'Errors'} value={formatNumber(step === 'done' && final ? final.failed : summary.errors)} icon={Info} accent="shortage" />
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5" data-testid="import-summary">
+            <KpiCard label="Total Excel rows" value={formatNumber(summary.total)} icon={FileSpreadsheet} />
+            <KpiCard label={done ? 'New products added' : 'New products'} value={formatNumber(done && final ? final.imported : summary.creates)} icon={CheckCircle2} accent="available" />
+            <KpiCard label={done ? 'Products updated' : 'Modified products'} value={formatNumber(done && final ? final.updated : summary.updates)} icon={CheckCircle2} accent="manufacturing" />
+            <KpiCard label="Unchanged — skipped" value={formatNumber(summary.skipped)} hint={duplicateMode === 'update' ? 'Same as the Product Master' : 'Existing SKUs left unchanged'} icon={Info} />
+            <KpiCard label={done ? 'Failed rows' : 'Invalid rows'} value={formatNumber(done && final ? final.failed : summary.errors)} icon={Info} accent="shortage" />
           </div>
 
-          <DataTable
-            title="Row results"
-            columns={resultColumns}
-            data={filteredResults}
-            getRowId={(r) => String(r.rowNumber)}
-            searchPlaceholder="Search row, SKU or message…"
-            pageSize={25}
-            toolbar={
-              <>
-                <FilterTabs<ResultFilter>
-                  label="Result filter"
-                  value={resultFilter}
-                  onChange={setResultFilter}
-                  options={[
-                    { value: 'all', label: 'All' },
-                    { value: 'error', label: 'Errors' },
-                    { value: 'warning', label: 'Warnings' },
-                    { value: 'skipped', label: 'Skipped' },
-                    { value: 'valid', label: 'Valid' },
-                  ]}
-                />
-                <Button variant="outline" size="sm" onClick={() => void downloadReport()}>
+          <div className="space-y-3">
+            <RowGroup kind="new" title={done ? 'Added' : 'New products'} rows={groups.new} defaultOpen={!done && groups.modified.length === 0}>
+              {(rows) => (
+                <SimpleRows rows={rows} lastHeader="Notes" last={(r) => r.warnings.length ? <Messages items={r.warnings} tone="warning" /> : <span className="text-muted-foreground">—</span>} />
+              )}
+            </RowGroup>
+            <RowGroup kind="modified" title={done ? 'Updated' : 'Modified products'} rows={groups.modified} defaultOpen={!done}>
+              {(rows) => <div className="space-y-4">{rows.map((r) => <ComparisonCard key={r.rowNumber} row={r} />)}</div>}
+            </RowGroup>
+            <RowGroup kind="skipped" title="Unchanged products — skipped" rows={groups.skipped}>
+              {(rows) => (
+                <SimpleRows rows={rows} lastHeader="Reason"
+                  last={(r) => (r.skipReason === 'exists' ? 'SKU already exists — not changed (add new products only)' : 'No changes: the file matches the Product Master')} />
+              )}
+            </RowGroup>
+            <RowGroup kind="invalid" title={done ? 'Failed rows' : 'Invalid rows'} rows={groups.invalid} defaultOpen
+              action={groups.invalid.length > 0 ? (
+                <Button variant="outline" size="sm" onClick={() => void downloadFailedRows()}>
                   <Download />
-                  Download report
+                  Download failed rows
                 </Button>
-              </>
-            }
-            emptyState={{ icon: Info, title: 'No rows in this view', description: 'Choose another filter.' }}
-          />
+              ) : undefined}>
+              {(rows) => (
+                <SimpleRows rows={rows} lastHeader="Error reasons" last={(r) => <Messages items={[...r.errors, ...(r.saveError ? [r.saveError] : [])]} tone="error" />} />
+              )}
+            </RowGroup>
+          </div>
+
+          <div className="flex justify-end">
+            <Button variant="ghost" size="sm" onClick={() => void downloadReport()}>
+              <Download />
+              Download full report
+            </Button>
+          </div>
 
           {step === 'review' && (
-            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
               <Button variant="outline" onClick={() => setStep('map')} disabled={busy !== null}>
                 Back to mapping
               </Button>
-              <Button onClick={() => setConfirmOpen(true)} disabled={summary.valid === 0 || busy !== null}>
-                {busy === 'importing' ? <Loader2 className="animate-spin" /> : <Upload />}
-                {busy === 'importing'
-                  ? `Importing… ${formatNumber(progress)} / ${formatNumber(summary.valid)}`
-                  : summary.updates > 0
-                    ? `Create ${formatNumber(summary.creates)} and update ${formatNumber(summary.updates)}`
-                    : `Import ${formatNumber(summary.valid)} valid ${summary.valid === 1 ? 'product' : 'products'}`}
-              </Button>
+              <div className="flex flex-col items-end gap-1">
+                {summary.valid === 0 && (
+                  <p className="text-sm text-muted-foreground" role="status">Nothing to import: every row is unchanged or invalid.</p>
+                )}
+                <Button onClick={() => setConfirmOpen(true)} disabled={summary.valid === 0 || busy !== null}>
+                  {busy === 'importing' ? <Loader2 className="animate-spin" /> : <Upload />}
+                  {busy === 'importing'
+                    ? `Importing… ${formatNumber(progress)} / ${formatNumber(summary.valid)}`
+                    : summary.updates > 0
+                      ? `Add ${formatNumber(summary.creates)} new and update ${formatNumber(summary.updates)}`
+                      : `Import ${formatNumber(summary.valid)} new ${summary.valid === 1 ? 'product' : 'products'}`}
+                </Button>
+              </div>
             </div>
           )}
         </div>
@@ -636,13 +622,132 @@ export default function ProductImportPage() {
       <ConfirmDialog
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
-        title={summary.updates > 0 ? `Create ${formatNumber(summary.creates)} and update ${formatNumber(summary.updates)} products?` : `Import ${formatNumber(summary.valid)} products?`}
-        description={`${formatNumber(summary.creates)} new products will be created${summary.updates > 0
-          ? ` and ${formatNumber(summary.updates)} existing products will be changed exactly as listed in the table (each change is recorded in the audit log)`
-          : ''}. ${formatNumber(summary.errors)} rows with errors and ${formatNumber(summary.skipped)} skipped rows will not be imported. Stock is not affected.`}
+        title={summary.updates > 0 ? `Add ${formatNumber(summary.creates)} new and update ${formatNumber(summary.updates)} products?` : `Import ${formatNumber(summary.valid)} new products?`}
+        description={`${formatNumber(summary.creates)} new products will be added${summary.updates > 0
+          ? ` and ${formatNumber(summary.updates)} existing products will get only the changed fields listed above (each change is recorded in the audit log)`
+          : ''}. ${formatNumber(summary.skipped)} unchanged rows are skipped and ${formatNumber(summary.errors)} invalid rows are not imported. Stock is not affected.`}
         confirmLabel={summary.updates > 0 ? 'Save changes' : 'Import products'}
         onConfirm={() => void runImport()}
       />
     </>
+  )
+}
+
+const GROUP_STYLE: Record<RowKind, string> = {
+  new: 'border-l-emerald-500',
+  modified: 'border-l-blue-500',
+  skipped: 'border-l-slate-300',
+  invalid: 'border-l-amber-500',
+}
+const PAGE = 50
+
+/** An expandable list of one kind of row; its rows are drawn only while open, 50 at a time. */
+function RowGroup({ kind, title, rows, defaultOpen = false, action, children }: {
+  kind: RowKind
+  title: string
+  rows: RowResult[]
+  defaultOpen?: boolean
+  action?: ReactNode
+  children: (rows: RowResult[]) => ReactNode
+}) {
+  const [open, setOpen] = useState(defaultOpen && rows.length > 0)
+  const [shown, setShown] = useState(PAGE)
+  return (
+    <section className={cn('rounded-lg border border-l-4 bg-card', GROUP_STYLE[kind])} data-testid={`import-group-${kind}`} data-count={rows.length}>
+      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
+        <button type="button" className="flex items-center gap-2 text-left font-medium" aria-expanded={open} onClick={() => setOpen(!open)} disabled={rows.length === 0}>
+          <ChevronRight aria-hidden className={cn('size-4 transition-transform', open && 'rotate-90', rows.length === 0 && 'opacity-30')} />
+          {title}
+          <span className="rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground">{formatNumber(rows.length)}</span>
+        </button>
+        {action}
+      </div>
+      {open && rows.length > 0 && (
+        <div className="border-t px-4 py-3">
+          {children(rows.slice(0, shown))}
+          {rows.length > shown && (
+            <Button variant="ghost" size="sm" className="mt-2" onClick={() => setShown(shown + PAGE)}>
+              Show {formatNumber(Math.min(PAGE, rows.length - shown))} more of {formatNumber(rows.length - shown)}
+            </Button>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function SimpleRows({ rows, lastHeader, last }: { rows: RowResult[]; lastHeader: string; last: (r: RowResult) => ReactNode }) {
+  return (
+    <div className="overflow-x-auto">
+      <Table>
+        <TableHeader>
+          <TableRow className="hover:bg-transparent">
+            <TableHead className="w-16">Row</TableHead>
+            <TableHead>SKU</TableHead>
+            <TableHead>Product Name</TableHead>
+            <TableHead>{lastHeader}</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.map((r) => (
+            <TableRow key={r.rowNumber} data-row={r.rowNumber}>
+              <TableCell className="tabular-nums text-muted-foreground">{r.rowNumber}</TableCell>
+              <TableCell className="font-medium">{r.sku || <span className="text-muted-foreground">Automatic</span>}</TableCell>
+              <TableCell>{r.productName || '—'}</TableCell>
+              <TableCell className="whitespace-normal text-sm">{last(r)}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  )
+}
+
+function Messages({ items, tone }: { items: string[]; tone: 'error' | 'warning' }) {
+  return (
+    <ul className={cn('max-w-xl space-y-0.5 text-xs', tone === 'error' ? 'text-red-700' : 'text-amber-800')}>
+      {items.map((m) => <li key={m}>{m}</li>)}
+    </ul>
+  )
+}
+
+/** Existing ERP value next to the Excel value for every field in the file; changed fields are highlighted. */
+function ComparisonCard({ row }: { row: RowResult }) {
+  const compared = row.compared ?? row.changes?.map((c) => ({ ...c, changed: true })) ?? []
+  const changed = compared.filter((c) => c.changed).length
+  return (
+    <div className="rounded-md border" data-testid="import-comparison" data-sku={row.sku}>
+      <p className="flex flex-wrap items-baseline gap-x-2 border-b bg-muted/40 px-3 py-2 text-sm">
+        <span className="font-medium">{row.sku}</span>
+        <span>{row.productName}</span>
+        <span className="text-xs text-muted-foreground">Row {row.rowNumber} · {changed} {changed === 1 ? 'field changes' : 'fields change'}</span>
+        {row.saveError && <span className="text-xs text-red-700">{row.saveError}</span>}
+      </p>
+      <div className="overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <TableHead>Field</TableHead>
+              <TableHead>Existing ERP value</TableHead>
+              <TableHead>Excel value</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {compared.map((c) => (
+              <TableRow key={c.field} data-field={c.field} data-changed={c.changed ? 'true' : 'false'}
+                className={cn(c.changed && 'bg-amber-50 font-medium hover:bg-amber-50 dark:bg-amber-950/30')}>
+                <TableCell>
+                  {c.label}
+                  {c.changed && <span className="ml-2 rounded bg-amber-200 px-1.5 py-0.5 text-[10px] uppercase text-amber-900">Changed</span>}
+                </TableCell>
+                <TableCell className={cn('tabular-nums', c.changed && 'text-muted-foreground line-through')}>{c.from}</TableCell>
+                <TableCell className="tabular-nums">{c.to}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+      {row.warnings.length > 0 && <div className="border-t px-3 py-2"><Messages items={row.warnings} tone="warning" /></div>}
+    </div>
   )
 }

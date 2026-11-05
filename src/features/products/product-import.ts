@@ -6,11 +6,18 @@
 //   * Only Product Name and Product Type are needed. A blank SKU gets the next
 //     automatic code, a blank source type / unit gets its default; each is a
 //     warning, never an error.
-//   * Existing SKUs can be skipped, treated as errors, or UPDATED. An update
-//     changes only the columns that have a value in the file (a blank cell never
-//     erases data) and lists every field change (old → new) for review first.
+//   * Smart import (mode "update", the default): each row is matched to the
+//     product master by SKU (trimmed, case-insensitive, within the company) and
+//     classified as New, Modified, Unchanged (skipped) or Invalid. A modified
+//     product gets only the fields whose value differs (a blank cell never
+//     erases data, the SKU is never changed); every compared field is listed
+//     (existing value / Excel value) for review before anything is saved.
+//   * A SKU that appears more than once in the file is invalid on every row, and
+//     a row without a SKU whose name matches an existing product is invalid, so
+//     uploading the same file twice never creates duplicates.
 
 import { productGaps, type ProductGap } from './product-completeness.ts'
+import { formatCost } from './product-list-format.ts'
 import {
   PRODUCT_TYPE_LABELS,
   SKU_PREFIXES,
@@ -84,13 +91,22 @@ export interface ExistingProduct {
   id: string
   sku: string
   values: ProductFormValues
+  /** Stored updated_at: the update is refused if the product changed after the file was checked. */
+  updatedAt?: string
 }
 
 export interface FieldChange {
   field: keyof ProductInput
   label: string
+  /** Existing ERP value, formatted for display. */
   from: string
+  /** Excel value, formatted for display. */
   to: string
+}
+
+/** One field supplied in the file for an existing product: changed or the same as stored. */
+export interface FieldComparison extends FieldChange {
+  changed: boolean
 }
 
 export interface ImportRowResult {
@@ -103,7 +119,13 @@ export interface ImportRowResult {
   action?: 'create' | 'update'
   /** For updates: the product being changed and the field-level changes. */
   productId?: string
+  /** updated_at of the stored product when the file was checked. */
+  productUpdatedAt?: string
   changes?: FieldChange[]
+  /** Existing products: every field supplied in the file, changed or not. */
+  compared?: FieldComparison[]
+  /** Why a row is skipped: nothing differs, or existing products are left alone ("add new only"). */
+  skipReason?: 'unchanged' | 'exists'
   errors: string[]
   warnings: string[]
   /** Full insert payload (create) or only the changed fields (update). */
@@ -123,6 +145,20 @@ export interface ImportContext {
   /** Product id that owns each existing barcode (lets an update keep its own barcode). */
   barcodeOwners?: Map<string, string>
   suppliers?: ImportSupplier[]
+  /** Stored SKU of each existing product by nameKey(): a row without a SKU must not duplicate one. */
+  existingNames?: Map<string, string>
+}
+
+/** Product names compared for duplicates: trimmed, case-insensitive, inner spaces collapsed. */
+export const nameKey = (name: string) => name.trim().replace(/\s+/g, ' ').toLowerCase()
+
+export type RowKind = 'new' | 'modified' | 'skipped' | 'invalid'
+
+/** New / Modified / Skipped (unchanged or left alone) / Invalid, as shown on the import preview. */
+export function rowKind(r: Pick<ImportRowResult, 'status' | 'action'>): RowKind {
+  if (r.status === 'error') return 'invalid'
+  if (r.status === 'skipped') return 'skipped'
+  return r.action === 'update' ? 'modified' : 'new'
 }
 
 const normalizeHeader = (h: string) => h.trim().toLowerCase().replace(/[^a-z0-9#%]+/g, ' ').trim()
@@ -168,9 +204,12 @@ export function splitAtHeader(rows: string[][], headerIndex: number) {
   }
 }
 
-/** Required columns for the chosen mode (updates only need SKU and one field to change). */
+/**
+ * Columns that must be mapped. With a SKU column in smart import, existing products need only
+ * the SKU and the fields to change; a new product missing its name or type is reported on its row.
+ */
 export function missingRequiredFields(mapping: ColumnMapping, mode: DuplicateMode = 'skip'): string[] {
-  if (mode === 'update' && mapping.sku === null) return ['SKU (needed to find the products to update)']
+  if (mode === 'update' && mapping.sku !== null) return []
   return IMPORT_FIELDS.filter((f) => f.required && mapping[f.key] === null).map((f) => f.label)
 }
 
@@ -275,33 +314,64 @@ export function validateImportRows(
     if (s.display_name) supplierByKey.set(s.display_name.trim().toLowerCase(), s)
   }
 
-  const firstSkuRow = new Map<string, number>()
+  const isBlank = (row: string[]) => mappedIndexes.every((i) => String(row[i] ?? '').trim() === '')
+  // Rows of each SKU (and of each product name without a SKU) in the file.
+  const skuRows = new Map<string, number[]>()
+  const nameRows = new Map<string, number[]>()
+  rows.forEach((row, index) => {
+    if (isBlank(row)) return
+    const k = skuKey(cell(row, 'sku'))
+    const n = nameKey(cell(row, 'product_name'))
+    if (k) skuRows.set(k, [...(skuRows.get(k) ?? []), index + firstDataRowNumber])
+    else if (n) nameRows.set(n, [...(nameRows.get(n) ?? []), index + firstDataRowNumber])
+  })
+  const categoryName = new Map(ctx.categories.map((c) => [c.id, c.name]))
+  const supplierName = new Map((ctx.suppliers ?? []).map((s) => [s.id, `${s.display_name || s.legal_name} (${s.supplier_code})`]))
+  const show = (field: keyof ProductInput, value: unknown): string => {
+    if (value === null || value === undefined || value === '') return '—'
+    if (field === 'category_id') return categoryName.get(String(value)) ?? 'Another category'
+    if (field === 'preferred_supplier_id') return supplierName.get(String(value)) ?? 'Another supplier'
+    if (field === 'product_type') return PRODUCT_TYPE_LABELS[value as keyof typeof PRODUCT_TYPE_LABELS] ?? String(value)
+    if (field === 'default_source_type') return SOURCE_TYPE_LABELS[value as keyof typeof SOURCE_TYPE_LABELS] ?? String(value)
+    if (MONEY_FIELDS.has(field)) return formatCost(value as number)
+    if (field === 'gst_rate') return `${Number(value)}%`
+    return display(value)
+  }
+
   const firstBarcodeRow = new Map<string, number>()
   const firstEanRow = new Map<string, number>()
   const results: ImportRowResult[] = []
 
   rows.forEach((row, index) => {
     const rowNumber = index + firstDataRowNumber
-    if (mappedIndexes.every((i) => String(row[i] ?? '').trim() === '')) return
+    if (isBlank(row)) return
 
     const errors: string[] = []
     const warnings: string[] = []
     const sku = cell(row, 'sku')
     const key = sku ? skuKey(sku) : ''
 
-    // Duplicate SKU inside the file.
-    let firstSeen: number | undefined
-    if (key) {
-      firstSeen = firstSkuRow.get(key)
-      if (firstSeen !== undefined) errors.push(`Duplicate SKU in this file (first seen on row ${firstSeen}).`)
-      else firstSkuRow.set(key, rowNumber)
+    // A SKU used on more than one row: every such row is invalid (which values are meant is unclear).
+    const sameSku = key ? (skuRows.get(key) ?? []) : []
+    if (sameSku.length > 1) {
+      results.push({ rowNumber, sku, productName: cell(row, 'product_name'), status: 'error', warnings: [], input: null,
+        errors: [`Duplicate SKU in this file: rows ${sameSku.join(', ')} have SKU ${sku}. Keep one row per SKU.`] })
+      return
     }
-    const exists = Boolean(key) && firstSeen === undefined && ctx.existingSkus.has(key)
+    // A row without a SKU is a new product: it must not repeat another row or an existing product.
+    if (!key) {
+      const n = nameKey(cell(row, 'product_name'))
+      const sameName = n ? (nameRows.get(n) ?? []) : []
+      if (sameName.length > 1) errors.push(`Duplicate product in this file: rows ${sameName.join(', ')} have the same name and no SKU.`)
+      const storedSku = n ? ctx.existingNames?.get(n) : undefined
+      if (storedSku) errors.push(`A product with this name already exists (SKU ${storedSku}). Enter its SKU on this row to update it, or use a different name for a new product.`)
+    }
+    const exists = Boolean(key) && ctx.existingSkus.has(key)
     const existing = exists && ctx.duplicateMode === 'update' ? ctx.existingProducts?.get(key) : undefined
     const isUpdate = Boolean(existing)
 
     if (exists && ctx.duplicateMode === 'skip') {
-      results.push({ rowNumber, sku, productName: cell(row, 'product_name'), status: 'skipped', errors: [],
+      results.push({ rowNumber, sku, productName: cell(row, 'product_name'), status: 'skipped', skipReason: 'exists', errors: [],
         warnings: ['SKU already exists — row skipped (existing product not changed).'], input: null })
       return
     }
@@ -408,20 +478,21 @@ export function validateImportRows(
     }
 
     let changes: FieldChange[] | undefined
+    let compared: FieldComparison[] | undefined
     let input: ProductInput | null = validation.input
     if (existing && validation.input) {
       const before = validateProduct(existing.values).input
-      changes = []
+      compared = []
       const update: Partial<ProductInput> = {}
       for (const field of UPDATABLE) {
         if (!provided.has(field)) continue
         const from = before?.[field] ?? null
         const to = validation.input[field] ?? null
-        if (from !== to) {
-          changes.push({ field, label: FIELD_LABELS[field as ProductField] ?? field, from: display(from), to: display(to) })
-          ;(update as Record<string, unknown>)[field] = to
-        }
+        const changed = from !== to
+        compared.push({ field, label: FIELD_LABELS[field as ProductField] ?? field, from: show(field, from), to: show(field, to), changed })
+        if (changed) (update as Record<string, unknown>)[field] = to
       }
+      changes = compared.filter((c) => c.changed).map((c) => ({ field: c.field, label: c.label, from: c.from, to: c.to }))
       if (provided.has('product_type') && before && before.product_type !== validation.input.product_type) {
         warnings.push('The product type changes. Check any BOMs and open orders that use this product.')
       }
@@ -438,6 +509,7 @@ export function validateImportRows(
       status = 'skipped'
       warnings.unshift('No changes: the file matches the stored product.')
     }
+    const skipReason = status === 'skipped' ? ('unchanged' as const) : undefined
 
     results.push({
       rowNumber,
@@ -446,7 +518,10 @@ export function validateImportRows(
       status,
       action: status === 'valid' ? (isUpdate ? 'update' : 'create') : undefined,
       productId: existing?.id,
+      productUpdatedAt: existing?.updatedAt,
       changes,
+      compared,
+      skipReason,
       errors,
       warnings,
       input: status === 'valid' ? input : null,
@@ -459,6 +534,8 @@ export function validateImportRows(
 const GAP_LABELS: Record<ProductGap['key'], string> = {
   hsn: 'HSN code', gst: 'GST rate', category: 'category', price: 'selling price', cost: 'standard cost', bom: 'BOM',
 }
+
+const MONEY_FIELDS = new Set<keyof ProductInput>(['selling_price', 'mrp', 'standard_cost', 'standard_manufacturing_cost', 'minimum_selling_price'])
 
 function display(value: unknown): string {
   if (value === null || value === undefined || value === '') return '—'
@@ -495,6 +572,27 @@ export function buildErrorReport(
       (r.changes ?? []).map((c) => `${c.label}: ${c.from} → ${c.to}`).join(' | '),
     ])
   return [header, ...rows]
+}
+
+/**
+ * The failed-row report: every row that was not saved (invalid, or refused when saving), with the
+ * reasons first and then the row's original cells, so it can be corrected and uploaded again.
+ */
+export function buildFailedRowsReport(
+  results: (ImportRowResult & { saveError?: string })[],
+  headers: string[],
+  data: string[][],
+  firstDataRowNumber: number,
+): string[][] {
+  const columns = headers.map((h, i) => h.trim() || `Column ${i + 1}`)
+  const failed = results.filter((r) => r.status === 'error' || r.saveError)
+  return [
+    ['Row', 'Error reasons', ...columns],
+    ...failed.map((r) => {
+      const cells = data[r.rowNumber - firstDataRowNumber] ?? []
+      return [String(r.rowNumber), [...r.errors, ...(r.saveError ? [r.saveError] : [])].join(' | '), ...columns.map((_, i) => String(cells[i] ?? ''))]
+    }),
+  ]
 }
 
 /** Converts a stored product row into form values (used for update comparisons). */

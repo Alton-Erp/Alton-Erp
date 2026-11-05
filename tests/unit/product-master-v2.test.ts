@@ -100,7 +100,7 @@ describe('import: update existing products by SKU', () => {
     assert.equal(r.productId, 'p-1')
     assert.equal(r.sku, 'WC-100', 'the stored SKU is kept')
     assert.deepEqual(r.changes?.map((c) => `${c.label}: ${c.from} → ${c.to}`), [
-      'HSN Code: — → 6910', 'GST Rate: — → 18', 'Selling Price: 8000 → 8500', 'Preferred Supplier: — → s-1',
+      'HSN Code: — → 6910', 'GST Rate: — → 18%', 'Selling Price: ₹8,000.00 → ₹8,500.00', 'Preferred Supplier: — → Clay Traders (S-CLAY)',
     ])
     assert.deepEqual(r.input, { hsn_code: '6910', gst_rate: 18, selling_price: 8500, preferred_supplier_id: 's-1' }, 'blank cells (name, reorder level, remarks) are not erased')
     assert.equal(r.warnings.some((w) => w.includes('Barcode')), false, 'its own barcode is not a duplicate')
@@ -130,7 +130,7 @@ describe('import: update existing products by SKU', () => {
     assert.equal(results[1].action, 'create')
     assert.ok(results[1].warnings.some((w) => w.includes('Unknown Co') && w.includes('not found')), 'unknown supplier is reported, not silently dropped')
     const report = buildErrorReport(results)
-    assert.ok(report.some((row) => String(row[6]).includes('Selling Price: 8000 → 9000') && String(row[6]).includes('Remarks: old → Price revised')))
+    assert.ok(report.some((row) => String(row[6]).includes('Selling Price: ₹8,000.00 → ₹9,000.00') && String(row[6]).includes('Remarks: old → Price revised')))
   })
 })
 

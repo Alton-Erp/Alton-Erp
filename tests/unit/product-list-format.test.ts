@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { formatCost, gstText, hsnText } from '../../src/features/products/product-list-format.ts'
+import { formatCost, formatMrp, gstText, hsnText } from '../../src/features/products/product-list-format.ts'
 
 describe('Product Master columns: COST, HSN, GST', () => {
   it('COST is the standard manufacturing cost in rupees with two decimals; "—" when not entered', () => {
@@ -12,6 +12,12 @@ describe('Product Master columns: COST, HSN, GST', () => {
     assert.equal(formatCost(null), '—')
     assert.equal(formatCost(undefined), '—')
     assert.equal(formatCost(''), '—')
+  })
+  it('MRP in rupees with two decimals; "—" when not entered', () => {
+    assert.equal(formatMrp(1250), '₹1,250.00')
+    assert.equal(formatMrp('2499.5'), '₹2,499.50')
+    assert.equal(formatMrp(null), '—')
+    assert.equal(formatMrp(undefined), '—')
   })
   it('HSN is shown exactly as stored (leading zeros kept); null = missing', () => {
     assert.equal(hsnText('0402'), '0402')

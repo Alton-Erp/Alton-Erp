@@ -132,7 +132,7 @@ describe('product import / export templates', () => {
       categories: [], existingSkus: new Set(['fg-1']), existingBarcodes: new Set(), duplicateMode: 'update', existingProducts: new Map([['fg-1', existing]]),
     })
     assert.equal(row.action, 'update', row.errors.join(' '))
-    assert.deepEqual(row.changes?.map((c) => [c.field, c.from, c.to]), [['mrp', '1500', '1600']])
+    assert.deepEqual(row.changes?.map((c) => [c.field, c.from, c.to]), [['mrp', '₹1,500.00', '₹1,600.00']])
     assert.deepEqual(row.input, { mrp: 1600 })
   })
   it('every export column except Status and Has BOM is read back by the import', () => {
