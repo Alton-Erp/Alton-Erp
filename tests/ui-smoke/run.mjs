@@ -1349,6 +1349,37 @@ const api = http.createServer((req, res) => {
             roles: currentUser.roles,
             permissions: currentUser.permissions,
           })
+        case 'product_duplicate_hints': {
+          const key = (s) => String(s ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
+          const out = []
+          for (const id of body.p_ids ?? []) {
+            const p = products.find((x) => x.id === id)
+            const same = p ? products.filter((o) => o.id !== p.id && key(o.product_name) === key(p.product_name)) : []
+            if (same.length) out.push({ product_id: id, kind: 'name', matches: same.length, match_skus: same.map((o) => o.sku).sort().slice(0, 5) })
+          }
+          return send(res, 200, out)
+        }
+        case 'product_bulk_delete_preview':
+        case 'product_bulk_delete': {
+          if (!currentUser?.roles.includes('SUPER_ADMIN')) return send(res, 403, { code: '42501', message: 'Only a Super Admin can delete products.' })
+          const USED = { p1: [['Sales invoices', 'sales_invoice_lines', 2]], p2: [['Sales orders', 'sales_order_lines', 1]],
+            p3: [['Stock ledger entries', 'inventory_transactions', 3], ['Stock balances', 'inventory_balances', 1]], p4: [['BOM components', 'bom_items', 1]] }
+          const own = (body.p_ids ?? []).map((id) => products.find((p) => p.id === id && p.company_id === COMPANY_ID)).filter(Boolean)
+          const describe = (p) => ({ id: p.id, sku: p.sku, product_name: p.product_name, category: categories.find((c) => c.id === p.category_id)?.name ?? null,
+            standard_manufacturing_cost: p.standard_manufacturing_cost ?? null, mrp: p.mrp ?? null, hsn_code: p.hsn_code, gst_rate: p.gst_rate, status: p.status,
+            archived: Boolean(p.archived_at), deletable: !USED[p.id], has_stock: p.id === 'p3', can_archive: Boolean(USED[p.id]) && p.id !== 'p3' && !p.archived_at,
+            blockers: (USED[p.id] ?? []).map(([label, table, count]) => ({ label, table, count })) })
+          const rows = own.map(describe)
+          const notFound = (body.p_ids ?? []).filter((id) => !own.some((p) => p.id === id))
+          if (fn === 'product_bulk_delete_preview') {
+            return send(res, 200, { products: rows, not_found: notFound, deletable: rows.filter((r) => r.deletable).length, blocked: rows.filter((r) => !r.deletable).length })
+          }
+          if (body.p_confirmation !== 'DELETE PRODUCTS') return send(res, 200, { status: 'DENIED', error: 'Type DELETE PRODUCTS to confirm.' })
+          for (const r of rows) if (r.deletable) products.splice(products.findIndex((p) => p.id === r.id), 1)
+          return send(res, 200, { status: 'COMPLETED', error: null, request_id: body.p_request_id, not_found: notFound, failed: [],
+            deleted: rows.filter((r) => r.deletable).map((r) => ({ id: r.id, sku: r.sku, product_name: r.product_name })),
+            blocked: rows.filter((r) => !r.deletable).map((r) => ({ ...r, archived_now: false, archive_error: null })) })
+        }
         case 'product_kpis': {
           const active = products.filter((p) => p.status === 'ACTIVE')
           return send(res, 200, {
@@ -5136,6 +5167,81 @@ await step('Product Master columns: Product Name, SKU, Category, Cost, MRP, HSN,
   // A drill-down list (Missing Information) has the same columns.
   await goto('/products?drill=pm.incomplete')
   await waitFor(`!!document.querySelector('[data-testid=drill-banner]') && !!document.querySelector('td[data-col=cost]') && !!document.querySelector('td[data-col=mrp]') && !!document.querySelector('td[data-col=hsn]') && !!document.querySelector('td[data-col=gst]')`, 'columns in a drill-down list')
+})
+
+await step('Missing Information bulk delete: Super Admin selects products, sees duplicates, confirms with DELETE PRODUCTS; used products are protected', async () => {
+  // Two never-used products without HSN / GST (so they are in Missing Information); one has the same name as MOCK-WC-1.
+  products.push(product(901, { id: 'dup1', sku: 'DUP-1', product_name: 'Mock Closet 1', hsn_code: null, gst_rate: null, category_id: null }),
+    product(902, { id: 'dup2', sku: 'DUP-2', product_name: 'Unused duplicate seat', hsn_code: null, gst_rate: null, category_id: null }))
+  await signOut()
+  await login('owner@test.invalid')
+  await waitFor(`location.pathname !== '/login'`, 'owner signed in')
+  await goto('/products?drill=pm.incomplete')
+  await waitFor(`document.querySelectorAll('[data-testid=select-row]').length > 0 && !!document.querySelector('[data-testid=bulk-bar]')`, 'checkboxes in Missing Information')
+  const count = () => evaluate(`document.querySelector('[data-testid=bulk-count]').innerText`)
+  const deleteDisabled = () => evaluate(`document.querySelector('[data-testid=bulk-delete]').disabled`)
+  assert((await count()) === '0 products selected' && (await deleteDisabled()), 'Delete Selected must be disabled with nothing selected')
+  // Duplicate indicator: same name as MOCK-WC-1.
+  await waitFor(`[...document.querySelectorAll('tbody tr')].some((r) => r.innerText.includes('DUP-1') && r.querySelector('[data-testid=dup-hints]')?.innerText.includes('Same name as MOCK-WC-1'))`, 'duplicate indicator')
+  const rowsOnPage = await evaluate(`document.querySelectorAll('[data-testid=select-row]').length`)
+  // 3. Select All, then 4. deselect one.
+  await click('[data-testid=select-all]')
+  await waitFor(`document.querySelector('[data-testid=bulk-count]').innerText === '${rowsOnPage} ${rowsOnPage === 1 ? 'product' : 'products'} selected'`, 'all rows on the page selected')
+  await click('[data-testid=select-row][data-sku="DUP-2"]')
+  await waitFor(`document.querySelector('[data-testid=bulk-count]').innerText.startsWith('${rowsOnPage - 1} ') && document.querySelector('[data-testid=select-all]').dataset.state === 'indeterminate'`, 'one deselected after Select All')
+  await click('button', 'Clear selection')
+  await waitFor(`document.querySelector('[data-testid=bulk-count]').innerText === '0 products selected'`, 'selection cleared')
+  // Whole filtered result set.
+  const total = await evaluate(`Number(document.querySelector('[data-testid=drill-banner]').innerText.match(/(\\d+)/)?.[1] ?? 0)`)
+  if (await evaluate(`[...document.querySelectorAll('button')].some((b) => b.innerText.includes('matching'))`)) {
+    await click('button', 'matching')
+    await waitFor(`document.querySelector('[data-testid=bulk-count]').innerText.startsWith('${rowsOnPage} ') || / selected$/.test(document.querySelector('[data-testid=bulk-count]').innerText) && !document.querySelector('[data-testid=bulk-count]').innerText.startsWith('0 ')`, 'all matching selected')
+    await click('button', 'Clear selection')
+  }
+  assert(total >= 0, 'banner count')
+  // 2./5. Two never-used products and one with stock.
+  for (const sku of ['DUP-1', 'DUP-2', 'MOCK-CLAY']) await click(`[data-testid=select-row][data-sku="${sku}"]`)
+  await waitFor(`document.querySelector('[data-testid=bulk-count]').innerText === '3 products selected'`, '3 selected')
+  await click('[data-testid=bulk-delete]')
+  await waitFor(`!!document.querySelector('[data-testid=bulk-delete-counts]')`, 'confirmation with the dependency check')
+  assert(await evaluate(bodyHas('You are about to permanently delete 3 selected products. Products linked to transactions will be protected. This operation cannot be undone.')), 'confirmation message')
+  const counts = await evaluate(`document.querySelector('[data-testid=bulk-delete-counts]').innerText`)
+  assert(counts.includes('2 will be permanently deleted') && counts.includes('1 protected'), counts)
+  const clay = await evaluate(`document.querySelector('[data-testid=bulk-delete-dialog] tr[data-sku="MOCK-CLAY"]').innerText`)
+  assert(clay.includes('Protected') && clay.includes('Stock ledger entries (3)') && clay.includes('Mock ceramic body'), clay)
+  assert(await evaluate(`[...document.querySelectorAll('[data-testid=bulk-delete-dialog] th')].map((th) => th.innerText.toLowerCase()).join('|').includes('std. mfg. cost|mrp|hsn|gst')`), 'cost, MRP, HSN and GST columns')
+  const runBtn = `[...document.querySelectorAll('[data-testid=bulk-delete-dialog] button')].find((b) => b.innerText.includes('Delete 2 products'))`
+  assert(await evaluate(`${runBtn}.disabled`), 'enabled before the phrase is typed')
+  await fill('#bd-phrase', 'delete products')
+  await waitFor(bodyHas('The phrase does not match.'), 'wrong phrase flagged')
+  assert(await evaluate(`${runBtn}.disabled`), 'a wrong phrase enables deletion')
+  const before = requests.filter((r) => r.path === '/rest/v1/rpc/product_bulk_delete').length
+  await fill('#bd-phrase', 'DELETE PRODUCTS')
+  await waitFor(`!${runBtn}.disabled`, 'enabled with the phrase')
+  await screenshot('bulk-delete-confirm')
+  await evaluate(`${runBtn}.click()`)
+  await waitFor(`!!document.querySelector('[data-testid=bulk-delete-result]')`, 'results')
+  const call = requests.filter((r) => r.path === '/rest/v1/rpc/product_bulk_delete')
+  assert(call.length === before + 1, 'not called once')
+  const b = call.at(-1).body
+  assert(b.p_ids.length === 3 && b.p_confirmation === 'DELETE PRODUCTS' && b.p_reason === 'Duplicate product' && b.p_archive_blocked === false && b.p_request_id, JSON.stringify(b))
+  const result = await evaluate(`document.querySelector('[data-testid=bulk-delete-result]').innerText`)
+  assert(/Successfully deleted\s*2/.test(result) && /Blocked \(transactions\)\s*1/.test(result) && result.includes('DUP-1') && result.includes('Stock ledger entries'), result)
+  assert(await evaluate(`[...document.querySelectorAll('button')].some((b) => b.innerText.includes('Download failed-record report'))`), 'failed-record report')
+  await screenshot('bulk-delete-result')
+  await click('[data-testid=bulk-delete-dialog] button', 'Close')
+  // 10. The list reloads with the same filter; deleted products are gone; the protected one stays selected.
+  await waitFor(`!document.querySelector('[data-testid=bulk-delete-dialog]') && ![...document.querySelectorAll('tbody tr')].some((r) => r.innerText.includes('DUP-1'))`, 'list refreshed')
+  assert(await evaluate(`location.search.includes('drill=pm.incomplete') && !!document.querySelector('[data-testid=drill-banner]')`), 'filter lost after deletion')
+  assert((await count()) === '1 product selected', 'selection after deletion: ' + (await count()))
+  assert(!products.some((p) => p.id === 'dup1' || p.id === 'dup2') && products.some((p) => p.id === 'p3'), 'mock data')
+  // Other users: no selection or delete.
+  await signOut()
+  await login('manager@test.invalid')
+  await waitFor(`location.pathname !== '/login'`, 'manager signed in')
+  await goto('/products?drill=pm.incomplete')
+  await waitFor(`!!document.querySelector('[data-testid=drill-banner]') && document.querySelectorAll('tbody tr').length > 0`, 'list for the manager')
+  assert(!(await evaluate(`!!document.querySelector('[data-testid=select-row]') || !!document.querySelector('[data-testid=bulk-bar]')`)), 'a non-Super Admin sees bulk delete')
 })
 
 await step('List cards 3: Purchase Orders, Goods Received, Ledger and the stock card: each card opens its records with the same rule', async () => {

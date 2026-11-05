@@ -1,6 +1,7 @@
 import { applyConditions, type Condition, type FilterBuilder } from '@/features/drilldown/drill-conditions'
 import { productSearchPattern } from '@/features/products/product-search'
 import { categoryCodeFor, type ProductInput, type ProductType, type SourceType } from '@/features/products/product-model'
+import type { BulkDeletePreview, BulkDeleteResult, DuplicateHint } from '@/features/products/product-bulk-delete'
 import { describeProductError } from '@/lib/errors'
 import { requireSupabase } from '@/lib/supabase'
 import type { Database, ProductCategoryRow, ProductRow } from '@/types/database'
@@ -314,6 +315,35 @@ export async function findExistingEans(eans: string[]): Promise<Map<string, stri
     for (const p of data ?? []) if (p.ean) owners.set(p.ean, p.id)
   }
   return owners
+}
+
+// --- Bulk delete of never-used products (migration 20261121090000) ----------------
+
+type UntypedRpc = (fn: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: unknown }>
+const untypedRpc: UntypedRpc = (fn, args) => (requireSupabase().rpc as unknown as UntypedRpc)(fn, args)
+
+/** Same name / barcode / EAN / model number / similar description, within the user's company. */
+export async function fetchDuplicateHints(ids: string[]): Promise<DuplicateHint[]> {
+  if (ids.length === 0) return []
+  const { data, error } = await untypedRpc('product_duplicate_hints', { p_ids: ids })
+  if (error) throw error
+  return (data ?? []) as DuplicateHint[]
+}
+
+/** What deleting these products would do (Super Admin only; nothing is changed). */
+export async function previewBulkDelete(ids: string[]): Promise<BulkDeletePreview> {
+  const { data, error } = await untypedRpc('product_bulk_delete_preview', { p_ids: ids })
+  if (error) throw error
+  return data as BulkDeletePreview
+}
+
+/** Deletes the never-used products among ids in one transaction; protected ones are kept (or archived). */
+export async function bulkDeleteProducts(ids: string[], confirmation: string, reason: string, archiveBlocked: boolean, requestId: string): Promise<BulkDeleteResult> {
+  const { data, error } = await untypedRpc('product_bulk_delete', {
+    p_ids: ids, p_confirmation: confirmation, p_reason: reason, p_archive_blocked: archiveBlocked, p_request_id: requestId,
+  })
+  if (error) throw error
+  return data as BulkDeleteResult
 }
 
 /** Group Head choices: the list configured in ERP Settings, then other values already used on products. */

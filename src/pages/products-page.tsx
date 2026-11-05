@@ -19,6 +19,7 @@ import {
   RefreshCw,
   Search,
   SearchX,
+  Trash2,
   Truck,
   X,
 } from 'lucide-react'
@@ -38,6 +39,7 @@ import { PaginationBar } from '@/components/common/pagination-bar'
 import { SortableHead } from '@/components/common/sortable-head'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -49,7 +51,9 @@ import {
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { BulkDeleteDialog, type SelectedProduct } from '@/features/products/bulk-delete-dialog'
 import { ProductSourceBadge, ProductStatusBadge } from '@/features/products/product-badges'
+import { duplicateText, type BulkDeleteResult, type DuplicateHint } from '@/features/products/product-bulk-delete'
 import { productExportRows } from '@/features/products/product-export'
 import { PRODUCT_TYPES, PRODUCT_TYPE_LABELS, SOURCE_TYPES, SOURCE_TYPE_LABELS, type ProductType, type SourceType } from '@/features/products/product-model'
 import { DrillBanner } from '@/features/drilldown/drill-banner'
@@ -62,6 +66,7 @@ import { useDebouncedValue } from '@/hooks/use-debounced-value'
 import { describeDataError } from '@/lib/errors'
 import { formatNumber, toIsoDate } from '@/lib/format'
 import {
+  fetchDuplicateHints,
   fetchProductKpis,
   listAllProducts,
   listCategories,
@@ -104,7 +109,7 @@ const ACTION_COPY: Record<PendingAction['kind'], { title: string; body: string; 
 
 export default function ProductsPage() {
   const navigate = useNavigate()
-  const { has } = usePermissions()
+  const { has, hasRole } = usePermissions()
 
   // Filters, sort and page live in the address, so Back from a product returns to the same list.
   const [urlParams, setUrlParams] = useSearchParams()
@@ -234,6 +239,70 @@ export default function ProductsPage() {
   const rows = list.data?.rows ?? []
   const total = list.data?.total ?? 0
   const catalogueEmpty = kpis.data?.total === 0
+
+  // Missing Information: a Super Admin can select products (kept across pages) and delete the never-used ones.
+  const bulkMode = missingView && hasRole('SUPER_ADMIN')
+  const [selected, setSelected] = useState<Map<string, SelectedProduct>>(() => new Map())
+  const [bulkOpen, setBulkOpen] = useState(false)
+  const [selectingAll, setSelectingAll] = useState(false)
+  const filterKey = JSON.stringify(filters)
+  // Another filter or view is another result set: the selection starts again.
+  useEffect(() => setSelected(new Map()), [filterKey, bulkMode])
+  const pick1 = (p: ProductRow): SelectedProduct => ({ id: p.id, sku: p.sku, product_name: p.product_name })
+  const toggle = (p: ProductRow, on: boolean) => setSelected((prev) => {
+    const next = new Map(prev)
+    if (on) next.set(p.id, pick1(p))
+    else next.delete(p.id)
+    return next
+  })
+  const pageSelected = rows.filter((p) => selected.has(p.id)).length
+  const headerState: boolean | 'indeterminate' = rows.length > 0 && pageSelected === rows.length ? true : pageSelected > 0 ? 'indeterminate' : false
+  const togglePage = (on: boolean) => setSelected((prev) => {
+    const next = new Map(prev)
+    for (const p of rows) {
+      if (on) next.set(p.id, pick1(p))
+      else next.delete(p.id)
+    }
+    return next
+  })
+  const MAX_BULK = 1000
+  const selectAllMatching = async () => {
+    setSelectingAll(true)
+    setNotice(null)
+    try {
+      const all = await listAllProducts(filters)
+      setSelected(new Map(all.slice(0, MAX_BULK).map((p) => [p.id, pick1(p)])))
+      if (all.length > MAX_BULK) setNotice({ tone: 'error', text: `Only the first ${formatNumber(MAX_BULK)} of ${formatNumber(all.length)} products were selected (at most ${formatNumber(MAX_BULK)} at a time).` })
+    } catch (error) {
+      setNotice({ tone: 'error', text: describeDataError(error) })
+    } finally {
+      setSelectingAll(false)
+    }
+  }
+  const afterBulkDelete = (r: BulkDeleteResult) => {
+    if (r.status !== 'COMPLETED') return
+    // Deleted and archived products leave the list; the protected ones stay selected for another look.
+    setSelected((prev) => {
+      const next = new Map(prev)
+      for (const d of r.deleted) next.delete(d.id)
+      for (const b of r.blocked) if (b.archived_now) next.delete(b.id)
+      for (const id of r.not_found) next.delete(id)
+      return next
+    })
+    refresh()
+  }
+  // A page that no longer exists after a delete shows the last page instead.
+  useEffect(() => {
+    if (list.data && page > 0 && page * pageSize >= list.data.total) setPage(Math.max(0, Math.ceil(list.data.total / pageSize) - 1))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [list.data, page, pageSize])
+  const pageIds = rows.map((p) => p.id).join(',')
+  const hints = useAsync(() => (bulkMode && pageIds ? fetchDuplicateHints(pageIds.split(',')) : Promise.resolve([] as DuplicateHint[])), [bulkMode, pageIds, refreshKey])
+  const hintsByProduct = useMemo(() => {
+    const m = new Map<string, DuplicateHint[]>()
+    for (const h of hints.data ?? []) m.set(h.product_id, [...(m.get(h.product_id) ?? []), h])
+    return m
+  }, [hints.data])
 
   return (
     <>
@@ -486,9 +555,37 @@ export default function ProductsPage() {
           )
         ) : (
           <div className={list.loading ? 'opacity-60 transition-opacity' : undefined} aria-busy={list.loading}>
+            {bulkMode && (
+              <div className="flex flex-wrap items-center gap-2 border-b bg-muted/40 px-4 py-2.5 text-sm" data-testid="bulk-bar">
+                <span className="font-medium tabular-nums" data-testid="bulk-count">{formatNumber(selected.size)} {selected.size === 1 ? 'product' : 'products'} selected</span>
+                <span aria-hidden className="text-muted-foreground">|</span>
+                <Button size="sm" variant="destructive" disabled={selected.size === 0} onClick={() => setBulkOpen(true)} data-testid="bulk-delete">
+                  <Trash2 />
+                  Delete Selected{selected.size > 0 ? ` (${formatNumber(selected.size)})` : ''}
+                </Button>
+                {selected.size < Math.min(total, MAX_BULK) && (
+                  <Button size="sm" variant="outline" onClick={() => void selectAllMatching()} disabled={selectingAll}>
+                    {selectingAll && <Loader2 className="animate-spin" />}
+                    Select all {formatNumber(total)} matching
+                  </Button>
+                )}
+                {selected.size > 0 && (
+                  <Button size="sm" variant="ghost" onClick={() => setSelected(new Map())}>
+                    <X />
+                    Clear selection
+                  </Button>
+                )}
+                <span className="w-full text-xs text-muted-foreground sm:ml-auto sm:w-auto">Only products never used in any transaction are deleted; the others are protected.</span>
+              </div>
+            )}
             <Table>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
+                  {bulkMode && (
+                    <TableHead className="w-10">
+                      <Checkbox checked={headerState} onCheckedChange={(v) => togglePage(v === true)} aria-label="Select All" title="Select All (this page)" data-testid="select-all" />
+                    </TableHead>
+                  )}
                   <SortableHead column="product_name" label="Product Name" sort={sort} onSort={setSort} />
                   <SortableHead column="sku" label="SKU" sort={sort} onSort={setSort} />
                   <TableHead>Category</TableHead>
@@ -506,9 +603,23 @@ export default function ProductsPage() {
               </TableHeader>
               <TableBody>
                 {rows.map((p) => (
-                  <TableRow key={p.id}>
+                  <TableRow key={p.id} data-state={selected.has(p.id) ? 'selected' : undefined}>
+                    {bulkMode && (
+                      <TableCell className="w-10">
+                        <Checkbox checked={selected.has(p.id)} onCheckedChange={(v) => toggle(p, v === true)} aria-label={`Select ${p.sku}`} data-testid="select-row" data-sku={p.sku} />
+                      </TableCell>
+                    )}
                     <TableCell className="min-w-48 max-w-72 whitespace-normal">
                       <p className="font-medium">{p.product_name}</p>
+                      {bulkMode && (hintsByProduct.get(p.id) ?? []).length > 0 && (
+                        <p className="mt-0.5 flex flex-wrap gap-1" data-testid="dup-hints">
+                          {hintsByProduct.get(p.id)!.map((h) => (
+                            <span key={h.kind} className="inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-900" data-kind={h.kind}>
+                              <AlertTriangle aria-hidden className="size-3" /> {duplicateText(h)}
+                            </span>
+                          ))}
+                        </p>
+                      )}
                       <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
                         {PRODUCT_TYPE_LABELS[p.product_type]} <ProductSourceBadge source={p.default_source_type} />
                       </p>
@@ -564,6 +675,10 @@ export default function ProductsPage() {
           </div>
         )}
       </Card>
+
+      {bulkMode && (
+        <BulkDeleteDialog open={bulkOpen} onOpenChange={setBulkOpen} selected={selected} onFinished={afterBulkDelete} />
+      )}
 
       <ConfirmDialog
         open={pending !== null}
