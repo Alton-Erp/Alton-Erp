@@ -55,6 +55,8 @@ import { BulkDeleteDialog, type SelectedProduct } from '@/features/products/bulk
 import { ProductSourceBadge, ProductStatusBadge } from '@/features/products/product-badges'
 import { duplicateText, type BulkDeleteResult, type DuplicateHint } from '@/features/products/product-bulk-delete'
 import { productExportRows } from '@/features/products/product-export'
+import { ProductThumb } from '@/features/products/product-image'
+import { useProductImages } from '@/features/products/product-image-hooks'
 import { PRODUCT_TYPES, PRODUCT_TYPE_LABELS, SOURCE_TYPES, SOURCE_TYPE_LABELS, type ProductType, type SourceType } from '@/features/products/product-model'
 import { DrillBanner } from '@/features/drilldown/drill-banner'
 import { contextFromParams, DASHBOARDS, METRICS, type DashboardKey } from '@/features/drilldown/drill-registry'
@@ -239,6 +241,8 @@ export default function ProductsPage() {
   }
 
   const rows = list.data?.rows ?? []
+  // Thumbnails of the visible page: uploaded image, else the image link.
+  const images = useProductImages(rows)
   const total = list.data?.total ?? 0
   const catalogueEmpty = kpis.data?.total === 0
 
@@ -616,7 +620,10 @@ export default function ProductsPage() {
                         <Checkbox checked={selected.has(p.id)} onCheckedChange={(v) => toggle(p, v === true)} aria-label={`Select ${p.sku}`} data-testid="select-row" data-sku={p.sku} />
                       </TableCell>
                     )}
-                    <TableCell className="min-w-48 max-w-72 whitespace-normal">
+                    <TableCell className="min-w-56 max-w-80 whitespace-normal">
+                      <div className="flex items-start gap-2.5">
+                      <ProductThumb src={images.get(p.id)} alt={p.product_name} source={p.image_url} />
+                      <div className="min-w-0">
                       <p className="font-medium">{p.product_name}</p>
                       {bulkMode && (hintsByProduct.get(p.id) ?? []).length > 0 && (
                         <p className="mt-0.5 flex flex-wrap gap-1" data-testid="dup-hints">
@@ -636,6 +643,8 @@ export default function ProductsPage() {
                       {(p.supplier_model_number || p.supplier_product_name) && (
                         <p className="text-xs text-muted-foreground">Supplier: {[p.supplier_model_number, p.supplier_product_name].filter(Boolean).join(' · ')}</p>
                       )}
+                      </div>
+                      </div>
                     </TableCell>
                     <TableCell>
                       <Link to={`/products/${p.id}`} className="font-medium text-primary hover:underline">

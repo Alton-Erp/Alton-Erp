@@ -23,6 +23,8 @@ import { STOCK_SOURCE_LABELS, STOCK_STATUS_LABELS, formatQty, type StockSourceCo
 import { FractionFlag } from '@/features/inventory/fraction-flag'
 import { useStorage } from '@/features/inventory/use-storage'
 import { PRODUCT_TYPES, PRODUCT_TYPE_LABELS } from '@/features/products/product-model'
+import { ProductThumb } from '@/features/products/product-image'
+import { useProductImagesById } from '@/features/products/product-image-hooks'
 import { useAsync } from '@/hooks/use-async'
 import { useDebouncedValue } from '@/hooks/use-debounced-value'
 import { requireSupabase } from '@/lib/supabase'
@@ -129,6 +131,7 @@ function StockRegisterStock({ sectionTabs }: { sectionTabs: ReactNode }) {
 
   // Product-level stock status for detail rows (current page only).
   const detailRows = mode === 'detail' ? ((list.data?.rows ?? []) as StockDetailRow[]) : []
+  const rowImages = useProductImagesById((list.data?.rows ?? []).map((r) => r.product_id))
   const statusLookup = useAsync(async () => {
     const ids = [...new Set(detailRows.map((r) => r.product_id))]
     if (ids.length === 0) return new Map<string, string>()
@@ -352,7 +355,7 @@ function StockRegisterStock({ sectionTabs }: { sectionTabs: ReactNode }) {
                 {detailRows.map((r) => (
                       <TableRow key={r.balance_id} className="cursor-pointer" onClick={() => navigate(`/inventory/stock/${r.product_id}`)}>
                         <TableCell className="font-medium text-primary">{r.sku}</TableCell>
-                        <TableCell className="min-w-48 whitespace-normal">{r.product_name}</TableCell>
+                        <TableCell className="min-w-48 whitespace-normal"><span className="flex items-center gap-2"><ProductThumb size="xs" src={rowImages.get(r.product_id)} alt={r.product_name} preview={false} />{r.product_name}</span></TableCell>
                         <TableCell className="text-muted-foreground">{r.category_name ?? '—'}</TableCell>
                         <TableCell>{r.base_unit}</TableCell>
                         <TableCell>{PRODUCT_TYPE_LABELS[r.product_type as keyof typeof PRODUCT_TYPE_LABELS] ?? r.product_type}</TableCell>

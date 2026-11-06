@@ -33,6 +33,8 @@ import { formatDate, formatDateTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { fetchInventoryPolicy } from '@/services/inventory'
 import { fetchPurchaseCosts } from '@/services/purchase-costs'
+import { ProductThumb } from '@/features/products/product-image'
+import { useProductImagesById } from '@/features/products/product-image-hooks'
 import { fetchDisplayNames } from '@/services/products'
 import {
   fetchGoodsReceipts, fetchPoAmendments, fetchPoEvents, fetchPoLines, fetchPurchaseOrder, fetchReceiptLines, openPurchaseOrder, purchaseOrderAction, reverseGoodsReceipt,
@@ -61,6 +63,8 @@ export default function PoDetailPage() {
   const [refresh, setRefresh] = useState(0)
   const data = useAsync(() => loadPo(poId, has('inventory.read')), [poId, refresh])
   // Proposed price comparison only (an order never changes the Last Purchase Cost; posted receipts do).
+  // Product thumbnails beside the line items (display only).
+  const lineImages = useProductImagesById((data.data?.lines ?? []).map((l) => l.product_id))
   const costKey = (data.data?.lines ?? []).filter((l) => l.line_type === 'GOODS' && l.product_id).map((l) => l.product_id).join(',')
   const lastCosts = useAsync(() => (costKey ? fetchPurchaseCosts(costKey.split(','), data.data?.po.supplier_id ?? null).catch(() => new Map<string, ProductPurchaseCost>())
     : Promise.resolve(new Map<string, ProductPurchaseCost>())), [costKey])
@@ -218,8 +222,13 @@ export default function PoDetailPage() {
             <TableRow key={l.id}>
               <TableCell>{l.line_no}</TableCell>
               <TableCell className="min-w-56 whitespace-normal">
+                <div className="flex items-start gap-2">
+                {l.product_id && <ProductThumb size="xs" src={lineImages.get(l.product_id)} alt={l.description} />}
+                <div className="min-w-0">
                 <p className="font-medium">{l.sku ? `${l.sku} — ` : ''}{l.description}</p>
                 <p className="text-xs text-muted-foreground">{LINE_TYPE_LABELS[l.line_type]}{l.hsn_sac ? ` · HSN/SAC ${l.hsn_sac}` : ''} · GST {l.gst_rate === null ? 'not set' : `${Number(l.gst_rate)}%`}</p>
+                </div>
+                </div>
               </TableCell>
               <TableCell className="text-right tabular-nums">{formatQty(l.ordered_quantity, l.unit)}</TableCell>
               <TableCell className="text-right tabular-nums">{l.line_type === 'CHARGE' ? '—' : <>{formatQty(l.accepted_quantity)}{Number(l.rejected_quantity) > 0 && <span className="block text-xs text-red-700">{formatQty(l.rejected_quantity)} rejected</span>}</>}</TableCell>

@@ -16,6 +16,8 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { money } from '@/features/billing/billing-model'
+import { ProductThumb } from '@/features/products/product-image'
+import { useProductImagesById } from '@/features/products/product-image-hooks'
 import { useGstStates } from '@/features/billing/use-gst-states'
 import { STANDARD_GST_RATES } from '@/features/products/product-model'
 import { formatCost } from '@/features/products/product-list-format'
@@ -174,6 +176,7 @@ function PoForm({ suppliers, po, copyFrom, lines: initialLines, companyGstin, pr
   const treatment = po && supplier?.id === po.supplier_id && !companyGstin ? po.tax_treatment : taxTreatmentFor(supplier, companyGstin)
   // Last Purchase Cost of the products on the order, for the comparison under each line (nothing is changed).
   const productKey = [...new Set(lines.map((l) => l.product_id).filter(Boolean))].sort().join(',')
+  const lineImages = useProductImagesById(lines.map((l) => l.product_id))
   const lastCosts = useAsync(() => (productKey ? fetchPurchaseCosts(productKey.split(','), h.supplier_id || null).catch(() => new Map<string, ProductPurchaseCost>()) : Promise.resolve(new Map<string, ProductPurchaseCost>())), [productKey, h.supplier_id])
   const preview = calcTotals(lines.map((l) => ({
     line_type: l.line_type, quantity: l.quantity, unit_price: l.unit_price || null,
@@ -418,7 +421,7 @@ function PoForm({ suppliers, po, copyFrom, lines: initialLines, companyGstin, pr
           <CardContent className="space-y-3">
             {err('h:lines') && <p role="alert" className="text-sm text-red-700">{err('h:lines')}</p>}
             {lines.map((l, i) => (
-              <LineEditor key={l.key} index={i} line={l} calc={preview.lines[i]} errors={errors} locked={l.received > 0}
+              <LineEditor key={l.key} index={i} line={l} image={l.product_id ? lineImages.get(l.product_id) : undefined} calc={preview.lines[i]} errors={errors} locked={l.received > 0}
                 lastCost={l.product_id ? lastCosts.data?.get(l.product_id) : undefined}
                 onChange={(p) => updateLine(l.key, p)} onRemove={() => setLines((ls) => ls.filter((x) => x.key !== l.key))} />
             ))}
@@ -459,8 +462,9 @@ function PoForm({ suppliers, po, copyFrom, lines: initialLines, companyGstin, pr
   )
 }
 
-function LineEditor({ index, line: l, calc, errors, locked, lastCost, onChange, onRemove }: {
+function LineEditor({ index, line: l, image, calc, errors, locked, lastCost, onChange, onRemove }: {
   index: number
+  image?: string | null
   line: PoFormLine
   calc: { taxable: number; cgst: number; sgst: number; igst: number; total: number } | undefined
   errors: Map<string, string>
@@ -477,6 +481,7 @@ function LineEditor({ index, line: l, calc, errors, locked, lastCost, onChange, 
       <legend className="sr-only">Line {index + 1}</legend>
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
+          {l.product_id && <ProductThumb size="xs" src={image} alt={l.product_name ?? l.description} />}
           <span className="text-sm font-semibold">Line {index + 1}</span>
           <Select value={l.line_type} disabled={locked} onValueChange={(v) => onChange({ line_type: v as PoLineType, product_id: null, sku: null, product_name: null, unit: v === 'GOODS' ? '' : (l.unit || 'NOS') })}>
             <SelectTrigger aria-label={`Line ${index + 1} type`} className="h-8 w-52"><SelectValue /></SelectTrigger>

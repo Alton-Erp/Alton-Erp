@@ -252,6 +252,7 @@ export interface Database {
           model_number: string | null
           barcode: string | null
           product_image_path: string | null
+          image_url?: string | null
           status: 'ACTIVE' | 'INACTIVE'
           archived_at: string | null
           archived_by: string | null
@@ -308,6 +309,7 @@ export interface Database {
           track_expiry?: boolean
           inventory_tracked?: boolean
           ean?: string | null
+          image_url?: string | null
           group_head?: string | null
           minimum_cover_days?: number | null
           change_reason?: string | null
@@ -342,6 +344,7 @@ export interface Database {
           model_number?: string | null
           barcode?: string | null
           product_image_path?: string | null
+          image_url?: string | null
           status?: 'ACTIVE' | 'INACTIVE'
           archived_at?: string | null
           product_type?: 'RAW_MATERIAL' | 'FINISHED_GOOD' | 'COMPONENT' | 'SUBASSEMBLY' | 'OUTSOURCED_COMPONENT' | 'PACKAGING_MATERIAL' | 'CONSUMABLE' | 'OTHER'

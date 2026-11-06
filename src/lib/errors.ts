@@ -101,11 +101,15 @@ export function describeProductError(error: unknown): string {
   }
   if (e.code === '23514') {
     const m = e.message ?? ''
+    if (m.includes('products_image_url_check')) return 'The image link is not valid: use an http:// or https:// link to an image on a public website.'
     if (m.includes('products_ean_format')) return 'The EAN is not valid: use 8 or 13 digits with a correct check digit.'
     if (m.includes('products_group_head_length')) return 'The group head must be 1 to 100 characters.'
     if (m.includes('products_minimum_cover_days_range')) return 'Minimum stock days must be from 0 to 3650.'
   }
   if (e.code === '23503') return 'The selected category is not valid for your company.'
+  if (/image_url/.test(e.message ?? '') && (e.code === 'PGRST204' || e.code === '42703')) {
+    return 'Image links can be saved after database update 20261124090000 is applied. Leave the image link empty or upload the image file.'
+  }
   return describeDataError(error)
 }
 

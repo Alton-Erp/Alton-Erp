@@ -2068,7 +2068,7 @@ const api = http.createServer((req, res) => {
       if (req.method === 'PATCH') {
         // The standard manufacturing cost of an edit is kept, so the list shows the saved value. Other fields are
         // not kept: later steps (purchase orders, GST previews, deactivation) use the original catalogue.
-        for (const field of ['standard_manufacturing_cost', 'mrp', 'base_unit']) {
+        for (const field of ['standard_manufacturing_cost', 'mrp', 'base_unit', 'image_url']) {
           if (body && field in body) for (const p of filterRows(products, url.searchParams)) p[field] = body[field]
         }
         return send(res, 204, undefined, { 'Content-Range': '*/1' })
@@ -2200,6 +2200,17 @@ const cdp = (method, params = {}) =>
 await cdp('Page.enable')
 await cdp('Runtime.enable')
 await cdp('DOM.enable')
+// Product image links: images of the test host https://img.smoke.example are served here (a PNG; "broken" ones answer 404).
+const SMOKE_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+ws.addEventListener('message', (event) => {
+  const msg = JSON.parse(event.data)
+  if (msg.method !== 'Fetch.requestPaused') return
+  const broken = msg.params.request.url.includes('broken')
+  void cdp('Fetch.fulfillRequest', broken
+    ? { requestId: msg.params.requestId, responseCode: 404, responseHeaders: [{ name: 'Content-Type', value: 'text/plain' }], body: '' }
+    : { requestId: msg.params.requestId, responseCode: 200, responseHeaders: [{ name: 'Content-Type', value: 'image/png' }, { name: 'Access-Control-Allow-Origin', value: '*' }], body: SMOKE_PNG }).catch(() => {})
+})
+await cdp('Fetch.enable', { patterns: [{ urlPattern: 'https://img.smoke.example/*' }] })
 const downloadDir = path.join(outDir, 'downloads')
 mkdirSync(downloadDir, { recursive: true })
 await cdp('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: downloadDir }).catch(() => {})
@@ -5187,6 +5198,7 @@ await step('Drill-down 3: chart bars and their table view open the records of th
   assert(lastQuery('/rest/v1/purchase_order_list_v2').includes('supplier_name=eq.Shree Clay Works Pvt Ltd') && lastQuery('/rest/v1/purchase_order_list_v2').includes('po_date=gte.2026-11-01'), lastQuery('/rest/v1/purchase_order_list_v2'))
   await evaluate('history.back()')
   await waitFor(`location.pathname === '/purchase-orders/dashboard'`, 'back')
+  await waitFor(`!!document.querySelector('button[aria-label="Table view"]')`, 'table view toggle')
   await click('button[aria-label="Table view"]')
   await waitFor(`[...document.querySelectorAll('table a')].some((a) => a.innerText.includes('Shree Clay Works'))`, 'table view links (keyboard alternative)')
   assert(await evaluate(`[...document.querySelectorAll('table a')].find((a) => a.innerText.includes('Shree Clay Works')).getAttribute('href').startsWith('/drilldown/purchase.supplier?')`), 'table link')
@@ -5324,6 +5336,100 @@ await step('Product Master columns: Product Name, SKU, Category, Cost, MRP, HSN,
   // A drill-down list (Missing Information) has the same columns.
   await goto('/products?drill=pm.incomplete')
   await waitFor(`!!document.querySelector('[data-testid=drill-banner]') && !!document.querySelector('td[data-col=cost]') && !!document.querySelector('td[data-col=mrp]') && !!document.querySelector('td[data-col=hsn]') && !!document.querySelector('td[data-col=gst]')`, 'columns in a drill-down list')
+})
+
+await step('Product image links: thumbnails with preview and placeholder, detail and edit form, Excel import by EAN with field selection, PO and GRN thumbnails', async () => {
+  const IMG_OK = 'https://img.smoke.example/basin.png'
+  const IMG_NEW = 'https://img.smoke.example/basin-new.png'
+  const IMG_BROKEN = 'https://img.smoke.example/broken.jpg'
+  const [p1, p2, p3, p4] = products
+  const saved = products.slice(0, 4).map((p) => ({ image_url: p.image_url, ean: p.ean }))
+  const savedKey = ERP_SETTINGS.settings['product.import_match_key']
+  Object.assign(p1, { image_url: IMG_OK, ean: '4006381333931' })
+  Object.assign(p2, { image_url: IMG_BROKEN })
+  Object.assign(p3, { ean: '9780201379624' })
+  Object.assign(p4, { ean: '5901234123457' })
+  const thumbIn = (sku) => `[...document.querySelectorAll('tbody tr')].find((tr) => tr.innerText.includes(${JSON.stringify(sku)}))?.querySelector('[data-testid=product-thumb]')`
+  const loaded = (sel) => `(() => { const i = (${sel})?.querySelector('img'); return !!i && i.complete && i.naturalWidth > 0 })()`
+  try {
+    // 10. Product Master: thumbnail beside the name, larger preview on click, placeholder for a broken link and for no image.
+    await goto('/products')
+    await waitFor(loaded(thumbIn('MOCK-WC-1')), 'MOCK-WC-1 thumbnail loaded')
+    assert(await evaluate(`(${thumbIn('MOCK-WC-1')}).querySelector('img').getAttribute('loading') === 'lazy' && getComputedStyle((${thumbIn('MOCK-WC-1')}).querySelector('img')).objectFit === 'contain'`), 'thumbnail not lazy / contain')
+    await waitFor(`(${thumbIn('MOCK-WC-2')})?.dataset.state === 'broken' && !!(${thumbIn('MOCK-WC-2')}).querySelector('[data-testid=product-thumb-placeholder]')`, '9. broken link shows the placeholder')
+    assert(await evaluate(`(${thumbIn('MOCK-CLAY')})?.dataset.state === 'none'`), 'no image: placeholder')
+    await evaluate(`(${thumbIn('MOCK-WC-1')}).click()`)
+    await waitFor(`document.querySelector('[data-testid=product-image-preview]')?.innerText.includes(${JSON.stringify(IMG_OK)})`, 'larger preview with the source link')
+    await screenshot('161-product-image-preview')
+    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' })
+    await sleep(300)
+
+    // 11. Product detail: the image, its source, and upload / link actions.
+    await goto('/products/p1')
+    await waitFor(loaded(`document.querySelector('[data-testid=product-image-panel] [data-testid=product-thumb]')`), 'detail image loaded')
+    assert(await evaluate(`document.querySelector('[data-testid=product-image-source]').innerText === 'From image link' && document.querySelector('[data-testid=product-image-link]').href === ${JSON.stringify(IMG_OK)}`), 'detail source')
+    assert(await evaluate(bodyHasAll('Upload image', 'Change image link', 'Save a copy in ERP')), 'detail image actions missing')
+
+    // 12. Edit form: shows the link with a live preview; an invalid link is explained; a new link is saved alone (no reason needed: images are not versioned).
+    await goto('/products/p1/edit')
+    await waitFor(`document.querySelector('#p-image_url')?.value === ${JSON.stringify(IMG_OK)}`, 'edit form shows the link')
+    await waitFor(`document.querySelector('[data-draft-status]')?.dataset.draftStatus !== 'loading'`, 'draft check')
+    await fill('#p-image_url', 'ftp://img.smoke.example/a.jpg')
+    await waitFor(`document.querySelector('[data-testid=image-url-problem]')?.innerText.includes('http')`, 'invalid link explained')
+    await fill('#p-image_url', IMG_NEW)
+    await waitFor(`(() => { const i = document.querySelector('[data-testid=image-link-field] img'); return !!i && i.src === ${JSON.stringify(IMG_NEW)} })()`, 'live preview of the new link')
+    const before = productPatches().length
+    await click('button[type=submit]', 'Save changes')
+    await waitFor(`location.pathname === '/products/p1'`, 'saved')
+    const body = productPatches().at(-1).body
+    assert(productPatches().length === before + 1 && JSON.stringify(Object.keys(body)) === '["image_url"]' && body.image_url === IMG_NEW, JSON.stringify(body))
+
+    // 1, 6, 7, 8. Import matched by EAN (ERP Settings): only the image link changes; blank keeps; invalid is reported; unticked keeps.
+    ERP_SETTINGS.settings['product.import_match_key'] = 'EAN'
+    const file = path.join(outDir, 'import-images.xlsx')
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['EAN Code', 'Product Image URL'], ['4006381333931', IMG_OK], ['9780201379624', ''], ['5901234123457', 'javascript:alert(1)']]), 'Products')
+    writeFileSync(file, Buffer.from(XLSX.write(wb, { bookType: 'xlsx', type: 'array' })))
+    await uploadImportFile(file)
+    assert(await evaluate(`document.querySelector('#map-image_url')?.innerText.includes('Product Image URL')`), 'Image Link column not detected')
+    await waitFor(`!!document.querySelector('[data-testid=modify-field][data-field=image_url]')`, 'Image Link under Fields to Modify')
+    const writesBefore = writes().length
+    await click('button', 'Validate')
+    await waitFor(`!!document.querySelector('[data-testid=image-summary]')`, 'image preview')
+    const statuses = await evaluate(`[...document.querySelectorAll('[data-testid=image-row]')].map((r) => r.dataset.status)`)
+    assert(JSON.stringify(statuses) === '["changed","blank","invalid"]', JSON.stringify(statuses))
+    const summary = await evaluate(`document.querySelector('[data-testid=image-summary]').innerText.replace(/\\s+/g, ' ')`)
+    for (const t of ['Images to add', 'Images to update', 'Images unchanged', 'Invalid image links', 'Blank image links skipped']) assert(summary.toLowerCase().includes(t.toLowerCase()), `${t}: ${summary}`)
+    assert(await evaluate(`document.querySelector('[data-testid=image-row][data-status=changed]').innerText.includes('4006381333931') && !!document.querySelector('[data-testid=image-row][data-status=changed] [data-testid=image-new] img')`), 'identifier / new image missing')
+    assert(await evaluate(`document.querySelector('[data-testid=image-row][data-status=invalid]')?.innerText.includes('Invalid URL') && document.querySelector('[data-testid=image-row][data-status=invalid]').innerText.includes('http:// or https://')`), 'invalid link not reported')
+    await screenshot('162-import-image-links')
+    assert(writes().length === writesBefore, 'validation wrote data')
+    await click('button', 'Add 0 new and update 1')
+    await waitFor(`document.querySelector('[data-testid=import-confirm-images]')?.innerText.includes('to update: 1')`, 'confirmation shows image counts')
+    await click('[role=alertdialog] button', 'Save changes')
+    await waitFor(bodyHas('Import finished'), 'import done')
+    const made = writes().slice(writesBefore)
+    assert(!made.some((r) => r.method === 'POST'), 'a product was created')
+    const patch = made.filter((r) => r.method === 'PATCH')
+    assert(patch.length === 1 && JSON.stringify(Object.keys(patch[0].body).sort()) === '["change_reason","image_url"]' && patch[0].body.image_url === IMG_OK && patch[0].query.includes('id=eq.p1'),
+      'only the image link of p1 is updated: ' + JSON.stringify(patch.map((p) => [p.query, p.body])))
+    // Image Link unticked: the stored image is kept.
+    await uploadImportFile(file)
+    await waitFor(`!!document.querySelector('[data-testid=modify-field][data-field=image_url]')`, 'fields to modify')
+    await click('[data-testid=modify-field][data-field=image_url]')
+    await click('button', 'Validate')
+    await waitFor(`!!document.querySelector('[data-testid=image-summary]')`, 'image preview')
+    assert(JSON.stringify(await evaluate(`[...document.querySelectorAll('[data-testid=image-row]')].map((r) => r.dataset.status)`)) === '["not-selected","not-selected","not-selected"]', 'unticked Image Link still changes images')
+
+    // PO and GRN line items show the product thumbnail.
+    await goto('/purchase-orders/po3')
+    await waitFor(`!!document.querySelector('main [data-testid=product-thumb]')`, 'PO line thumbnail')
+    await goto('/goods-receipts/gr1')
+    await waitFor(`!!document.querySelector('main [data-testid=product-thumb]')`, 'GRN line thumbnail')
+  } finally {
+    products.slice(0, 4).forEach((p, i) => Object.assign(p, saved[i]))
+    ERP_SETTINGS.settings['product.import_match_key'] = savedKey
+  }
 })
 
 await step('Units of measurement: MTR, LTR and ROL are selectable, saved as codes, editable and shown after a reload', async () => {

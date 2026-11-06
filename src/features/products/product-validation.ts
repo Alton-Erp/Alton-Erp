@@ -8,6 +8,8 @@ import {
   STANDARD_GST_RATES,
   defaultSourceFor,
   eanProblem,
+  imageUrlProblem,
+  normaliseImageUrl,
   isKnownUnit,
   normalizeEan,
   parseDecimal,
@@ -27,6 +29,8 @@ export interface ProductFormValues {
   model_number: string
   barcode: string
   ean: string
+  /** External image link (http/https). */
+  image_url: string
   supplier_model_number: string
   supplier_product_name: string
   status: ProductStatus
@@ -80,6 +84,7 @@ export const EMPTY_PRODUCT_FORM: ProductFormValues = {
   model_number: '',
   barcode: '',
   ean: '',
+  image_url: '',
   supplier_model_number: '',
   supplier_product_name: '',
   status: 'ACTIVE',
@@ -147,6 +152,10 @@ export function validateProduct(values: ProductFormValues, options: ProductValid
   if (barcode && !BARCODE_RE.test(barcode)) errors.barcode = 'Use 4–64 letters, digits or hyphens.'
 
   // EAN: optional; EAN-8 or EAN-13 with a valid check digit.
+  // Image link: optional; http/https only (never fetched by the server).
+  const imageProblem = imageUrlProblem(values.image_url ?? '')
+  if (imageProblem) errors.image_url = imageProblem
+
   const ean = normalizeEan(values.ean.trim())
   if (ean) {
     const problem = eanProblem(ean)
@@ -282,6 +291,7 @@ export function validateProduct(values: ProductFormValues, options: ProductValid
       model_number: text(values.model_number),
       barcode: barcode || null,
       ean: ean || null,
+      image_url: normaliseImageUrl(values.image_url),
       group_head: groupHead || null,
       minimum_cover_days: minimumCoverDays ?? null,
       status: values.status,

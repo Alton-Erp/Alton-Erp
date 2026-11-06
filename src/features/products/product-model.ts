@@ -230,6 +230,8 @@ export interface ProductInput {
   inventory_tracked?: boolean
   /** EAN-8 / EAN-13 (check digit verified); unique within the company. */
   ean?: string | null
+  /** External image link (http/https), shown when no image is uploaded. */
+  image_url?: string | null
   /** Group Head (product group classification). */
   group_head?: string | null
   /** Minimum Stock Days: minimum inventory coverage in days (informational). */
@@ -382,3 +384,39 @@ export function parseDecimal(value: string, maxDecimals: number): number | undef
   if (decimals > maxDecimals) return Number.NaN
   return Number(cleaned)
 }
+
+// --- Image links -------------------------------------------------------------
+
+export const IMAGE_URL_MAX_LENGTH = 2048
+
+/**
+ * Problem with an image link, or null when it can be saved. Same rule as the
+ * database (private.product_image_url_valid): http or https, a host name, no
+ * spaces, no user name / password, no localhost or private network address.
+ * The ERP never downloads the link on a server; browsers load it to show it.
+ */
+export function imageUrlProblem(value: string): string | null {
+  const url = value.trim()
+  if (!url) return null
+  if (url.length > IMAGE_URL_MAX_LENGTH) return `The image link is too long (at most ${IMAGE_URL_MAX_LENGTH} characters).`
+  if (/\s/.test(url)) return 'The image link contains spaces. Copy the full link from the browser address bar.'
+  if (!/^https?:\/\//i.test(url)) return 'Use an image link that starts with http:// or https://.'
+  if (!/^https?:\/\/[^/?#@]+([/?#].*)?$/i.test(url)) return url.slice(url.indexOf('//') + 2).split(/[/?#]/)[0].includes('@')
+    ? 'Image links with a user name or password are not allowed.'
+    : 'This is not a valid image link.'
+  let host: string
+  try {
+    host = new URL(url).hostname.toLowerCase()
+  } catch {
+    return 'This is not a valid image link.'
+  }
+  if (!host || host.startsWith('[')) return 'This is not a valid image link.'
+  if (host === 'localhost' || host === '0.0.0.0' || /\.(localhost|local|internal|lan|home)$/.test(host)
+    || /^(127|10|0)\./.test(host) || /^169\.254\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host)) {
+    return 'Links to local or private network addresses are not allowed.'
+  }
+  return null
+}
+
+/** Link as saved: trimmed, null when blank. */
+export const normaliseImageUrl = (value: string | null | undefined): string | null => (value ?? '').trim() || null

@@ -16,6 +16,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { EXPORT_COLUMNS } from '@/features/products/product-export'
+import { ImportImagePreview } from '@/features/products/import-image-preview'
 import {
   IMPORT_FIELDS,
   MAX_IMPORT_FILE_BYTES,
@@ -37,6 +38,7 @@ import {
   productRowToFormValues,
   rowKind,
   splitAtHeader,
+  summarizeImages,
   summarizeImport,
   validateImportRows,
   type ColumnMapping,
@@ -181,7 +183,7 @@ export default function ProductImportPage() {
       const existingProducts = new Map<string, ExistingProduct>()
       if (mode === 'update' && matchKey === 'SKU' && existing.skuIds.size > 0) {
         for (const p of await fetchProductsByIds([...existing.skuIds.values()], companyId)) {
-          existingProducts.set(skuKey(p.sku), { id: p.id, sku: p.sku, values: productRowToFormValues(p), updatedAt: p.updated_at })
+          existingProducts.set(skuKey(p.sku), { id: p.id, sku: p.sku, values: productRowToFormValues(p), updatedAt: p.updated_at, imagePath: p.product_image_path })
         }
       }
       const suppliers = mapping.preferred_supplier === null ? [] : await fetchSupplierOptions(true).catch(() => [])
@@ -198,7 +200,7 @@ export default function ProductImportPage() {
         const rowsById = new Map((needed.length ? await fetchProductsByIds(needed, companyId) : []).map((p) => [p.id, p]))
         for (const v of wanted) {
           const list = (ids.get(v) ?? []).map((id) => rowsById.get(id)).filter((p): p is NonNullable<typeof p> => Boolean(p))
-          if (list.length) matchIndex.set(v, list.map((p) => ({ id: p.id, sku: p.sku, values: productRowToFormValues(p), updatedAt: p.updated_at })))
+          if (list.length) matchIndex.set(v, list.map((p) => ({ id: p.id, sku: p.sku, values: productRowToFormValues(p), updatedAt: p.updated_at, imagePath: p.product_image_path })))
         }
       }
       setResults(
@@ -335,6 +337,7 @@ export default function ProductImportPage() {
             ['Supplier Model No. / Supplier Product Name', 'The supplier\'s own model number and name (optional). The SKU and product name are not changed by them.'],
             ['Manufacturable', 'Yes or No (optional)'],
             ['Preferred Supplier', 'Supplier code or name of an active supplier (optional). Unknown suppliers are reported and left blank.'],
+            ['Image Link', 'Optional http:// or https:// link to a product image (also recognised as Image URL, Product Image, Image, Photo URL, Picture URL). For existing products it is changed only when Image Link is ticked under Fields to Modify; a blank cell never removes an image and an invalid link is reported and not saved. Never used to find products.'],
             ['Updating existing products', 'Rows are matched to existing products by SKU (spaces and capitals ignored). New SKUs are added, rows that match the stored product are skipped, and only the fields ticked under "Fields to Modify in Existing Products" whose values differ are updated. Blank cells keep the stored value and the SKU is never changed. A SKU that differs from a stored one only by spaces or separators, or a new product whose name is already used, is reported as a duplicate and not saved. Every change is listed for review before saving.'],
             ['Export compatibility', `An export from the product list uses the columns: ${EXPORT_COLUMNS.join(', ')}. Correct it and import it again: only the changed values are saved.`],
           ],
@@ -346,6 +349,7 @@ export default function ProductImportPage() {
   }
 
   const summary = summarizeImport(results)
+  const imageSummary = summarizeImages(results)
   // After saving, a row that could not be saved is listed with the failed rows.
   const groupOf = (r: RowResult): RowKind => (r.saveError ? (r.saveError.startsWith('Not created:') ? 'ambiguous' : 'invalid') : rowKind(r))
   const groups = { new: [] as RowResult[], modified: [] as RowResult[], skipped: [] as RowResult[], ambiguous: [] as RowResult[], invalid: [] as RowResult[] }
@@ -688,6 +692,9 @@ export default function ProductImportPage() {
             <KpiCard label={done ? 'Failed rows' : 'Invalid rows'} value={formatNumber(groups.invalid.length)} icon={Info} accent="shortage" />
           </div>
 
+          <ImportImagePreview results={results} keyLabel={matchKey === 'NONE' || !keyCol ? 'SKU' : keyLabel}
+            identifier={(r) => (byOther && keyCol && mapping && mapping[keyCol] !== null ? String(split.data[r.rowNumber - split.firstDataRowNumber]?.[mapping[keyCol]!] ?? '').trim() : r.sku)} />
+
           <div className="space-y-3">
             <RowGroup kind="new" title={done ? 'Added' : 'New products'} rows={groups.new} defaultOpen={!done && groups.modified.length === 0}>
               {(rows) => (
@@ -774,6 +781,12 @@ export default function ProductImportPage() {
               Duplicate or ambiguous rows (not saved): <b>{formatNumber(summary.ambiguous)}</b><br />
               Invalid rows (not saved): <b>{formatNumber(summary.errors)}</b>
             </span>
+            {imageSummary.mapped && (
+              <span className="block tabular-nums" data-testid="import-confirm-images">
+                Images to add: <b>{formatNumber(imageSummary.add)}</b> · to update: <b>{formatNumber(imageSummary.update)}</b> · unchanged: <b>{formatNumber(imageSummary.unchanged)}</b>
+                {' '}· invalid links (not saved): <b>{formatNumber(imageSummary.invalid)}</b> · blank (images kept): <b>{formatNumber(imageSummary.blank)}</b>
+              </span>
+            )}
             {summary.updates > 0 && (
               <span className="block">
                 Fields that may change in existing products: {modifyLabels.join(', ') || 'none'}. Only the changes listed above are saved and each is

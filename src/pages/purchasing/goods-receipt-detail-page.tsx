@@ -21,6 +21,8 @@ import { GoodsReceiptDialog } from '@/features/purchasing/receipt-dialog'
 import { SupplierRefs } from '@/features/purchasing/supplier-refs'
 import { useAsync } from '@/hooks/use-async'
 import { useRequestKey } from '@/hooks/use-request-key'
+import { ProductThumb } from '@/features/products/product-image'
+import { useProductImagesById } from '@/features/products/product-image-hooks'
 import { describeDataError } from '@/lib/errors'
 import { formatDate, formatDateTime } from '@/lib/format'
 import { fetchGoodsReceipt, fetchPoLines, fetchPurchaseOrder, reverseGoodsReceipt } from '@/services/purchasing'
@@ -41,6 +43,8 @@ export default function GoodsReceiptDetailPage() {
   const { has } = usePermissions()
   const [refresh, setRefresh] = useState(0)
   const data = useAsync(() => load(receiptId), [receiptId, refresh])
+  // Product thumbnails beside the line items (display only).
+  const lineImages = useProductImagesById((data.data?.lines ?? []).map((l) => l.product_id))
   const [notice, setNotice] = useState<string | null>((location.state as { message?: string } | null)?.message ?? null)
   const [reversing, setReversing] = useState(false)
   const [correcting, setCorrecting] = useState(false)
@@ -112,7 +116,7 @@ export default function GoodsReceiptDetailPage() {
             const pl = poLine(l.purchase_order_line_id)
             return (
               <TableRow key={l.id}>
-                <TableCell className="min-w-48 whitespace-normal"><p className="font-medium">{l.sku ? `${l.sku} — ` : ''}{l.description}</p>{l.po_line_no && <p className="text-xs text-muted-foreground">PO line {l.po_line_no}</p>}</TableCell>
+                <TableCell className="min-w-48 whitespace-normal"><div className="flex items-start gap-2">{l.product_id && <ProductThumb size="xs" src={lineImages.get(l.product_id)} alt={l.description} />}<div className="min-w-0"><p className="font-medium">{l.sku ? `${l.sku} — ` : ''}{l.description}</p>{l.po_line_no && <p className="text-xs text-muted-foreground">PO line {l.po_line_no}</p>}</div></div></TableCell>
                 {!direct && <TableCell className="text-right tabular-nums">{l.ordered_quantity === null ? '—' : formatQty(l.ordered_quantity, l.unit)}</TableCell>}
                 <TableCell className="text-right tabular-nums">{formatQty(l.received_quantity, l.unit)}</TableCell>
                 <TableCell className="text-right tabular-nums">{formatQty(l.accepted_quantity)}</TableCell>

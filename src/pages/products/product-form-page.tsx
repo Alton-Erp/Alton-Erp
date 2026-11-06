@@ -26,11 +26,13 @@ import {
   SOURCE_TYPE_DESCRIPTIONS,
   SOURCE_TYPE_LABELS,
   defaultSourceFor,
+  imageUrlProblem,
   productUnitOptions,
   unitOptionLabel,
   type ProductInput,
 } from '@/features/products/product-model'
 import { useErpPreferences } from '@/features/management/erp-preferences'
+import { ProductThumb } from '@/features/products/product-image'
 import { EMPTY_PRODUCT_FORM, validateProduct, type ProductField, type ProductFormValues } from '@/features/products/product-validation'
 import { useAsync } from '@/hooks/use-async'
 import { usePersistentFormDraft } from '@/hooks/use-persistent-form-draft'
@@ -64,6 +66,7 @@ function toFormValues(p: ProductRow): ProductFormValues {
     model_number: p.model_number ?? '',
     barcode: p.barcode ?? '',
     ean: p.ean ?? '',
+    image_url: p.image_url ?? '',
     group_head: p.group_head ?? '',
     minimum_cover_days: str(p.minimum_cover_days),
     supplier_model_number: p.supplier_model_number ?? '',
@@ -163,6 +166,7 @@ function ProductForm({ existing, categories, suppliers }: { existing: ProductRow
   const [changeReason, setChangeReason] = useState('')
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [imageError, setImageError] = useState<string | null>(null)
+  const [removeLink, setRemoveLink] = useState(false)
   const [saved, setSaved] = useState<{ id: string; sku: string; imageWarning: string | null; bomExpected: boolean; gaps: number } | null>(null)
 
   // Auto-saved working copy. The chosen image file cannot be kept (browsers do not allow it) and must be picked again.
@@ -218,13 +222,17 @@ function ProductForm({ existing, categories, suppliers }: { existing: ProductRow
         // has_bom follows the BOM module; the form never overwrites it.
         delete changes.has_bom
         if (!canChangeStatus) delete changes.status
+        // A cleared image link keeps the saved one unless "Remove image link" was chosen.
+        if ('image_url' in changes && changes.image_url === null && !removeLink) delete changes.image_url
+        // The image link is not part of the version history, so it alone needs no reason.
+        const versioned = Object.keys(changes).filter((k) => k !== 'image_url')
         if (Object.keys(changes).length > 0) {
-          if (changeReason.trim().length < 3) {
+          if (versioned.length > 0 && changeReason.trim().length < 3) {
             setSaveError('Enter the reason for this change (it is kept in the product version history).')
             setSaving(false)
             return
           }
-          await updateProduct(existing.id, { ...(changes as ProductUpdate), change_reason: changeReason.trim().slice(0, 500) })
+          await updateProduct(existing.id, { ...(changes as ProductUpdate), ...(versioned.length > 0 ? { change_reason: changeReason.trim().slice(0, 500) } : {}) })
         }
         id = existing.id
       } else {
@@ -370,6 +378,30 @@ function ProductForm({ existing, categories, suppliers }: { existing: ProductRow
             </fieldset>
             <Field label="Product Image" htmlFor="p-image" full error={imageError}>
               <ImagePicker existing={existing} file={imageFile} onFile={setImageFile} onError={setImageError} />
+            </Field>
+            <Field label="Image Link" htmlFor="p-image_url" full error={errors.image_url}
+              hint={existing?.image_url && !removeLink ? 'Paste a new link to replace the image. Leaving the field empty keeps the saved link.'
+                : 'Optional. An http:// or https:// link to the product image on a public website. An uploaded image is shown instead of the link.'}>
+              <div className="flex items-start gap-3" data-testid="image-link-field">
+                <ProductThumb size="md" alt={values.product_name || 'Product'} source={values.image_url.trim() || null}
+                  src={values.image_url.trim() && !errors.image_url && !imageUrlProblem(values.image_url) ? values.image_url.trim() : null} />
+                <div className="min-w-0 flex-1 space-y-1.5">
+                  <Input {...bind('image_url')} inputMode="url" maxLength={2048} autoComplete="off" placeholder="https://example.com/images/product.jpg"
+                    aria-invalid={Boolean(errors.image_url || (values.image_url.trim() && imageUrlProblem(values.image_url)))}
+                    onChange={(e) => { set('image_url', e.target.value); if (e.target.value.trim()) setRemoveLink(false) }} />
+                  {values.image_url.trim() && imageUrlProblem(values.image_url) && !errors.image_url && (
+                    <p className="text-xs text-amber-800" data-testid="image-url-problem">{imageUrlProblem(values.image_url)}</p>
+                  )}
+                  {existing?.image_url && (removeLink ? (
+                    <p className="text-xs text-muted-foreground" data-testid="image-link-removed">The saved image link will be removed when you save.{' '}
+                      <button type="button" className="text-primary underline-offset-2 hover:underline" onClick={() => { setRemoveLink(false); set('image_url', existing.image_url ?? '') }}>Keep it</button></p>
+                  ) : (
+                    <Button type="button" variant="ghost" size="sm" data-testid="remove-image-link" onClick={() => { setRemoveLink(true); set('image_url', '') }}>
+                      <Trash2 /> Remove image link
+                    </Button>
+                  ))}
+                </div>
+              </div>
             </Field>
           </Section>
 
@@ -761,7 +793,7 @@ function ImagePicker({ existing, file, onFile, onError }: {
   return (
     <div className="flex items-center gap-4">
       <div className="flex size-24 shrink-0 items-center justify-center overflow-hidden rounded-lg border bg-surface-muted">
-        {shown ? <img src={shown} alt="Product" className="size-full object-cover" /> : <ImagePlus aria-hidden className="size-6 text-muted-foreground" />}
+        {shown ? <img src={shown} alt="Product" className="size-full object-contain" /> : <ImagePlus aria-hidden className="size-6 text-muted-foreground" />}
       </div>
       <div className="space-y-2 text-sm">
         <input

@@ -28,6 +28,8 @@ import {
   SKU_PREFIXES,
   SOURCE_TYPE_LABELS,
   cleanSku,
+  imageUrlProblem,
+  normaliseImageUrl,
   defaultSourceFor,
   findUnit,
   sameUnit,
@@ -74,6 +76,7 @@ export const IMPORT_FIELDS = [
   { key: 'is_manufacturable', label: 'Manufacturable', required: false, synonyms: ['manufacturable', 'is manufacturable'] },
   { key: 'preferred_supplier', label: 'Preferred Supplier', required: false, synonyms: ['preferred supplier', 'supplier', 'vendor', 'supplier code'] },
   { key: 'remarks', label: 'Remarks', required: false, synonyms: ['remarks', 'remark', 'notes', 'comments'] },
+  { key: 'image_url', label: 'Image Link', required: false, synonyms: ['image link', 'image url', 'product image', 'product image url', 'product image link', 'image', 'photo url', 'picture url', 'image links', 'photo', 'picture'] },
 ] as const
 
 export type ImportFieldKey = (typeof IMPORT_FIELDS)[number]['key']
@@ -102,6 +105,28 @@ export interface ExistingProduct {
   values: ProductFormValues
   /** Stored updated_at: the update is refused if the product changed after the file was checked. */
   updatedAt?: string
+  /** Uploaded image (storage path): shown instead of the image link while it exists. */
+  imagePath?: string | null
+}
+
+/** What the file does to a product's image link. */
+export type ImageImportStatus = 'new' | 'changed' | 'unchanged' | 'invalid' | 'blank' | 'not-selected'
+
+export const IMAGE_STATUS_LABELS: Record<ImageImportStatus, string> = {
+  new: 'New Image', changed: 'Image Changed', unchanged: 'Unchanged', invalid: 'Invalid URL', blank: 'Blank', 'not-selected': 'Not selected',
+}
+
+export interface ImageImport {
+  status: ImageImportStatus
+  /** Saved link of the existing product (null for a new product or none saved). */
+  current: string | null
+  /** Link in the file (trimmed), null when blank. */
+  incoming: string | null
+  /** Image Link is selected under Fields to Modify (always true for a new product). */
+  selected: boolean
+  /** The existing product has an uploaded image, which stays shown instead of the link. */
+  uploaded: boolean
+  problem?: string
 }
 
 export interface FieldChange {
@@ -143,6 +168,8 @@ export interface ImportRowResult {
   warnings: string[]
   /** Full insert payload (create) or only the changed fields (update). */
   input: ProductInput | null
+  /** The row's image link, when an Image Link column is mapped. */
+  image?: ImageImport
 }
 
 export interface ImportContext {
@@ -276,7 +303,7 @@ export const IMPORT_FIELD_TARGET: Record<ImportFieldKey, keyof ProductInput> = {
   hsn_code: 'hsn_code', gst_rate: 'gst_rate', selling_price: 'selling_price', mrp: 'mrp', standard_cost: 'standard_cost',
   standard_manufacturing_cost: 'standard_manufacturing_cost', minimum_selling_price: 'minimum_selling_price', lead_time_days: 'lead_time_days',
   reorder_level_days: 'reorder_level_days', minimum_cover_days: 'minimum_cover_days', group_head: 'group_head', is_manufacturable: 'is_manufacturable',
-  preferred_supplier: 'preferred_supplier_id', remarks: 'remarks',
+  preferred_supplier: 'preferred_supplier_id', remarks: 'remarks', image_url: 'image_url',
 }
 
 /**
@@ -329,6 +356,7 @@ const FIELD_LABELS: Partial<Record<ProductField, string>> = {
   height_cm: 'Height (cm)',
   preferred_supplier_id: 'Preferred Supplier',
   remarks: 'Remarks',
+  image_url: 'Image Link',
   is_manufacturable: 'Manufacturable',
   track_expiry: 'Expiry',
   production_notes: 'Production Notes',
@@ -349,7 +377,7 @@ const UPDATABLE: (keyof ProductInput)[] = [
   'product_name', 'description', 'category_id', 'brand', 'model_number', 'barcode', 'ean', 'group_head', 'minimum_cover_days', 'supplier_model_number', 'supplier_product_name',
   'product_type', 'default_source_type', 'base_unit', 'length_cm', 'width_cm', 'height_cm',
   'hsn_code', 'gst_rate', 'mrp', 'selling_price', 'standard_cost', 'standard_manufacturing_cost', 'minimum_selling_price',
-  'lead_time_days', 'reorder_level_days', 'preferred_supplier_id', 'remarks', 'is_manufacturable',
+  'lead_time_days', 'reorder_level_days', 'preferred_supplier_id', 'remarks', 'is_manufacturable', 'image_url',
 ]
 
 /**
@@ -533,6 +561,30 @@ export function validateImportRows(
       }
     }
 
+    // Image link: never used to match. An invalid link is reported and not saved; the rest of the row still imports.
+    // A blank cell never removes a saved link; the same link is unchanged.
+    let image: ImageImport | undefined
+    if (mapping.image_url !== null) {
+      const raw = cell(row, 'image_url')
+      const incoming = normaliseImageUrl(raw)
+      const current = existing ? normaliseImageUrl(existing.values.image_url) : null
+      const isSelected = selected('image_url')
+      const problem = incoming ? imageUrlProblem(incoming) : null
+      let status: ImageImportStatus
+      if (!isSelected) status = 'not-selected'
+      else if (!incoming) status = 'blank'
+      else if (problem) {
+        status = 'invalid'
+        warnings.push(`Image Link not imported: ${problem}`)
+      } else {
+        values.image_url = incoming
+        provided.add('image_url')
+        status = !current ? 'new' : current === incoming ? 'unchanged' : 'changed'
+        if (existing?.imagePath && status !== 'unchanged') warnings.push('This product has an uploaded image, which stays shown; the new link is saved as its source.')
+      }
+      image = { status, current, incoming, selected: isSelected, uploaded: Boolean(existing?.imagePath), ...(problem ? { problem } : {}) }
+    }
+
     const rawType = val('product_type')
     if (rawType) {
       const t = parseProductType(rawType)
@@ -678,6 +730,7 @@ export function validateImportRows(
       errors,
       warnings,
       input: status === 'valid' ? input : null,
+      ...(image ? { image } : {}),
     })
   })
 
@@ -697,6 +750,21 @@ function display(value: unknown): string {
   if (value === null || value === undefined || value === '') return '—'
   if (typeof value === 'boolean') return value ? 'Yes' : 'No'
   return String(value)
+}
+
+/** Image links of the rows that are imported or left unchanged (rows with errors are not counted). */
+export function summarizeImages(results: ImportRowResult[]) {
+  const rows = results.filter((r) => r.image && r.status !== 'error')
+  const count = (s: ImageImportStatus, valid = false) => rows.filter((r) => r.image!.status === s && (!valid || r.status === 'valid')).length
+  return {
+    mapped: results.some((r) => r.image),
+    add: count('new', true),
+    update: count('changed', true),
+    unchanged: count('unchanged'),
+    invalid: results.filter((r) => r.image?.status === 'invalid').length,
+    blank: count('blank'),
+    notSelected: count('not-selected'),
+  }
 }
 
 export function summarizeImport(results: ImportRowResult[]) {
@@ -820,7 +888,7 @@ export function buildFailedRowsReport(
 /** Converts a stored product row into form values (used for update comparisons). */
 export function productRowToFormValues(p: {
   sku: string; product_name: string; description: string | null; category_id: string | null; brand: string | null; model_number: string | null
-  barcode: string | null; ean?: string | null; group_head?: string | null; minimum_cover_days?: number | null
+  barcode: string | null; ean?: string | null; image_url?: string | null; group_head?: string | null; minimum_cover_days?: number | null
   status: 'ACTIVE' | 'INACTIVE'; product_type: string; default_source_type: string; base_unit: string
   track_batches: boolean; track_expiry: boolean; hsn_code: string | null; gst_rate: number | null; selling_price: number | null
   standard_cost: number | null; minimum_selling_price: number | null; reorder_level: number | null
@@ -841,6 +909,7 @@ export function productRowToFormValues(p: {
     model_number: p.model_number ?? '',
     barcode: p.barcode ?? '',
     ean: p.ean ?? '',
+    image_url: p.image_url ?? '',
     group_head: p.group_head ?? '',
     minimum_cover_days: str(p.minimum_cover_days),
     supplier_model_number: p.supplier_model_number ?? '',

@@ -145,11 +145,19 @@ export async function fetchProductKpis(): Promise<ProductKpis> {
   }
 }
 
+/** An empty image link is not sent, so products can still be saved before the image-link migration (20261124090000) is applied. */
+export function withoutEmptyImageLink<T extends { image_url?: string | null }>(input: T): T {
+  if (input.image_url) return input
+  const rest = { ...input }
+  delete rest.image_url
+  return rest
+}
+
 /** Creates a product. A blank SKU gets the next automatic code; the stored SKU is returned. */
 export async function createProduct(companyId: string, input: ProductInput): Promise<{ id: string; sku: string }> {
   const { data, error } = await requireSupabase()
     .from('products')
-    .insert({ ...input, company_id: companyId })
+    .insert({ ...withoutEmptyImageLink(input), company_id: companyId })
     .select('id, sku')
     .single()
   if (error) throw error
@@ -213,6 +221,43 @@ export async function removeProductImage(product: Pick<ProductRow, 'id' | 'produ
 export async function getProductImageUrl(path: string): Promise<string | null> {
   const { data, error } = await requireSupabase().storage.from(PRODUCT_IMAGE_BUCKET).createSignedUrl(path, 3600)
   return error ? null : data.signedUrl
+}
+
+/** Signed links for uploaded images (private bucket), one request for many paths. Missing or refused paths are left out. */
+export async function getProductImageUrls(paths: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  const unique = [...new Set(paths.filter(Boolean))]
+  if (unique.length === 0) return out
+  const { data, error } = await requireSupabase().storage.from(PRODUCT_IMAGE_BUCKET).createSignedUrls(unique, 3600)
+  if (error) return out
+  for (const d of data ?? []) if (d.path && d.signedUrl && !d.error) out.set(d.path, d.signedUrl)
+  return out
+}
+
+export interface ProductImageRef {
+  id: string
+  image_url?: string | null
+  product_image_path?: string | null
+}
+
+/** Image link and uploaded image of the given products (for thumbnails on purchase, receipt and stock screens). */
+export async function fetchProductImageRefs(ids: string[]): Promise<ProductImageRef[]> {
+  const unique = [...new Set(ids.filter(Boolean))]
+  const out: ProductImageRef[] = []
+  const db = requireSupabase()
+  let columns = 'id, image_url, product_image_path'
+  for (let i = 0; i < unique.length; i += 200) {
+    const chunk = unique.slice(i, i + 200)
+    let res = await db.from('products').select(columns).in('id', chunk)
+    // Before migration 20261124090000 there is no image_url column: uploaded images only.
+    if (res.error && /image_url/.test(res.error.message ?? '')) {
+      columns = 'id, product_image_path'
+      res = await db.from('products').select(columns).in('id', chunk)
+    }
+    if (res.error) throw res.error
+    out.push(...((res.data ?? []) as unknown as ProductImageRef[]))
+  }
+  return out
 }
 
 // --- Categories --------------------------------------------------------------
@@ -458,10 +503,10 @@ export async function insertProducts(
   const db = requireSupabase()
   for (let start = 0; start < inputs.length; start += batchSize) {
     const batch = inputs.slice(start, start + batchSize)
-    const { error } = await db.from('products').insert(batch.map((p) => ({ ...p, company_id: companyId })))
+    const { error } = await db.from('products').insert(batch.map((p) => ({ ...withoutEmptyImageLink(p), company_id: companyId })))
     if (error) {
       for (let i = 0; i < batch.length; i++) {
-        const single = await db.from('products').insert({ ...batch[i], company_id: companyId })
+        const single = await db.from('products').insert({ ...withoutEmptyImageLink(batch[i]), company_id: companyId })
         if (single.error) failures.set(start + i, describeProductError(single.error))
       }
     }

@@ -13,6 +13,8 @@ import { formatQty } from '@/features/inventory/inventory-model'
 import { FractionFlag } from '@/features/inventory/fraction-flag'
 import { isFractionalForUnit } from '@/features/inventory/whole-units'
 import { useDrill } from '@/features/drilldown/use-drill'
+import { ProductThumb } from '@/features/products/product-image'
+import { useProductImagesById } from '@/features/products/product-image-hooks'
 import { useAsync } from '@/hooks/use-async'
 import { getPresetRange } from '@/lib/date-range'
 import { describeDataError } from '@/lib/errors'
@@ -42,6 +44,7 @@ async function load(productId: string) {
 export default function ProductStockPage() {
   const { productId = '' } = useParams()
   const { data, loading, error, reload } = useAsync(() => load(productId), [productId])
+  const images = useProductImagesById([productId])
   // Each figure opens this product's stock lots behind it.
   const { href } = useDrill('stock_card')
   const drill = (key: string) => href(key, { segment: productId })
@@ -88,6 +91,7 @@ export default function ProductStockPage() {
         breadcrumbs={[{ label: 'Inventory' }, { label: 'Stock Register', to: '/inventory/stock' }, { label: p.sku }]}
         actions={
           <>
+            <ProductThumb size="md" src={images.get(p.product_id)} alt={p.product_name} />
             <StockStatusBadge status={p.stock_status} />
             <Button variant="outline" asChild>
               <Link to={`/products/${p.product_id}`}>Product master</Link>

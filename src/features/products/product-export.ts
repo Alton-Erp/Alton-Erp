@@ -41,6 +41,7 @@ export const EXPORT_COLUMNS = [
   'Preferred Supplier',
   'Description',
   'Remarks',
+  'Image Link',
 ] as const
 
 const num = (v: number | null | undefined) => (v === null || v === undefined ? null : Number(v))
@@ -87,6 +88,8 @@ export function productExportRows(
       p.preferred_supplier_id ? (supplierCodes.get(p.preferred_supplier_id) ?? '') : '',
       p.description,
       p.remarks,
+      // The saved link (never a temporary signed link of an uploaded image), so it imports back unchanged.
+      p.image_url ?? null,
     ]),
   ]
 }

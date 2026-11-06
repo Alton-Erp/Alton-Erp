@@ -1,5 +1,5 @@
-import { Archive, ArchiveRestore, History, ImageOff, Info, Pencil, Power, PowerOff } from 'lucide-react'
-import { useEffect, useState, type ReactNode } from 'react'
+import { Archive, ArchiveRestore, History, Info, Pencil, Power, PowerOff } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom'
 
 import { PermissionGate } from '@/auth/permission-gate'
@@ -14,6 +14,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { ProductSourceBadge, ProductStatusBadge } from '@/features/products/product-badges'
 import { productGaps } from '@/features/products/product-completeness'
 import { PurchaseCostHistoryTab } from '@/features/products/purchase-cost-history'
+import { ProductImagePanel } from '@/features/products/product-image-panel'
 import { BOM_OUTPUT_TYPES, PRODUCT_TYPE_LABELS, SOURCE_TYPE_DESCRIPTIONS, unitLabel } from '@/features/products/product-model'
 import { useAsync } from '@/hooks/use-async'
 import { cn } from '@/lib/utils'
@@ -21,13 +22,14 @@ import { describeDataError } from '@/lib/errors'
 import { formatCurrency, formatDateTime, formatNumber } from '@/lib/format'
 import { fetchResourceAudit } from '@/services/audit-logs'
 import { fetchProductBomSummary } from '@/services/production'
-import { fetchDisplayNames, getProduct, getProductImageUrl, listCategories, setProductArchived, setProductStatus } from '@/services/products'
+import { fetchDisplayNames, getProduct, listCategories, setProductArchived, setProductStatus } from '@/services/products'
 import { fetchSupplierOptions } from '@/services/suppliers'
 import type { ProductRow } from '@/types/database'
 
 const ACTION_LABELS: Record<string, string> = {
   'product.created': 'Created',
   'product.updated': 'Edited',
+  'product.image_link_changed': 'Image link changed',
   'product.activated': 'Activated',
   'product.deactivated': 'Deactivated',
   'product.archived': 'Archived',
@@ -193,7 +195,8 @@ export default function ProductDetailPage() {
         <div className="space-y-6 xl:col-span-2">
           <InfoCard title="Basic Information">
             <div className="flex gap-5 sm:col-span-2">
-              <ProductImage path={p.product_image_path} />
+              <ProductImagePanel product={p} canEdit={has('products.update') && !archived}
+                onChanged={(n) => { setNotice(n); if (n.tone === 'success') setRefresh((r) => r + 1) }} />
               <dl className="grid flex-1 gap-4 sm:grid-cols-2">
                 <Item label="SKU">{p.sku}</Item>
                 <Item label="Status">
@@ -377,22 +380,6 @@ function Item({ label, full, children }: { label: string; full?: boolean; childr
     <div className={full ? 'sm:col-span-2' : undefined}>
       <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
       <dd className="mt-1 text-sm text-foreground">{empty ? <span className="text-muted-foreground">Not set</span> : children}</dd>
-    </div>
-  )
-}
-
-function ProductImage({ path }: { path: string | null }) {
-  const [url, setUrl] = useState<string | null>(null)
-  useEffect(() => {
-    let cancelled = false
-    if (path) void getProductImageUrl(path).then((u) => !cancelled && setUrl(u))
-    return () => {
-      cancelled = true
-    }
-  }, [path])
-  return (
-    <div className="flex size-28 shrink-0 items-center justify-center overflow-hidden rounded-lg border bg-surface-muted">
-      {path && url ? <img src={url} alt="Product" className="size-full object-cover" /> : <ImageOff aria-hidden className="size-6 text-muted-foreground" />}
     </div>
   )
 }
