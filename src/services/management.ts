@@ -167,6 +167,13 @@ export interface ErpSettingsValues {
   'product.group_heads': string[]
   /** Field the product Excel import matches existing products by (migration 20261122090000). */
   'product.import_match_key': 'SKU' | 'BARCODE' | 'EAN' | 'MODEL_NUMBER' | 'PRODUCT_NAME' | 'NONE'
+  /** Purchase Cost Intelligence (migration 20261123090000). */
+  'product.purchase_cost_auto_update': boolean
+  'product.purchase_cost_increase_alerts': boolean
+  'product.purchase_cost_decrease_alerts': boolean
+  'product.purchase_cost_alert_percent': number
+  'product.purchase_cost_zero_policy': 'IGNORE' | 'APPLY' | 'INITIAL_ONLY'
+  'product.purchase_cost_override_permission': 'purchase_exception.approve' | 'purchase_order.approve' | 'products.update' | 'settings.manage'
   'inventory.adjustment_reasons': string[]
   'purchase.default_payment_terms': 'IMMEDIATE' | 'DAYS_7' | 'DAYS_15' | 'DAYS_30' | 'DAYS_45'
   'purchase.default_delivery_terms': string | null

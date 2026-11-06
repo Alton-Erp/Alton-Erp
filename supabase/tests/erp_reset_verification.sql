@@ -184,9 +184,9 @@ select rls_test.ok('catalogue: every listed table exists',
               where to_regclass('public.' || x.table_name) is null));
 -- V2 Stage 2 adds parties and supplier_payments; the product / purchase
 -- enhancements add purchase_document_refs, the stock reliability migration production_order_requests (79 tables).
--- The form drafts migration adds erp_form_drafts, master versioning production_order_revisions (81 tables).
-select rls_test.ok('catalogue: allowlist has 81 tables, no duplicates',
-  (select count(*) from private.erp_reset_tables()) = 81 and (select count(distinct table_name) from private.erp_reset_tables()) = 81);
+-- The form drafts migration adds erp_form_drafts, master versioning production_order_revisions (81 tables); purchase cost intelligence adds its history and current-cost tables (83).
+select rls_test.ok('catalogue: allowlist has 83 tables, no duplicates',
+  (select count(*) from private.erp_reset_tables()) = 83 and (select count(distinct table_name) from private.erp_reset_tables()) = 83);
 select rls_test.ok('catalogue: every resettable table is company-scoped (company_id)',
   not exists (select 1 from private.erp_reset_tables() t where not exists (
     select 1 from information_schema.columns c where c.table_schema = 'public' and c.table_name = t.table_name and c.column_name = 'company_id')));

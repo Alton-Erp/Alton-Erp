@@ -19,6 +19,8 @@ import { RecordDocuments } from '@/features/admin/record-documents'
 import { money } from '@/features/billing/billing-model'
 import { useGstStates } from '@/features/billing/use-gst-states'
 import { formatQty } from '@/features/inventory/inventory-model'
+import { CostTrend } from '@/features/products/purchase-cost-badge'
+import { costChange, type ProductPurchaseCost } from '@/features/products/purchase-cost'
 import { PoActionDialog, PoStatusBadge } from '@/features/purchasing/po-components'
 import { availablePoActions, LINE_TYPE_LABELS, PO_EVENT_LABELS, PO_STATUS_LABELS, PURCHASE_TYPE_LABELS, refsText, TAX_TREATMENT_LABELS } from '@/features/purchasing/po-model'
 import { GoodsReceiptDialog } from '@/features/purchasing/receipt-dialog'
@@ -30,6 +32,7 @@ import { describeDataError } from '@/lib/errors'
 import { formatDate, formatDateTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { fetchInventoryPolicy } from '@/services/inventory'
+import { fetchPurchaseCosts } from '@/services/purchase-costs'
 import { fetchDisplayNames } from '@/services/products'
 import {
   fetchGoodsReceipts, fetchPoAmendments, fetchPoEvents, fetchPoLines, fetchPurchaseOrder, fetchReceiptLines, openPurchaseOrder, purchaseOrderAction, reverseGoodsReceipt,
@@ -57,6 +60,10 @@ export default function PoDetailPage() {
   const tz = access?.company?.timezone
   const [refresh, setRefresh] = useState(0)
   const data = useAsync(() => loadPo(poId, has('inventory.read')), [poId, refresh])
+  // Proposed price comparison only (an order never changes the Last Purchase Cost; posted receipts do).
+  const costKey = (data.data?.lines ?? []).filter((l) => l.line_type === 'GOODS' && l.product_id).map((l) => l.product_id).join(',')
+  const lastCosts = useAsync(() => (costKey ? fetchPurchaseCosts(costKey.split(','), data.data?.po.supplier_id ?? null).catch(() => new Map<string, ProductPurchaseCost>())
+    : Promise.resolve(new Map<string, ProductPurchaseCost>())), [costKey])
   const initial = location.state as { message?: string; tone?: 'error' } | null
   const [notice, setNotice] = useState<{ tone: 'success' | 'error'; text: string } | null>(initial?.message ? { tone: initial.tone ?? 'success', text: initial.message } : null)
   const [action, setAction] = useState<PoWorkflowAction | null>(null)
@@ -217,7 +224,14 @@ export default function PoDetailPage() {
               <TableCell className="text-right tabular-nums">{formatQty(l.ordered_quantity, l.unit)}</TableCell>
               <TableCell className="text-right tabular-nums">{l.line_type === 'CHARGE' ? '—' : <>{formatQty(l.accepted_quantity)}{Number(l.rejected_quantity) > 0 && <span className="block text-xs text-red-700">{formatQty(l.rejected_quantity)} rejected</span>}</>}</TableCell>
               <TableCell className="text-right tabular-nums">{l.line_type === 'CHARGE' ? '—' : formatQty(l.pending_quantity)}</TableCell>
-              <TableCell className="text-right tabular-nums">{l.unit_price === null ? <span className="text-amber-800">Not set</span> : money(l.unit_price)}</TableCell>
+              <TableCell className="text-right tabular-nums">{l.unit_price === null ? <span className="text-amber-800">Not set</span> : money(l.unit_price)}
+                {l.line_type === 'GOODS' && l.product_id && Number(l.ordered_quantity) > 0 && (() => {
+                  const last = lastCosts.data?.get(l.product_id)?.last_cost ?? null
+                  if (last === null) return null
+                  const c = costChange(last, Math.round((Number(l.taxable_value) / Number(l.ordered_quantity)) * 10000) / 10000)
+                  return <span className="block text-xs text-muted-foreground" data-testid="po-line-last-cost" title="Net quoted cost (after discount, excl. GST) against the Last Purchase Cost">vs last {money(last)} <CostTrend trend={c.trend} percent={c.percent} /></span>
+                })()}
+              </TableCell>
               <TableCell className="text-right tabular-nums">{Number(l.discount_amount) ? money(l.discount_amount) : '—'}</TableCell>
               <TableCell className="text-right tabular-nums">{money(l.taxable_value)}</TableCell>
               {intra ? <><TableCell className="text-right tabular-nums">{money(l.cgst_amount)}</TableCell><TableCell className="text-right tabular-nums">{money(l.sgst_amount)}</TableCell></>

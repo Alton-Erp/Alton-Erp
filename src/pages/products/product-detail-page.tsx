@@ -1,6 +1,6 @@
 import { Archive, ArchiveRestore, History, ImageOff, Info, Pencil, Power, PowerOff } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
-import { Link, useLocation, useParams } from 'react-router-dom'
+import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom'
 
 import { PermissionGate } from '@/auth/permission-gate'
 import { useAuth } from '@/auth/use-auth'
@@ -13,8 +13,10 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { ProductSourceBadge, ProductStatusBadge } from '@/features/products/product-badges'
 import { productGaps } from '@/features/products/product-completeness'
+import { PurchaseCostHistoryTab } from '@/features/products/purchase-cost-history'
 import { BOM_OUTPUT_TYPES, PRODUCT_TYPE_LABELS, SOURCE_TYPE_DESCRIPTIONS, UNITS } from '@/features/products/product-model'
 import { useAsync } from '@/hooks/use-async'
+import { cn } from '@/lib/utils'
 import { describeDataError } from '@/lib/errors'
 import { formatCurrency, formatDateTime, formatNumber } from '@/lib/format'
 import { fetchResourceAudit } from '@/services/audit-logs'
@@ -31,7 +33,14 @@ const ACTION_LABELS: Record<string, string> = {
   'product.archived': 'Archived',
   'product.unarchived': 'Restored from archive',
   'product.sku_changed': 'SKU changed',
+  'products.purchase_cost_updated': 'Last purchase cost updated',
+  'products.purchase_cost_recorded': 'Receipt cost recorded (not applied)',
+  'products.purchase_cost_reversed': 'Receipt reversed: purchase cost recalculated',
+  'products.purchase_cost_overridden': 'Last purchase cost overridden',
 }
+
+const TABS = [['overview', 'Overview'], ['purchase-cost', 'Purchase Cost History']] as const
+type DetailTab = (typeof TABS)[number][0]
 
 async function loadDetail(id: string, canReadBoms: boolean) {
   const [product, categories, boms, suppliers] = await Promise.all([
@@ -48,6 +57,8 @@ async function loadDetail(id: string, canReadBoms: boolean) {
 export default function ProductDetailPage() {
   const { productId = '' } = useParams()
   const location = useLocation()
+  const [params, setParams] = useSearchParams()
+  const tab: DetailTab = params.get('tab') === 'purchase-cost' ? 'purchase-cost' : 'overview'
   const { access } = useAuth()
   const { has } = usePermissions()
   const timezone = access?.company?.timezone
@@ -169,6 +180,15 @@ export default function ProductDetailPage() {
         </div>
       )}
 
+      <div role="tablist" aria-label="Product sections" className="mb-4 flex flex-wrap gap-1 rounded-lg border bg-muted/40 p-1 text-sm">
+        {TABS.map(([t, label]) => (
+          <button key={t} type="button" role="tab" aria-selected={tab === t} data-testid={`product-tab-${t}`}
+            onClick={() => setParams(t === 'overview' ? {} : { tab: t }, { replace: true })}
+            className={cn('rounded-md px-3 py-1.5', tab === t ? 'bg-background font-medium shadow-sm' : 'text-muted-foreground hover:text-foreground')}>{label}</button>
+        ))}
+      </div>
+
+      {tab === 'purchase-cost' ? <PurchaseCostHistoryTab productId={p.id} timezone={timezone} /> : (
       <div className="grid gap-6 xl:grid-cols-3">
         <div className="space-y-6 xl:col-span-2">
           <InfoCard title="Basic Information">
@@ -306,6 +326,7 @@ export default function ProductDetailPage() {
           </PermissionGate>
         </div>
       </div>
+      )}
 
       <ConfirmDialog
         open={confirm !== null}

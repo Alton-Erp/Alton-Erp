@@ -18,6 +18,9 @@ import { Textarea } from '@/components/ui/textarea'
 import { money } from '@/features/billing/billing-model'
 import { useGstStates } from '@/features/billing/use-gst-states'
 import { STANDARD_GST_RATES } from '@/features/products/product-model'
+import { formatCost } from '@/features/products/product-list-format'
+import { CostTrend } from '@/features/products/purchase-cost-badge'
+import { costChange, isSignificant, poLineNetUnitCost, signedMoney, type ProductPurchaseCost } from '@/features/products/purchase-cost'
 import { calcTotals, taxTreatmentFor } from '@/features/purchasing/po-calc'
 import { PoProductPicker } from '@/features/purchasing/po-components'
 import { LINE_TYPE_LABELS, linesPayload, PURCHASE_TYPE_LABELS, TAX_TREATMENT_LABELS, validatePoLines, type PoFormLine } from '@/features/purchasing/po-model'
@@ -30,9 +33,10 @@ import { usePersistentFormDraft } from '@/hooks/use-persistent-form-draft'
 import { useRequestKey } from '@/hooks/use-request-key'
 import { describeDataError } from '@/lib/errors'
 import { requireSupabase } from '@/lib/supabase'
-import { toIsoDate } from '@/lib/format'
+import { formatDate, toIsoDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { fetchPoLines, fetchPoSupplierOptions, fetchPurchaseOrder, openPurchaseOrder, purchaseOrderAction, savePurchaseOrder, type PoSupplierOption } from '@/services/purchasing'
+import { fetchPurchaseCosts } from '@/services/purchase-costs'
 import { fetchSalesOrderV2 } from '@/services/sales-v2'
 import type { PoLineType, PurchaseOrderListRow, PurchaseOrderLineListRow, PurchaseType } from '@/types/database-purchasing'
 
@@ -168,6 +172,9 @@ function PoForm({ suppliers, po, copyFrom, lines: initialLines, companyGstin, pr
 
   const supplier = supplierList.find((s) => s.id === h.supplier_id) ?? null
   const treatment = po && supplier?.id === po.supplier_id && !companyGstin ? po.tax_treatment : taxTreatmentFor(supplier, companyGstin)
+  // Last Purchase Cost of the products on the order, for the comparison under each line (nothing is changed).
+  const productKey = [...new Set(lines.map((l) => l.product_id).filter(Boolean))].sort().join(',')
+  const lastCosts = useAsync(() => (productKey ? fetchPurchaseCosts(productKey.split(','), h.supplier_id || null).catch(() => new Map<string, ProductPurchaseCost>()) : Promise.resolve(new Map<string, ProductPurchaseCost>())), [productKey, h.supplier_id])
   const preview = calcTotals(lines.map((l) => ({
     line_type: l.line_type, quantity: l.quantity, unit_price: l.unit_price || null,
     discount_percent: l.discount_mode === 'PERCENT' ? l.discount || null : null, discount_amount: l.discount_mode === 'AMOUNT' ? l.discount || null : null,
@@ -412,6 +419,7 @@ function PoForm({ suppliers, po, copyFrom, lines: initialLines, companyGstin, pr
             {err('h:lines') && <p role="alert" className="text-sm text-red-700">{err('h:lines')}</p>}
             {lines.map((l, i) => (
               <LineEditor key={l.key} index={i} line={l} calc={preview.lines[i]} errors={errors} locked={l.received > 0}
+                lastCost={l.product_id ? lastCosts.data?.get(l.product_id) : undefined}
                 onChange={(p) => updateLine(l.key, p)} onRemove={() => setLines((ls) => ls.filter((x) => x.key !== l.key))} />
             ))}
             <div className="flex flex-wrap gap-2">
@@ -451,12 +459,13 @@ function PoForm({ suppliers, po, copyFrom, lines: initialLines, companyGstin, pr
   )
 }
 
-function LineEditor({ index, line: l, calc, errors, locked, onChange, onRemove }: {
+function LineEditor({ index, line: l, calc, errors, locked, lastCost, onChange, onRemove }: {
   index: number
   line: PoFormLine
   calc: { taxable: number; cgst: number; sgst: number; igst: number; total: number } | undefined
   errors: Map<string, string>
   locked: boolean
+  lastCost?: ProductPurchaseCost
   onChange: (p: Partial<PoFormLine>) => void
   onRemove: () => void
 }) {
@@ -532,8 +541,48 @@ function LineEditor({ index, line: l, calc, errors, locked, onChange, onRemove }
           <p className="font-semibold tabular-nums">Total {money(calc?.total ?? 0)}</p>
         </div>
       </div>
+      {l.line_type === 'GOODS' && l.product_id && <CostComparison line={l} lastCost={lastCost} />}
       {lineErrors.length > 0 && <ul role="alert" className="mt-2 space-y-0.5 text-xs text-red-700">{lineErrors.map((m) => <li key={m}>{m}</li>)}</ul>}
     </fieldset>
+  )
+}
+
+/**
+ * Last Purchase Cost and this supplier's previous price next to this line's net unit cost (after discount, excl. GST:
+ * the value the goods receipt will use). Comparison only: the cost changes when the goods are received and posted.
+ */
+function CostComparison({ line: l, lastCost }: { line: PoFormLine; lastCost?: ProductPurchaseCost }) {
+  const net = poLineNetUnitCost({ quantity: Number(l.quantity), unit_price: l.unit_price.trim() === '' ? null : Number(l.unit_price),
+    discount_percent: l.discount_mode === 'PERCENT' ? Number(l.discount) || null : null, discount_amount: l.discount_mode === 'AMOUNT' ? Number(l.discount) || null : null })
+  const previous = lastCost?.last_cost ?? null
+  const c = costChange(previous, net)
+  const warn = isSignificant(c.percent, lastCost?.threshold)
+  const sup = lastCost?.supplier_last_cost ?? null
+  const cs = costChange(sup, net)
+  return (
+    <div data-testid="po-cost-compare" data-trend={c.trend} data-warning={warn ? 'true' : 'false'}
+      className={cn('mt-2 space-y-1 rounded-md border-l-4 bg-muted/40 px-3 py-1.5 text-xs',
+        c.trend === 'up' ? 'border-l-red-500' : c.trend === 'down' ? 'border-l-emerald-500' : 'border-l-slate-300')}>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        <span>Last purchase cost: <b className="tabular-nums">{previous === null ? 'none yet' : formatCost(previous)}</b></span>
+        <span>This PO: <b className="tabular-nums">{net === null ? '—' : formatCost(net)}</b> <span className="text-muted-foreground">(net of discount, excl. GST)</span></span>
+        {c.trend !== 'none' && (
+          <span className="inline-flex items-center gap-1">
+            Difference: <b className="tabular-nums">{signedMoney(c.difference, formatCost)}</b> <CostTrend trend={c.trend} percent={c.percent} />
+            <span className="font-medium">{c.trend === 'up' ? 'Price increase' : c.trend === 'down' ? 'Price decrease' : 'Same price'}</span>
+          </span>
+        )}
+        {sup !== null && (
+          <span data-testid="po-supplier-price">This supplier last: <b className="tabular-nums">{formatCost(sup)}</b>
+            {lastCost?.supplier_last_date ? ` on ${formatDate(lastCost.supplier_last_date)}` : ''} {cs.trend !== 'none' && <CostTrend trend={cs.trend} percent={cs.percent} />}</span>
+        )}
+      </div>
+      {warn && (
+        <p role="status" className="font-medium text-amber-800" data-testid="po-cost-warning">
+          The price differs by {Math.abs(c.percent ?? 0).toFixed(2)}% from the Last Purchase Cost (alert threshold {lastCost?.threshold}%). Check the price before saving.
+        </p>
+      )}
+    </div>
   )
 }
 

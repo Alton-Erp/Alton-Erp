@@ -61,6 +61,7 @@ import { contextFromParams, DASHBOARDS, METRICS, type DashboardKey } from '@/fea
 import { useCompanyClock, useDrill } from '@/features/drilldown/use-drill'
 import { formatCost, formatMrp, gstText, hsnText } from '@/features/products/product-list-format'
 import { missingInfo } from '@/features/products/product-missing-info'
+import { CostChangeCell, LastPurchaseCostCell, LastPurchaseDateCell } from '@/features/products/purchase-cost-badge'
 import { useAsync } from '@/hooks/use-async'
 import { useDebouncedValue } from '@/hooks/use-debounced-value'
 import { describeDataError } from '@/lib/errors'
@@ -77,6 +78,7 @@ import {
   type ProductSortColumn,
   type ProductStatusFilter,
 } from '@/services/products'
+import { fetchPurchaseCosts } from '@/services/purchase-costs'
 import { fetchSupplierOptions } from '@/services/suppliers'
 import type { ProductRow } from '@/types/database'
 
@@ -298,6 +300,8 @@ export default function ProductsPage() {
   }, [list.data, page, pageSize])
   const pageIds = rows.map((p) => p.id).join(',')
   const hints = useAsync(() => (bulkMode && pageIds ? fetchDuplicateHints(pageIds.split(',')) : Promise.resolve([] as DuplicateHint[])), [bulkMode, pageIds, refreshKey])
+  // Last Purchase Cost of the products on this page (Purchase Cost Intelligence; empty before the database update).
+  const purchaseCosts = useAsync(() => (pageIds ? fetchPurchaseCosts(pageIds.split(',')).catch(() => new Map()) : Promise.resolve(new Map())), [pageIds, refreshKey])
   const hintsByProduct = useMemo(() => {
     const m = new Map<string, DuplicateHint[]>()
     for (const h of hints.data ?? []) m.set(h.product_id, [...(m.get(h.product_id) ?? []), h])
@@ -590,6 +594,9 @@ export default function ProductsPage() {
                   <SortableHead column="sku" label="SKU" sort={sort} onSort={setSort} />
                   <TableHead>Category</TableHead>
                   <SortableHead column="standard_manufacturing_cost" label="Cost" sort={sort} onSort={setSort} align="right" />
+                  <TableHead className="text-right" title="Accepted unit cost of the latest posted goods receipt (excl. GST, after discount)">Last Purchase Cost</TableHead>
+                  <TableHead>Last Purchase Date</TableHead>
+                  <TableHead className="text-right">Cost Change</TableHead>
                   <SortableHead column="mrp" label="MRP" sort={sort} onSort={setSort} align="right" />
                   <SortableHead column="hsn_code" label="HSN" sort={sort} onSort={setSort} />
                   <SortableHead column="gst_rate" label="GST" sort={sort} onSort={setSort} align="right" />
@@ -638,6 +645,9 @@ export default function ProductsPage() {
                     </TableCell>
                     <TableCell className="text-muted-foreground">{p.category_id ? (categoryName.get(p.category_id) ?? '—') : '—'}</TableCell>
                     <TableCell className="text-right tabular-nums" data-col="cost">{formatCost(p.standard_manufacturing_cost)}</TableCell>
+                    <TableCell className="text-right" data-col="last-cost"><LastPurchaseCostCell productId={p.id} cost={purchaseCosts.data?.get(p.id)} /></TableCell>
+                    <TableCell data-col="last-date"><LastPurchaseDateCell cost={purchaseCosts.data?.get(p.id)} /></TableCell>
+                    <TableCell className="text-right" data-col="cost-change"><CostChangeCell productId={p.id} cost={purchaseCosts.data?.get(p.id)} /></TableCell>
                     <TableCell className="text-right tabular-nums" data-col="mrp">{formatMrp(p.mrp)}</TableCell>
                     <TableCell className="tabular-nums" data-col="hsn">{hsnText(p.hsn_code) ?? <MissingValue />}</TableCell>
                     <TableCell className="text-right tabular-nums" data-col="gst">{gstText(p.gst_rate) ?? <MissingValue />}</TableCell>

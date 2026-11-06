@@ -16,6 +16,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { useErpPreferences } from '@/features/management/erp-preferences'
 import { REPORTS, reportSheet } from '@/features/management/report-defs'
 import { MATCH_KEYS } from '@/features/products/product-import'
+import { OVERRIDE_LABELS, ZERO_POLICY_LABELS, type OverridePermission, type ZeroCostPolicy } from '@/features/products/purchase-cost'
 import { useAsync } from '@/hooks/use-async'
 import { DATE_PATTERNS } from '@/lib/date-pattern'
 import { describeDataError, errorReference, logDataError } from '@/lib/errors'
@@ -177,6 +178,50 @@ function SettingsForm({ tab, data, onSaved }: { tab: Tab; data: ErpSettings; onS
                   onChange={(e) => setSetting('product.sku_prefixes', { ...sv('product.sku_prefixes'), [t]: e.target.value.toUpperCase() })} /></Field>
               ))}</div>
             </CardContent></Card>
+          {(() => {
+            // Purchase Cost Intelligence (migration 20261123090000): disabled until the database update is applied.
+            const known = 'product.purchase_cost_auto_update' in data.settings
+            const zero = (sv('product.purchase_cost_zero_policy') ?? 'IGNORE') as ZeroCostPolicy
+            const perm = (sv('product.purchase_cost_override_permission') ?? 'purchase_exception.approve') as OverridePermission
+            const toggle = (key: 'product.purchase_cost_auto_update' | 'product.purchase_cost_increase_alerts' | 'product.purchase_cost_decrease_alerts', label: string, testid: string) => (
+              <label className="flex items-start gap-2 text-sm">
+                <Checkbox className="mt-0.5" disabled={!known} checked={sv(key) ?? true} data-testid={testid} onCheckedChange={(v) => setSetting(key, v === true)} />
+                <span>{label}</span>
+              </label>
+            )
+            return (
+              <Card data-testid="purchase-cost-settings"><CardHeader><div><CardTitle>Purchase Cost Intelligence</CardTitle>
+                <CardDescription>Keeps each product's Last Purchase Cost and its price history from posted goods receipts. Standard Purchase and Manufacturing
+                  Cost, MRP, Selling Price, inventory valuation and posted documents are never changed by it. Every change of these settings is audited.</CardDescription></div></CardHeader>
+                <CardContent className="grid gap-4 sm:grid-cols-2">
+                  {!known && <p className="text-xs text-amber-800 sm:col-span-2">Available after database update 20261123090000 is applied.</p>}
+                  <div className="space-y-2">
+                    {toggle('product.purchase_cost_auto_update', 'Automatic cost updates', 'es-pc-auto')}
+                    <p className="text-xs text-muted-foreground">Update trigger: <b>GRN posting</b> (fixed). Cost history: <b>always kept</b>.</p>
+                    {toggle('product.purchase_cost_increase_alerts', 'Price increase alerts (to purchase order approvers and Super Admins)', 'es-pc-inc')}
+                    {toggle('product.purchase_cost_decrease_alerts', 'Price decrease alerts', 'es-pc-dec')}
+                  </div>
+                  <div className="space-y-4">
+                    <Field label="Significant change threshold (%)" htmlFor="es-pc-threshold" hint="Changes of this size are flagged, notified as high priority and warned about on purchase orders.">
+                      <Input id="es-pc-threshold" inputMode="decimal" className="w-32" disabled={!known} value={String(sv('product.purchase_cost_alert_percent') ?? 10)}
+                        onChange={(e) => setSetting('product.purchase_cost_alert_percent', Number(e.target.value) || 0)} />
+                    </Field>
+                    <Field label="Zero-cost receipt policy" htmlFor="es-pc-zero" hint="Receipts recorded at ₹0 (free samples, replacements). A receipt without any cost is never applied.">
+                      <Select value={zero} disabled={!known} onValueChange={(v) => { if (v) setSetting('product.purchase_cost_zero_policy', v as ZeroCostPolicy) }}>
+                        <SelectTrigger id="es-pc-zero"><SelectValue /></SelectTrigger>
+                        <SelectContent>{(Object.keys(ZERO_POLICY_LABELS) as ZeroCostPolicy[]).map((m) => <SelectItem key={m} value={m}>{ZERO_POLICY_LABELS[m]}</SelectItem>)}</SelectContent>
+                      </Select>
+                    </Field>
+                    <Field label="Who can override the cost in exceptional cases" htmlFor="es-pc-override" hint="Uses the existing roles and permissions; every override needs a reason and is audited.">
+                      <Select value={perm} disabled={!known} onValueChange={(v) => { if (v) setSetting('product.purchase_cost_override_permission', v as OverridePermission) }}>
+                        <SelectTrigger id="es-pc-override"><SelectValue /></SelectTrigger>
+                        <SelectContent>{(Object.keys(OVERRIDE_LABELS) as OverridePermission[]).map((a) => <SelectItem key={a} value={a}>{OVERRIDE_LABELS[a]}</SelectItem>)}</SelectContent>
+                      </Select>
+                    </Field>
+                  </div>
+                </CardContent></Card>
+            )
+          })()}
           <Card data-testid="import-match-key-setting"><CardHeader><div><CardTitle>Excel import: match existing products by</CardTitle>
             <CardDescription>The field the Product Master Excel import uses to find a product that already exists. The match field is never changed by an
               import; every other field can be ticked under "Fields to Modify in Existing Products".</CardDescription></div></CardHeader>

@@ -601,6 +601,28 @@ const ERP_DEFAULTS = {
   'inventory.adjustment_reasons': ['Damaged', 'Count correction'], 'purchase.default_payment_terms': 'DAYS_30', 'purchase.default_delivery_terms': null,
   'production.default_wastage_percent': 0, 'production.consumption_prefill': 'STANDARD', 'sales.default_payment_terms': null, 'sales.default_delivery_instructions': null,
   'sales.default_warehouse_id': null, 'import.date_order': 'DMY', 'product.import_match_key': 'SKU',
+  'product.purchase_cost_auto_update': true, 'product.purchase_cost_increase_alerts': true, 'product.purchase_cost_decrease_alerts': true,
+  'product.purchase_cost_alert_percent': 10, 'product.purchase_cost_zero_policy': 'IGNORE', 'product.purchase_cost_override_permission': 'purchase_exception.approve',
+}
+const pcEvent = (id, over) => ({ id, event_type: 'GRN_RECEIPT', status: 'APPLIED', not_applied_reason: null, previous_cost: null, new_cost: 850,
+  difference: null, change_percent: null, change_type: 'INITIAL_COST', significant: false, received_quantity: 10, rejected_quantity: 0, unit: 'PCS', currency: 'INR',
+  cost_basis: { method: 'PO_LINE_TAXABLE_VALUE_PER_UNIT' }, supplier_id: 'sup1', supplier_name: 'Shree Clay Works Pvt Ltd', purchase_order_id: 'po3', po_number: 'PO-000003',
+  goods_receipt_id: 'gr1', receipt_number: 'GRN-000001', effective_date: '2026-10-20', posted_at: NOW, reason: 'Goods receipt GRN-000001 against PO-000003',
+  created_at: '2026-10-20T10:00:00Z', reversed: false, created_by_name: 'Smoke Tester', ...over })
+const PC_EVENTS = [
+  pcEvent('pce3', { event_type: 'GRN_REVERSAL', status: 'NOT_APPLIED', not_applied_reason: 'A later receipt sets the current cost, so it is unchanged', previous_cost: 920,
+    new_cost: 920, change_type: 'NO_CHANGE', receipt_number: 'GRN-000005', goods_receipt_id: 'gr5', received_quantity: -2, effective_date: TODAY, created_at: `${TODAY}T12:00:00Z` }),
+  pcEvent('pce2', { previous_cost: 850, new_cost: 920, difference: 70, change_percent: 8.24, change_type: 'INCREASE', supplier_id: 'sup2', supplier_name: 'Morbi Tiles LLP',
+    receipt_number: 'GRN-000010', goods_receipt_id: 'gr9', effective_date: TODAY, created_at: `${TODAY}T09:00:00Z` }),
+  pcEvent('pce1', {}),
+]
+const PC_HISTORY = {
+  product: { id: 'p1', sku: 'MOCK-WC-1', product_name: 'Mock Closet 1', base_unit: 'PCS', standard_cost: 800, standard_manufacturing_cost: 1200, mrp: 1500, selling_price: 1300 },
+  current: { cost: 920, date: TODAY, previous_cost: 850, difference: 70, change_percent: 8.24, change_type: 'INCREASE', supplier_name: 'Morbi Tiles LLP', source_event_id: 'pce2' },
+  average_inventory_cost: 884.5,
+  settings: { auto_update: true, increase_alerts: true, decrease_alerts: true, alert_percent: 10, zero_policy: 'IGNORE', override_permission: 'purchase_exception.approve',
+    trigger: 'GRN_POSTING', history: true },
+  can_override: true,
 }
 const ERP_SETTINGS = {
   company: { id: COMPANY_ID, legal_name: 'Test Co', display_name: 'Test Co', company_code: 'TEST', legal_address: 'Mock Road, Pune', state: 'Maharashtra', country: 'India',
@@ -1513,6 +1535,25 @@ const api = http.createServer((req, res) => {
           return send(res, 200, MODULE_DASHBOARDS[body.p_module] ?? null)
         case 'erp_settings_get':
           return send(res, 200, ERP_SETTINGS)
+        case 'product_purchase_costs':
+          return send(res, 200, (body.p_ids ?? []).filter((id) => id === 'p1').map(() => ({ product_id: 'p1', last_cost: PC_HISTORY.current.cost, last_date: TODAY,
+            previous_cost: PC_HISTORY.current.previous_cost, difference: PC_HISTORY.current.difference, change_percent: PC_HISTORY.current.change_percent,
+            change_type: PC_HISTORY.current.change_type, supplier_name: 'Morbi Tiles LLP', supplier_last_cost: body.p_supplier ? 870 : null,
+            supplier_last_date: body.p_supplier ? '2026-10-01' : null, threshold: 10 })))
+        case 'product_purchase_cost_history': {
+          if (body.p_product_id !== 'p1') return send(res, 200, { ...PC_HISTORY, product: { ...PC_HISTORY.product, id: body.p_product_id }, current: null, events: [] })
+          return send(res, 200, { ...PC_HISTORY, events: PC_EVENTS })
+        }
+        case 'product_purchase_cost_override': {
+          if (String(body.p_reason ?? '').trim().length < 5) return send(res, 400, { code: 'P0001', message: 'Enter the reason for the override (at least 5 characters).' })
+          const prev = PC_HISTORY.current.cost
+          PC_EVENTS.unshift(pcEvent('pce-ov', { event_type: 'MANUAL_OVERRIDE', previous_cost: prev, new_cost: body.p_cost, difference: body.p_cost - prev,
+            change_percent: Math.round(((body.p_cost - prev) / prev) * 10000) / 100, change_type: body.p_cost > prev ? 'INCREASE' : 'DECREASE', supplier_id: null, supplier_name: null,
+            purchase_order_id: null, po_number: null, goods_receipt_id: null, receipt_number: null, received_quantity: null, reason: 'Manual override: ' + body.p_reason,
+            effective_date: TODAY, created_at: `${TODAY}T13:00:00Z` }))
+          Object.assign(PC_HISTORY.current, { cost: body.p_cost, previous_cost: prev, difference: body.p_cost - prev, change_type: body.p_cost > prev ? 'INCREASE' : 'DECREASE' })
+          return send(res, 200, { event_id: 'pce-ov', cost: body.p_cost })
+        }
         case 'product_import_match_key':
           return send(res, 200, ERP_SETTINGS.settings['product.import_match_key'] ?? 'SKU')
         case 'erp_settings_save': {
@@ -5242,7 +5283,7 @@ await step('Product Master columns: Product Name, SKU, Category, Cost, MRP, HSN,
   await goto('/products')
   await waitFor(`document.querySelectorAll('tbody tr').length > 0`, 'product rows')
   const heads = await evaluate(`[...document.querySelectorAll('thead th')].map((th) => th.innerText.trim().toLowerCase()).filter(Boolean)`)
-  assert(JSON.stringify(heads.slice(0, 9)) === JSON.stringify(['product name', 'sku', 'category', 'cost', 'mrp', 'hsn', 'gst', 'unit', 'status']), JSON.stringify(heads))
+  assert(JSON.stringify(heads.slice(0, 12)) === JSON.stringify(['product name', 'sku', 'category', 'cost', 'last purchase cost', 'last purchase date', 'cost change', 'mrp', 'hsn', 'gst', 'unit', 'status']), JSON.stringify(heads))
   assert(await evaluate(`[...document.querySelectorAll('td[data-col=gst]')].some((c) => c.innerText.trim() === '18%')`), 'GST shown as a percentage')
   assert(await evaluate(`[...document.querySelectorAll('td[data-col=hsn]')].some((c) => c.innerText.trim() === '6910')`), 'HSN shown as stored')
   // Products without an HSN code or GST rate show "Missing"; a cost that is not entered shows "—".
@@ -5283,6 +5324,98 @@ await step('Product Master columns: Product Name, SKU, Category, Cost, MRP, HSN,
   // A drill-down list (Missing Information) has the same columns.
   await goto('/products?drill=pm.incomplete')
   await waitFor(`!!document.querySelector('[data-testid=drill-banner]') && !!document.querySelector('td[data-col=cost]') && !!document.querySelector('td[data-col=mrp]') && !!document.querySelector('td[data-col=hsn]') && !!document.querySelector('td[data-col=gst]')`, 'columns in a drill-down list')
+})
+
+await step('Purchase cost intelligence: Product Master columns, history with filters and override, PO comparison with warning, settings', async () => {
+  await signOut()
+  await login('owner@test.invalid')
+  await waitFor(`location.pathname !== '/login'`, 'owner signed in')
+  const pcBackup = JSON.stringify({ current: PC_HISTORY.current, events: PC_EVENTS })
+  try {
+    await goto('/products')
+    for (let i = 0; i < 60 && !(await evaluate(`!!document.querySelector('[data-col=last-cost] a[data-testid=last-cost]')`)); i++) await sleep(100)
+    const heads = await evaluate(`[...document.querySelectorAll('thead th')].map((th) => th.innerText.trim().toLowerCase()).join('|')`)
+    assert(heads.includes('cost|last purchase cost|last purchase date|cost change|mrp'), 'column order: ' + heads)
+    const row = `[...document.querySelectorAll('tbody tr')].find((r) => r.innerText.includes('MOCK-WC-1'))`
+    assert((await evaluate(`${row}.querySelector('[data-col=last-cost]').innerText`)).includes('₹920.00'), 'last purchase cost')
+    assert((await evaluate(`${row}.querySelector('[data-col=last-date]').innerText`)) !== '—', 'last purchase date')
+    const change = await evaluate(`${row}.querySelector('[data-col=cost-change]').innerText`)
+    assert(change.includes('+8.24%') && change.includes('+₹70.00') && (await evaluate(`!!${row}.querySelector('[data-col=cost-change] [data-trend=up]')`)), change)
+    assert(!(await evaluate(`${row}.querySelector('[data-col=cost]').innerText.includes('920')`)), 'COST column must stay the manufacturing cost')
+    await evaluate(`${row}.querySelector('[data-col=last-cost] a').click()`)
+    await waitFor(`location.pathname === '/products/p1' && location.search.includes('tab=purchase-cost') && !!document.querySelector('[data-testid=pc-event]')`, 'history tab')
+    const tile = await evaluate(`document.querySelector('[data-testid=pc-current]').innerText`)
+    assert(tile.includes('₹920.00') && tile.includes('+8.24%') && tile.includes('Morbi Tiles LLP'), tile)
+    for (const text of ['Average Inventory Cost', 'Standard Manufacturing Cost', 'Selling Price', 'Purchase cost trend', 'Price history', 'GRN-000010', 'PO-000003']) {
+      assert(await evaluate(bodyHas(text)), `missing "${text}"`)
+    }
+    assert(await evaluate(`!!document.querySelector('[data-testid=pc-chart] svg')`), 'trend chart')
+    const cols = await evaluate(`[...document.querySelectorAll('[data-testid=purchase-cost-history] th')].map((th) => th.innerText.toLowerCase()).join('|')`)
+    for (const c of ['date', 'supplier', 'po number', 'grn number', 'previous cost', 'new cost', 'difference', '% change', 'accepted qty', 'user', 'status']) assert(cols.includes(c), `column ${c}: ${cols}`)
+    const count = () => evaluate(`document.querySelectorAll('[data-testid=pc-event]').length`)
+    assert((await count()) === 3, 'events listed')
+    assert(await evaluate(bodyHas('Reversal')) && await evaluate(bodyHas('not applied')), 'reversal status')
+    // Filters: increase only, supplier, date range.
+    await choose('#pc-change', 'Increases only')
+    await waitFor(`document.querySelectorAll('[data-testid=pc-event]').length === 1 && document.querySelector('[data-testid=pc-event]').dataset.change === 'INCREASE'`, 'increase filter')
+    await choose('#pc-change', 'Decreases only')
+    await waitFor(`!!document.querySelector('[data-testid=pc-empty]')`, 'no decreases')
+    await choose('#pc-change', 'Increases and decreases')
+    await choose('#pc-supplier', 'Morbi Tiles LLP')
+    await waitFor(`document.querySelectorAll('[data-testid=pc-event]').length === 1`, 'supplier filter')
+    await click('button', 'Clear filters')
+    await fill('#pc-from', TODAY)
+    await waitFor(`document.querySelectorAll('[data-testid=pc-event]').length === 2`, 'date filter')
+    await click('button', 'Clear filters')
+    await screenshot('purchase-cost-history')
+    // Exceptional override (authorised user).
+    await click('[data-testid=pc-override-open]')
+    await fill('#pc-ov-cost', '950')
+    await fill('#pc-ov-reason', 'Supplier credit note agreed')
+    await click('[data-testid=pc-override] button', 'Save override')
+    await waitFor(bodyHas('Last Purchase Cost overridden'), 'override saved')
+    const ov = rpcCalls('product_purchase_cost_override').at(-1).body
+    assert(ov.p_product_id === 'p1' && ov.p_cost === 950 && ov.p_reason === 'Supplier credit note agreed', JSON.stringify(ov))
+    await waitFor(`document.querySelector('[data-testid=pc-current]').innerText.includes('₹950.00')`, 'override shown')
+    await click('[data-testid=product-tab-overview]')
+    await waitFor(bodyHas('Basic Information'), 'overview tab')
+    // PO line: last cost and this supplier's previous price against the net PO price; significant change warned.
+    Object.assign(PC_HISTORY.current, JSON.parse(pcBackup).current)
+    await goto('/purchase-orders/po1/edit')
+    await waitFor(`document.querySelector('[data-testid=po-cost-compare]')?.innerText.includes('₹920.00') && !!document.querySelector('[data-testid=po-supplier-price]')`, 'PO cost comparison')
+    const cmp = await evaluate(`document.querySelector('[data-testid=po-cost-compare]').innerText`)
+    assert(cmp.includes('₹900.00') && cmp.includes('−₹20.00') && cmp.includes('−2.17%') && cmp.includes('Price decrease') && cmp.includes('₹870.00'), cmp)
+    assert((await evaluate(`document.querySelector('[data-testid=po-cost-compare]').dataset.warning`)) === 'false', 'a 2% change is not significant')
+    await fill(`[id$="-price"]`, '1200')
+    await waitFor(`document.querySelector('[data-testid=po-cost-compare]').dataset.trend === 'up' && !!document.querySelector('[data-testid=po-cost-warning]')`, 'significant increase warned (1080 vs 920)')
+    assert((await evaluate(`document.querySelector('[data-testid=po-cost-warning]').innerText`)).includes('17.39%'), 'warning text')
+    // Approved PO: comparison only.
+    await goto('/purchase-orders/po3')
+    await waitFor(`!!document.querySelector('[data-testid=po-line-last-cost]')`, 'approved PO comparison')
+    assert((await evaluate(`document.querySelector('[data-testid=po-line-last-cost]').innerText`)).includes('₹920'), 'approved PO line vs last cost')
+    // Settings.
+    await goto('/admin/erp-settings?tab=products')
+    await waitFor(`!!document.querySelector('[data-testid=purchase-cost-settings] #es-pc-zero')`, 'purchase cost settings')
+    assert(await evaluate(bodyHas('GRN posting')) && await evaluate(bodyHas('always kept')), 'fixed trigger and history shown')
+    await click('[data-testid=es-pc-dec]')
+    await fill('#es-pc-threshold', '15')
+    await choose('#es-pc-zero', 'Use zero only when the product has no cost yet')
+    await choose('#es-pc-override', 'Users who can manage ERP settings')
+    await click('button', 'Save settings')
+    await waitFor(bodyHas('Settings saved and recorded in the audit log.'), 'saved')
+    const s = rpcCalls('erp_settings_save').at(-1).body.p_settings
+    assert(s['product.purchase_cost_decrease_alerts'] === false && s['product.purchase_cost_alert_percent'] === 15 && s['product.purchase_cost_zero_policy'] === 'INITIAL_ONLY'
+      && s['product.purchase_cost_override_permission'] === 'settings.manage', JSON.stringify(s))
+  } finally {
+    const b = JSON.parse(pcBackup)
+    Object.assign(PC_HISTORY.current, b.current)
+    PC_EVENTS.splice(0, PC_EVENTS.length, ...b.events)
+    Object.assign(ERP_SETTINGS.settings, { 'product.purchase_cost_decrease_alerts': true, 'product.purchase_cost_alert_percent': 10, 'product.purchase_cost_zero_policy': 'IGNORE',
+      'product.purchase_cost_override_permission': 'purchase_exception.approve' })
+    await signOut()
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'manager signed in again')
+  }
 })
 
 await step('Missing Information bulk delete: Super Admin selects products, sees duplicates, confirms with DELETE PRODUCTS; used products are protected', async () => {
