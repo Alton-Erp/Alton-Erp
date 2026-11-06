@@ -2068,7 +2068,7 @@ const api = http.createServer((req, res) => {
       if (req.method === 'PATCH') {
         // The standard manufacturing cost of an edit is kept, so the list shows the saved value. Other fields are
         // not kept: later steps (purchase orders, GST previews, deactivation) use the original catalogue.
-        for (const field of ['standard_manufacturing_cost', 'mrp']) {
+        for (const field of ['standard_manufacturing_cost', 'mrp', 'base_unit']) {
           if (body && field in body) for (const p of filterRows(products, url.searchParams)) p[field] = body[field]
         }
         return send(res, 204, undefined, { 'Content-Range': '*/1' })
@@ -5324,6 +5324,60 @@ await step('Product Master columns: Product Name, SKU, Category, Cost, MRP, HSN,
   // A drill-down list (Missing Information) has the same columns.
   await goto('/products?drill=pm.incomplete')
   await waitFor(`!!document.querySelector('[data-testid=drill-banner]') && !!document.querySelector('td[data-col=cost]') && !!document.querySelector('td[data-col=mrp]') && !!document.querySelector('td[data-col=hsn]') && !!document.querySelector('td[data-col=gst]')`, 'columns in a drill-down list')
+})
+
+await step('Units of measurement: MTR, LTR and ROL are selectable, saved as codes, editable and shown after a reload', async () => {
+  const pickUnit = async (label) => {
+    await click('#p-unit')
+    await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.trim() === ${JSON.stringify(label)})`, `${label} option`)
+    await evaluate(`[...document.querySelectorAll('[role=option]')].find((o) => o.innerText.trim() === ${JSON.stringify(label)}).click()`)
+    await waitFor(`document.querySelector('#p-unit').innerText.includes(${JSON.stringify(label)})`, `${label} selected`)
+  }
+  await goto('/products/new')
+  await waitFor(`!!document.querySelector('#p-unit')`, 'form')
+  await click('#p-unit')
+  await waitFor(`document.querySelectorAll('[role=option]').length > 0`, 'unit options')
+  const options = await evaluate(`[...document.querySelectorAll('[role=option]')].map((o) => o.innerText.trim())`)
+  for (const label of ['Pieces (PCS)', 'Numbers (NOS)', 'Kilograms (KGS)', 'Grams (GMS)', 'Metric Tonnes (MTS)', 'Metres (MTR)', 'Litres (LTR)', 'Rolls (ROL)', 'Boxes (BOX)',
+    'Cartons (CTN)', 'Sets (SET)', 'Pairs (PRS)', 'Bundles (BDL)', 'Square Metres (SQM)', 'Cubic Metres (CBM)']) assert(options.includes(label), `${label} missing: ${options.join(' | ')}`)
+  await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' })
+  await sleep(300)
+  const created = []
+  for (const [name, label, code] of [['UOM Hose', 'Metres (MTR)', 'MTR'], ['UOM Oil', 'Litres (LTR)', 'LTR'], ['UOM Tape', 'Rolls (ROL)', 'ROL']]) {
+    // The mock API does not number SKUs like the database does, so each test product has one.
+    await goto('/products/new')
+    await waitFor(`!!document.querySelector('#p-unit')`, 'form')
+    await fill('#p-sku', `UOM-${code}`)
+    await fill('#p-product_name', name)
+    await click('#p-type')
+    await click('[role=option]', 'Raw Material')
+    await pickUnit(label)
+    const before = writes().length
+    await click('button[type=submit]', 'Save product')
+    await waitFor(`${bodyHas(' saved')} || ${bodyHas('Select a unit of measurement.')}`, `${code} saved`)
+    assert(!(await evaluate(bodyHas('Select a unit of measurement.'))), `${code}: "Select a unit of measurement." shown`)
+    assert(writes().length === before + 1 && writes().at(-1).body.base_unit === code, `${code} payload: ${JSON.stringify(writes().at(-1)?.body?.base_unit)}`)
+    created.push(products.find((p) => p.product_name === name))
+  }
+  const [hose, oil] = created
+  for (const [p, label, code] of [[hose, 'Litres (LTR)', 'LTR'], [oil, 'Rolls (ROL)', 'ROL']]) {
+    await goto(`/products/${p.id}/edit`)
+    await waitFor(`!!document.querySelector('#p-change-reason') && document.querySelector('#p-unit').innerText.includes(${JSON.stringify(p.base_unit)})`, `edit form shows ${p.base_unit}`)
+    await waitFor(`document.querySelector('[data-draft-status]')?.dataset.draftStatus !== 'loading'`, 'draft check')
+    await pickUnit(label)
+    await fill('#p-change-reason', 'Unit corrected')
+    const before = productPatches().length
+    await click('button[type=submit]', 'Save changes')
+    await waitFor(`location.pathname === '/products/${p.id}'`, `${code} change saved`)
+    const body = productPatches().at(-1).body
+    assert(productPatches().length === before + 1 && body.base_unit === code, JSON.stringify(body))
+    // Reload: the detail page and the edit form show the saved unit.
+    await goto(`/products/${p.id}`)
+    await waitFor(bodyHas(`${label.split(' (')[0]} (${code})`), `detail shows ${code}`)
+    await goto(`/products/${p.id}/edit`)
+    await waitFor(`!!document.querySelector('#p-unit') && document.querySelector('#p-unit').innerText.includes(${JSON.stringify(label)})`, `edit form shows ${code} after reload`)
+  }
+  await screenshot('160-product-unit-rol')
 })
 
 await step('Purchase cost intelligence: Product Master columns, history with filters and override, PO comparison with warning, settings', async () => {

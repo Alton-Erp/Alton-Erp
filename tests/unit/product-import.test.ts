@@ -46,8 +46,11 @@ describe('value parsing', () => {
   it('normalises units and decimals', () => {
     assert.equal(findUnit('pcs'), 'PCS')
     assert.equal(findUnit('Nos.'), 'NOS')
-    assert.equal(findUnit('Kgs'), 'KG')
-    assert.equal(findUnit('litre'), 'L')
+    assert.equal(findUnit('Kgs'), 'KGS')
+    assert.equal(findUnit('Kilograms'), 'KGS')
+    assert.equal(findUnit('KG'), 'KG', 'an exact older code is kept')
+    assert.equal(findUnit('litre'), 'LTR')
+    assert.equal(findUnit('Rolls'), 'ROL')
     assert.equal(findUnit('bucket'), null)
     assert.equal(parseDecimal('1,500.50', 2), 1500.5)
     assert.equal(parseDecimal('₹ 99', 2), 99)

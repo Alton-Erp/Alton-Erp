@@ -324,7 +324,7 @@ export default function ProductImportPage() {
             ['SKU', 'Optional for new products: leave blank to get the next code for the type (FG-000001, RM-000001 …). Needed to update existing products.'],
             ['Product Type', Object.values(PRODUCT_TYPE_LABELS).join(', ')],
             ['Source Type', `${Object.values(SOURCE_TYPE_LABELS).join(', ')}. Optional: finished goods, subassemblies and components default to In-House, others to Outsourced.`],
-            ['Unit', `${UNITS.map((u) => u.code).join(', ')}. Optional: PCS when blank.`],
+            ['Unit', `${UNITS.map((u) => u.code).join(', ')} (names such as Litres or Rolls also work). Optional: PCS when blank. An existing product keeps its unit code when the file names the same unit.`],
             ['Category', `Name or code of an active category: ${(categories.data ?? []).filter((c) => c.is_active).map((c) => c.name).join(', ')}`],
             ['HSN Code', '4, 6 or 8 digits (optional)'],
             ['GST Rate', `Percentage 0–100 (optional). Common rates: ${STANDARD_GST_RATES.join(', ')}`],

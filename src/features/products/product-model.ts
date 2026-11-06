@@ -81,24 +81,100 @@ export const SOURCE_TYPE_DESCRIPTIONS: Record<SourceType, string> = {
 export const PRODUCT_STATUSES = ['ACTIVE', 'INACTIVE'] as const
 export type ProductStatus = (typeof PRODUCT_STATUSES)[number]
 
-export const UNITS: { code: string; label: string; aliases: string[] }[] = [
+export interface UnitDefinition { code: string; label: string; aliases: string[] }
+
+/**
+ * Standard units of measurement, in the order the Product Master offers them.
+ * The code is what is stored in products.base_unit (the database only requires
+ * 1-10 capital letters); the label is for display only and never validated.
+ */
+export const STANDARD_UNITS: UnitDefinition[] = [
   { code: 'PCS', label: 'Pieces', aliases: ['PC', 'PIECE', 'PIECES', 'NO', 'NUMBER'] },
   { code: 'NOS', label: 'Numbers', aliases: ['NUMBERS'] },
-  { code: 'SET', label: 'Sets', aliases: ['SETS'] },
-  { code: 'PAIR', label: 'Pairs', aliases: ['PAIRS', 'PR'] },
+  { code: 'KGS', label: 'Kilograms', aliases: ['KILO', 'KILOS', 'KILOGRAM', 'KILOGRAMS'] },
+  { code: 'GMS', label: 'Grams', aliases: ['GM', 'GRM', 'GRAM', 'GRAMS'] },
+  { code: 'MTS', label: 'Metric Tonnes', aliases: ['TON', 'TONS', 'TONNE', 'TONNES', 'METRICTONNE', 'METRICTON', 'METRICTONS'] },
+  { code: 'MTR', label: 'Metres', aliases: ['MTRS', 'METRE', 'METRES', 'METER', 'METERS'] },
+  { code: 'LTR', label: 'Litres', aliases: ['LTRS', 'LITRE', 'LITRES', 'LITER', 'LITERS'] },
+  { code: 'ROL', label: 'Rolls', aliases: ['RL', 'ROLLS'] },
   { code: 'BOX', label: 'Boxes', aliases: ['BOXES'] },
   { code: 'CTN', label: 'Cartons', aliases: ['CARTON', 'CARTONS'] },
+  { code: 'SET', label: 'Sets', aliases: ['SETS'] },
+  { code: 'PRS', label: 'Pairs', aliases: ['PR', 'PAIRS'] },
+  { code: 'BDL', label: 'Bundles', aliases: ['BUNDLE', 'BUNDLES'] },
+  { code: 'SQM', label: 'Square Metres', aliases: ['SQMT', 'M2', 'SQUAREMETRE', 'SQUAREMETER', 'SQUAREMETERS'] },
+  { code: 'CBM', label: 'Cubic Metres', aliases: ['M3', 'CUM', 'CUBICMETRE', 'CUBICMETER', 'CUBICMETERS'] },
+]
+
+/** Other supported units, offered when the company's unit list (ERP Settings → Products) includes them. */
+export const EXTRA_UNITS: UnitDefinition[] = [
   { code: 'BAG', label: 'Bags', aliases: ['BAGS'] },
-  { code: 'ROLL', label: 'Rolls', aliases: ['ROLLS'] },
-  { code: 'KG', label: 'Kilograms', aliases: ['KGS', 'KILOGRAM', 'KILOGRAMS'] },
-  { code: 'G', label: 'Grams', aliases: ['GM', 'GMS', 'GRAM', 'GRAMS'] },
-  { code: 'MT', label: 'Metric tonnes', aliases: ['TON', 'TONNE', 'TONNES'] },
-  { code: 'L', label: 'Litres', aliases: ['LTR', 'LITRE', 'LITRES', 'LITER', 'LITERS'] },
   { code: 'ML', label: 'Millilitres', aliases: ['MILLILITRE', 'MILLILITRES'] },
-  { code: 'M', label: 'Metres', aliases: ['MTR', 'METRE', 'METRES', 'METER', 'METERS'] },
-  { code: 'SQM', label: 'Square metres', aliases: ['SQMT', 'M2'] },
   { code: 'SQFT', label: 'Square feet', aliases: ['SFT'] },
 ]
+
+/** Every unit a new product can be given. */
+export const UNITS: UnitDefinition[] = [...STANDARD_UNITS, ...EXTRA_UNITS]
+
+/**
+ * Earlier codes for the same units. Products saved with them keep them (no
+ * conversion; stock and history stay as they are). They stay valid and are
+ * shown in the dropdown only for a product that already uses one.
+ */
+export const LEGACY_UNITS: (UnitDefinition & { standard: string })[] = [
+  { code: 'KG', label: 'Kilograms', aliases: [], standard: 'KGS' },
+  { code: 'G', label: 'Grams', aliases: [], standard: 'GMS' },
+  { code: 'MT', label: 'Metric Tonnes', aliases: [], standard: 'MTS' },
+  { code: 'L', label: 'Litres', aliases: [], standard: 'LTR' },
+  { code: 'M', label: 'Metres', aliases: [], standard: 'MTR' },
+  { code: 'PAIR', label: 'Pairs', aliases: [], standard: 'PRS' },
+  { code: 'ROLL', label: 'Rolls', aliases: [], standard: 'ROL' },
+]
+
+const unitCode = (value: string | null | undefined) => (value ?? '').trim().toUpperCase()
+const definitionOf = (code: string) => UNITS.find((u) => u.code === code) ?? LEGACY_UNITS.find((u) => u.code === code)
+
+/** True for a standard, extra or legacy unit code. */
+export const isKnownUnit = (value: string | null | undefined): boolean => definitionOf(unitCode(value)) !== undefined
+
+/** "Litres" for LTR (and for the older L); the code itself when unknown. */
+export const unitLabel = (value: string | null | undefined): string => definitionOf(unitCode(value))?.label ?? unitCode(value)
+
+/** "Litres (LTR)": the dropdown label. */
+export function unitOptionLabel(value: string): string {
+  const code = unitCode(value)
+  const def = definitionOf(code)
+  return def ? `${def.label} (${code})` : code
+}
+
+/** The same unit under its current or an older code (KG and KGS, L and LTR). */
+export function sameUnit(a: string | null | undefined, b: string | null | undefined): boolean {
+  const family = (v: string | null | undefined) => {
+    const code = unitCode(v)
+    return LEGACY_UNITS.find((u) => u.code === code)?.standard ?? code
+  }
+  return unitCode(a) !== '' && family(a) === family(b)
+}
+
+/**
+ * Unit codes offered in the Product Master: the standard units, then the
+ * company's other units from ERP Settings (all supported units when none are
+ * set; older duplicate codes such as KG or LTR's L are left out), then the
+ * product's own current unit so it always shows.
+ */
+export function productUnitOptions(settingsUnits: readonly string[] | null | undefined, current: readonly (string | null | undefined)[] = []): string[] {
+  const out = STANDARD_UNITS.map((u) => u.code)
+  const configured = settingsUnits?.length ? settingsUnits : EXTRA_UNITS.map((u) => u.code)
+  for (const raw of configured) {
+    const code = unitCode(raw)
+    if (code && /^[A-Z]{1,10}$/.test(code) && !out.includes(code) && !LEGACY_UNITS.some((u) => u.code === code)) out.push(code)
+  }
+  for (const raw of current) {
+    const code = unitCode(raw)
+    if (code && !out.includes(code)) out.push(code)
+  }
+  return out
+}
 
 /**
  * GST rates in common use. A rate outside this list is allowed (rates change
@@ -219,10 +295,16 @@ export function looseSkuKey(sku: string): string {
   return skuKey(sku).replace(/[^\p{L}\p{N}]+/gu, '')
 }
 
+/**
+ * Unit code for a typed unit (Excel import). An exact code is kept as it is,
+ * older codes included (KG stays KG); a name or alias gives the standard code
+ * ("Litres" and "ltrs" give LTR, "Rolls" gives ROL). Null when unrecognised.
+ */
 export function findUnit(value: string): string | null {
   const key = value.trim().toUpperCase().replace(/[.\s]/g, '')
   if (!key) return null
-  const unit = UNITS.find((u) => u.code === key || u.label.toUpperCase().replace(/\s/g, '') === key || u.aliases.includes(key))
+  if (isKnownUnit(key)) return key
+  const unit = UNITS.find((u) => u.label.toUpperCase().replace(/\s/g, '') === key || u.aliases.includes(key))
   return unit?.code ?? null
 }
 

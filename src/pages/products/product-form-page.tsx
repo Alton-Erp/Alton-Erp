@@ -25,8 +25,9 @@ import {
   SOURCE_TYPES,
   SOURCE_TYPE_DESCRIPTIONS,
   SOURCE_TYPE_LABELS,
-  UNITS,
   defaultSourceFor,
+  productUnitOptions,
+  unitOptionLabel,
   type ProductInput,
 } from '@/features/products/product-model'
 import { useErpPreferences } from '@/features/management/erp-preferences'
@@ -149,7 +150,6 @@ function ProductForm({ existing, categories, suppliers }: { existing: ProductRow
 
   // ERP Settings → Products: units offered, default GST rate and HSN suggestions for new products.
   const { prefs } = useErpPreferences()
-  const unitCodes = prefs?.['product.units']?.length ? prefs['product.units'] : UNITS.map((u) => u.code)
   const hsnCodes = prefs?.['product.hsn_codes'] ?? []
   const groupHeadOptions = useAsync(() => fetchGroupHeadOptions().catch(() => []), [])
   const groupHeads = groupHeadOptions.data ?? []
@@ -173,7 +173,9 @@ function ProductForm({ existing, categories, suppliers }: { existing: ProductRow
     onRestore: (d) => setValues((v) => ({ ...v, ...d })),
   })
 
-  const validation = validateProduct(values)
+  // Unit codes offered: the standard units, the company's other units and the product's saved unit.
+  const unitCodes = productUnitOptions(prefs?.['product.units'], [existing?.base_unit, values.base_unit])
+  const validation = validateProduct(values, { units: unitCodes })
   const errors = submitted ? validation.errors : {}
   const canChangeStatus = existing ? has('products.archive') : true
 
@@ -208,7 +210,7 @@ function ProductForm({ existing, categories, suppliers }: { existing: ProductRow
       let sku = input.sku ?? ''
       if (existing) {
         // Send only fields whose normalised value changed.
-        const before = validateProduct(toFormValues(existing)).input
+        const before = validateProduct(toFormValues(existing), { units: [existing.base_unit] }).input
         const changes: Partial<ProductInput> = {}
         for (const key of Object.keys(input) as (keyof ProductInput)[]) {
           if (!before || input[key] !== before[key]) (changes as Record<string, unknown>)[key] = input[key]
@@ -387,15 +389,13 @@ function ProductForm({ existing, categories, suppliers }: { existing: ProductRow
               </Select>
             </Field>
             <Field label="Unit of Measurement" htmlFor="p-unit" error={errors.base_unit}>
-              <Select value={values.base_unit} onValueChange={(v) => set('base_unit', v)}>
-                <SelectTrigger id="p-unit">
-                  <SelectValue />
+              <Select value={values.base_unit} onValueChange={(v) => { if (v) set('base_unit', v) }}>
+                <SelectTrigger id="p-unit" data-testid="p-unit" aria-invalid={Boolean(errors.base_unit)}>
+                  <SelectValue placeholder="Select a unit" />
                 </SelectTrigger>
                 <SelectContent>
-                  {[...new Set([...unitCodes, ...(values.base_unit ? [values.base_unit] : [])])].map((code) => (
-                    <SelectItem key={code} value={code}>
-                      {code}{UNITS.find((u) => u.code === code) ? ` — ${UNITS.find((u) => u.code === code)!.label}` : ''}
-                    </SelectItem>
+                  {unitCodes.map((code) => (
+                    <SelectItem key={code} value={code}>{unitOptionLabel(code)}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>

@@ -30,6 +30,7 @@ import {
   cleanSku,
   defaultSourceFor,
   findUnit,
+  sameUnit,
   looseSkuKey,
   normalizeEan,
   parseProductType,
@@ -548,9 +549,11 @@ export function validateImportRows(
 
     const rawUnit = val('unit')
     if (rawUnit) {
-      const u = findUnit(rawUnit)
+      // The stored code is kept when the file names the same unit (KG and Kilograms, L and LTR): no conversion, no change.
+      const saved = existing?.values.base_unit ?? ''
+      const u = findUnit(rawUnit) ?? (saved && rawUnit.trim().toUpperCase() === saved ? saved : null)
       if (!u) errors.push(`Unit "${rawUnit}" is not recognised.`)
-      else { values.base_unit = u; provided.add('base_unit') }
+      else { values.base_unit = existing && sameUnit(u, saved) ? saved : u; provided.add('base_unit') }
     }
 
     const rawCategory = val('category')
@@ -586,7 +589,7 @@ export function validateImportRows(
       }
     }
 
-    const validation = validateProduct(values)
+    const validation = validateProduct(values, { units: [existing?.values.base_unit] })
     for (const [field, message] of Object.entries(validation.errors)) {
       // Type/source/unit problems were already reported with the raw value.
       if (field === 'product_type' && (rawType || !existing)) continue
@@ -622,7 +625,7 @@ export function validateImportRows(
     let compared: FieldComparison[] | undefined
     let input: ProductInput | null = validation.input
     if (existing && validation.input) {
-      const before = validateProduct(existing.values).input
+      const before = validateProduct(existing.values, { units: [existing.values.base_unit] }).input
       compared = []
       const update: Partial<ProductInput> = {}
       for (const field of (byOther ? ['sku', ...UPDATABLE] : UPDATABLE) as (keyof ProductInput)[]) {

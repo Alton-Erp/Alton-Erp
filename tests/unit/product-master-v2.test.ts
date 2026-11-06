@@ -44,8 +44,9 @@ describe('product types (V2)', () => {
 })
 
 describe('incomplete products are accepted', () => {
-  it('only name and type are required; SKU, source and unit default', () => {
-    const r = validateProduct({ ...EMPTY_PRODUCT_FORM, product_name: 'Wall-hung WC', product_type: 'FINISHED_GOOD', base_unit: '' })
+  it('only name and type are required; SKU and source default, the unit starts as PCS (a blank unit is rejected)', () => {
+    assert.equal(validateProduct({ ...EMPTY_PRODUCT_FORM, product_name: 'Wall-hung WC', product_type: 'FINISHED_GOOD', base_unit: '' }).errors.base_unit, 'Select a unit of measurement.')
+    const r = validateProduct({ ...EMPTY_PRODUCT_FORM, product_name: 'Wall-hung WC', product_type: 'FINISHED_GOOD' })
     assert.deepEqual(r.errors, {})
     assert.equal(r.input?.sku, null)
     assert.equal(r.input?.default_source_type, 'IN_HOUSE')

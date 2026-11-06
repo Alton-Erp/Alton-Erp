@@ -14,7 +14,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { ProductSourceBadge, ProductStatusBadge } from '@/features/products/product-badges'
 import { productGaps } from '@/features/products/product-completeness'
 import { PurchaseCostHistoryTab } from '@/features/products/purchase-cost-history'
-import { BOM_OUTPUT_TYPES, PRODUCT_TYPE_LABELS, SOURCE_TYPE_DESCRIPTIONS, UNITS } from '@/features/products/product-model'
+import { BOM_OUTPUT_TYPES, PRODUCT_TYPE_LABELS, SOURCE_TYPE_DESCRIPTIONS, unitLabel } from '@/features/products/product-model'
 import { useAsync } from '@/hooks/use-async'
 import { cn } from '@/lib/utils'
 import { describeDataError } from '@/lib/errors'
@@ -87,7 +87,7 @@ export default function ProductDetailPage() {
   const draftBom = boms?.versions.find((v) => v.status === 'DRAFT' || v.status === 'REJECTED' || v.status === 'PENDING_APPROVAL') ?? null
   const gaps = archived ? [] : productGaps(p, boms ? Boolean(activeBom) : undefined)
   const canHaveBom = BOM_OUTPUT_TYPES.includes(p.product_type)
-  const unitLabel = UNITS.find((u) => u.code === p.base_unit)?.label ?? p.base_unit
+  const unitName = unitLabel(p.base_unit)
   const name = (id: string | null) => (id ? (names.get(id) ?? 'Another user') : 'System')
   const money = (v: number | null | undefined) => (v === null || v === undefined ? null : formatCurrency(Number(v)))
 
@@ -215,7 +215,7 @@ export default function ProductDetailPage() {
 
           <InfoCard title="Classification">
             <Item label="Product Type">{PRODUCT_TYPE_LABELS[p.product_type]}</Item>
-            <Item label="Unit of Measurement">{`${p.base_unit} — ${unitLabel}`}</Item>
+            <Item label="Unit of Measurement">{unitName === p.base_unit ? p.base_unit : `${unitName} (${p.base_unit})`}</Item>
             <Item label="Group Head">{p.group_head}</Item>
             <Item label="Default Source Type">
               <ProductSourceBadge source={p.default_source_type} />

@@ -6,9 +6,9 @@ import {
   BARCODE_RE,
   HSN_RE,
   STANDARD_GST_RATES,
-  UNITS,
   defaultSourceFor,
   eanProblem,
+  isKnownUnit,
   normalizeEan,
   parseDecimal,
   type ProductInput,
@@ -120,7 +120,12 @@ export const MAX_DIMENSION_CM = 100000
 const text = (v: string) => (v.trim() === '' ? null : v.trim())
 const rupees = (n: number) => `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
-export function validateProduct(values: ProductFormValues): ValidationResult {
+export interface ProductValidationOptions {
+  /** Further unit codes accepted besides the known ones: the company list from ERP Settings and the product's saved unit. */
+  units?: readonly (string | null | undefined)[]
+}
+
+export function validateProduct(values: ProductFormValues, options: ProductValidationOptions = {}): ValidationResult {
   const errors: ValidationResult['errors'] = {}
   const warnings: string[] = []
 
@@ -152,10 +157,14 @@ export function validateProduct(values: ProductFormValues): ValidationResult {
   if (groupHead.length > 100) errors.group_head = 'Keep the group head under 100 characters.'
 
   if (!values.product_type) errors.product_type = 'Select a product type.'
-  // Source type and unit are optional: they default from the product type and to PCS.
+  // Source type is optional: it defaults from the product type.
   const sourceType: SourceType | '' = values.default_source_type || (values.product_type ? defaultSourceFor(values.product_type) : '')
-  const unit = values.base_unit || 'PCS'
-  if (!UNITS.some((u) => u.code === unit)) errors.base_unit = 'Select a unit of measurement.'
+  // Unit: the stored code (PCS, MTR, LTR, ROL …), never the display label. Required; new products start with PCS.
+  const unit = values.base_unit.trim().toUpperCase()
+  if (!unit) errors.base_unit = 'Select a unit of measurement.'
+  else if (!isKnownUnit(unit) && !options.units?.some((u) => (u ?? '').trim().toUpperCase() === unit)) {
+    errors.base_unit = `${unit} is not a recognised unit of measurement. Choose one from the list.`
+  } else if (!/^[A-Z]{1,10}$/.test(unit)) errors.base_unit = 'A unit code has 1 to 10 letters (A–Z).'
 
   if (values.track_expiry && !values.track_batches) errors.track_expiry = 'Expiry tracking requires batch tracking.'
 

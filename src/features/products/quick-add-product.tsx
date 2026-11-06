@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { PRODUCT_TYPE_LABELS, PRODUCT_TYPES, UNITS, defaultSourceFor, type ProductType } from '@/features/products/product-model'
+import { PRODUCT_TYPE_LABELS, PRODUCT_TYPES, UNITS, defaultSourceFor, unitOptionLabel, type ProductType } from '@/features/products/product-model'
 import { EMPTY_PRODUCT_FORM, validateProduct } from '@/features/products/product-validation'
 import { describeDataError } from '@/lib/errors'
 import { createProduct } from '@/services/products'
@@ -70,7 +70,7 @@ export function QuickAddProductDialog({ initialSku = '', initialName = '', onClo
           <div className="space-y-1"><Label htmlFor="qp-unit">Unit</Label>
             <Select value={unit} onValueChange={(v) => { if (v) setUnit(v) }}>
               <SelectTrigger id="qp-unit"><SelectValue /></SelectTrigger>
-              <SelectContent>{UNITS.map((u) => <SelectItem key={u.code} value={u.code}>{u.code} — {u.label}</SelectItem>)}</SelectContent>
+              <SelectContent>{UNITS.map((u) => <SelectItem key={u.code} value={u.code}>{unitOptionLabel(u.code)}</SelectItem>)}</SelectContent>
             </Select></div>
           <div className="space-y-1"><Label htmlFor="qp-price">Selling price (₹)</Label><Input id="qp-price" inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} /></div>
           <div className="space-y-1"><Label htmlFor="qp-gst">GST %</Label><Input id="qp-gst" inputMode="decimal" value={gst} onChange={(e) => setGst(e.target.value)} /></div>

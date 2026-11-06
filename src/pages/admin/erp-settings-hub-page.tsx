@@ -243,7 +243,7 @@ function SettingsForm({ tab, data, onSaved }: { tab: Tab; data: ErpSettings; onS
             </CardContent></Card>
           <Card><CardHeader><div><CardTitle>Units, HSN codes and GST</CardTitle><CardDescription>Offered when creating products. Each product keeps its own unit, HSN and GST rate.</CardDescription></div></CardHeader>
             <CardContent className="grid gap-4 sm:grid-cols-2">
-              <Field label="Units of measurement" htmlFor="es-units" hint="Comma-separated codes; PCS, NOS, SET and PAIR are counted in whole pieces">
+              <Field label="Additional units of measurement" htmlFor="es-units" hint="Comma-separated codes, offered besides the standard units (PCS, NOS, KGS, GMS, MTS, MTR, LTR, ROL, BOX, CTN, SET, PRS, BDL, SQM, CBM). PCS, NOS, SET and PAIR are counted in whole pieces.">
                 <Input id="es-units" value={sv('product.units').join(', ')} onChange={(e) => setSetting('product.units', e.target.value.toUpperCase().split(/[,\s]+/).filter(Boolean))} /></Field>
               <Field label="Default GST rate for new products (%)" htmlFor="es-gst" hint="GST rates offered on invoices are set under Invoices">
                 <Input id="es-gst" inputMode="decimal" value={String(sv('product.default_gst_rate'))} onChange={(e) => setSetting('product.default_gst_rate', Number(e.target.value) || 0)} /></Field>
