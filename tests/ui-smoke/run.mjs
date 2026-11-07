@@ -2917,42 +2917,152 @@ await step('receipt: barcode scan selects product; review step; one posting with
   assert(b.p_product_id === 'p1' && b.p_location_id === 'l1' && b.p_quantity === 5 && b.p_source_type === 'IN_HOUSE' && b.p_unit_cost === null, JSON.stringify(b))
 })
 
-await step('opening stock: manual lines are submitted for approval (not posted)', async () => {
-  await goto('/inventory/opening-stock')
-  await waitFor(bodyHas('OS-000002'), 'opening list')
-  await click('button', 'Enter opening stock')
-  await waitFor(`document.querySelector('#os-product')`, 'entry dialog')
-  await fill('#os-product', 'MOCK')
-  await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('MOCK-WC-1'))`, 'search results')
-  await click('[role=option]', 'MOCK-WC-1')
-  await choose('#os-src', 'In-House')
-  await fill('#os-qty', '7')
-  await fill('#os-cost', '450')
-  await click('[role=dialog] button', 'Add line')
-  await waitFor(bodyHas('Review 1 line(s)'), 'line added')
-  await click('[role=dialog] button', 'Review 1 line(s)')
-  await click('[role=dialog] button', 'Submit for approval')
-  await waitFor(bodyHas('OS-000009 submitted'), 'submitted')
-  const b = rpcCalls('inventory_submit_opening_stock').at(-1).body
-  assert(b.p_source === 'MANUAL' && b.p_lines.length === 1, JSON.stringify(b))
-  assert(b.p_lines[0].quantity === 7 && b.p_lines[0].source_type === 'IN_HOUSE' && b.p_lines[0].unit_cost === 450 && b.p_lines[0].location_id === 'l1', JSON.stringify(b.p_lines[0]))
-  assert(!requests.some((r) => r.path.includes('review_opening')), 'auto-approved')
+await step('opening stock: no source field; add, review, edit and remove lines; incomplete lines explained; existing balances caught; draft survives refresh; one submission', async () => {
+  const reviewBtn = `document.querySelector('[data-testid=opening-review]')`
+  const lineCount = `document.querySelectorAll('[data-testid=opening-line]').length`
+  const pickProduct = async (term, sku) => {
+    await fill('#os-product', term)
+    await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes(${JSON.stringify(sku)}))`, `search results for ${sku}`)
+    await click('[role=option]', sku)
+  }
+  const openEntry = async () => {
+    await goto('/inventory/opening-stock')
+    await waitFor(bodyHas('OS-000002'), 'opening list')
+    await click('button', 'Enter opening stock')
+    await waitFor(`document.querySelector('#os-product') || document.querySelector('[data-testid=opening-confirm]')`, 'entry dialog')
+    await waitFor(`document.querySelector('[role=dialog] [data-draft-status]')?.dataset.draftStatus !== 'loading'`, 'draft check')
+  }
+  const existingLine = { id: 'osl-existing', company_id: COMPANY_ID, opening_batch_id: 'ob2', line_no: 1, product_id: 'p3', warehouse_id: 'w1', location_id: 'l1',
+    source_type: 'UNKNOWN', batch_number: null, quantity: 4, unit_cost: null, effective_date: TODAY, status: 'PENDING_APPROVAL' }
+  try {
+    await openEntry()
+    // 4. No "Actual source" dropdown; the fields are in the requested order.
+    const labels = await evaluate(`[...document.querySelectorAll('[role=dialog] label')].map((l) => l.innerText.trim())`)
+    assert(!(await evaluate(`!!document.querySelector('#os-src')`)) && !labels.some((l) => /source/i.test(l)) && !(await evaluate(`/actual source/i.test(document.querySelector('[role=dialog]').innerText)`)), 'source field still shown: ' + JSON.stringify(labels))
+    const want = ['Product', 'Warehouse / location', 'Quantity', 'Unit cost (₹, optional)', 'Effective date', 'Reference (optional, e.g. count sheet no.)']
+    assert(JSON.stringify(labels) === JSON.stringify(want), JSON.stringify(labels))
+    assert(await evaluate(`${reviewBtn}.disabled && ${reviewBtn}.innerText.includes('Review 0 line(s)')`), 'Review must be disabled with no lines')
+    await screenshot('170-opening-entry-no-source')
+
+    // 8. An incomplete line is explained next to the buttons, not ignored.
+    await pickProduct('MOCK', 'MOCK-WC-1')
+    assert(await evaluate(`!${reviewBtn}.disabled`), 'Review should respond once a line is being entered')
+    await click('[data-testid=opening-review]')
+    await waitFor(`document.querySelector('[data-testid=opening-entry-error]')?.innerText.includes('Enter the quantity')`, 'incomplete line explained')
+    assert(await evaluate(`!!document.querySelector('#os-qty') && ${lineCount} === 0`), 'left the entry step')
+    await fill('#os-qty', '0')
+    await click('[role=dialog] button', 'Add line')
+    await waitFor(`document.querySelector('[data-testid=opening-entry-error]')?.innerText.includes('greater than zero')`, 'zero quantity explained')
+
+    // 5. One line is added.
+    await fill('#os-qty', '7')
+    await fill('#os-cost', '450')
+    await fill('#os-ref', 'CS-17')
+    await waitFor(`${reviewBtn}.innerText.includes('Review 1 line(s)')`, 'count includes the completed line being typed')
+    await click('[role=dialog] button', 'Add line')
+    await waitFor(`${lineCount} === 1 && !document.querySelector('[data-testid=opening-entry-error]')`, 'line added')
+    assert(await evaluate(`document.querySelector('[data-testid=opening-line]').innerText.includes('CS-17')`), 'reference not shown on the line')
+    // The same product, location and batch twice is refused.
+    await pickProduct('MOCK', 'MOCK-WC-1')
+    await fill('#os-qty', '1')
+    await click('[role=dialog] button', 'Add line')
+    await waitFor(`document.querySelector('[data-testid=opening-entry-error]')?.innerText.includes('already in the list')`, 'duplicate in the list refused')
+
+    // 6, 7. A second product typed but not added: Review takes it and opens the review screen.
+    await click('[role=dialog] button[aria-label="Change product"]')
+    await waitFor(`document.querySelector('#os-product')?.tagName === 'INPUT'`, 'product cleared')
+    await fill('#os-qty', '')
+    await pickProduct('CLAY', 'MOCK-CLAY')
+    await fill('#os-qty', '2.5')
+    await waitFor(`${reviewBtn}.innerText.includes('Review 2 line(s)')`, 'two lines counted')
+    await click('[data-testid=opening-review]')
+    await waitFor(`!!document.querySelector('[data-testid=opening-confirm]') && ${lineCount} === 2`, 'review screen with both lines')
+    assert(!(await evaluate(`/source|in-house|outsourced/i.test(document.querySelector('[data-testid=opening-lines]').innerText)`)), 'source shown on the review screen')
+    await screenshot('171-opening-review')
+
+    // 9. Remove and edit from the review screen; entered lines are kept.
+    await click('[aria-label="Remove line 2"]')
+    await waitFor(`${lineCount} === 1 && !!document.querySelector('[data-testid=opening-confirm]')`, 'line removed on review')
+    await click('[aria-label="Edit line 1"]')
+    await waitFor(`document.querySelector('#os-qty')?.value === '7' && document.querySelector('#os-cost').value === '450' && document.querySelector('#os-ref').value === 'CS-17' && ${lineCount} === 0`, 'line back in the form for editing')
+    await fill('#os-qty', '8')
+    await click('[role=dialog] button', 'Add line')
+    await pickProduct('CLAY', 'MOCK-CLAY')
+    await fill('#os-qty', '2.5')
+    await click('[role=dialog] button', 'Add line')
+    await waitFor(`${lineCount} === 2`, 'two lines again')
+
+    // An opening balance already recorded for that product and location (with any source) is caught before review.
+    tables.inventory_opening_lines.push(existingLine)
+    await click('[data-testid=opening-review]')
+    await waitFor(`document.querySelector('[data-testid=opening-line-error]')?.innerText.includes('already exists (OS-000002)')`, 'existing opening balance caught')
+    assert(await evaluate(`!document.querySelector('[data-testid=opening-confirm]') && document.querySelector('[data-testid=opening-entry-error]').innerText.includes('1 line(s) cannot be recorded')`), 'went on to review')
+    await click('[aria-label="Remove line 2"]')
+    await click('[data-testid=opening-review]')
+    await waitFor(`!!document.querySelector('[data-testid=opening-confirm]')`, 'review after removing the problem line')
+
+    // 11. Refreshing keeps the draft, including the review step and its lines.
+    await waitFor(`document.querySelector('[role=dialog] [data-draft-status]')?.dataset.draftStatus === 'saved'`, 'draft saved', 8000)
+    await cdp('Page.reload')
+    await sleep(300)
+    await openEntry()
+    await waitFor(`!!document.querySelector('[data-testid=opening-confirm]') && ${lineCount} === 1 && document.querySelector('[data-testid=opening-line]').innerText.includes('MOCK-WC-1')`, 'draft restored after refresh')
+
+    // 10. Confirming sends the right quantities once, with the source derived from the product, never UNKNOWN.
+    const before = rpcCalls('inventory_submit_opening_stock').length
+    await evaluate(`(() => { const b = document.querySelector('[data-testid=opening-confirm]'); b.click(); b.click() })()`)
+    await waitFor(bodyHas('OS-000009 submitted'), 'submitted')
+    await sleep(300)
+    const calls = rpcCalls('inventory_submit_opening_stock').slice(before)
+    assert(calls.length === 1, `double click sent ${calls.length} submissions`)
+    const b = calls[0].body
+    assert(b.p_source === 'MANUAL' && b.p_lines.length === 1 && /^[0-9a-f-]{36}$/.test(b.p_idempotency_key), JSON.stringify(b))
+    const l = b.p_lines[0]
+    assert(l.product_id === 'p1' && l.quantity === 8 && l.source_type === 'IN_HOUSE' && l.unit_cost === 450 && l.location_id === 'l1' && l.reference === 'CS-17' && l.effective_date === TODAY, JSON.stringify(l))
+    assert(!requests.some((r) => r.path.includes('review_opening')), 'auto-approved')
+    // 12. Entering opening stock posts nothing else: no other stock workflow was called.
+    assert(!requests.slice(-60).some((r) => /goods_receipt|production|transfer|adjustment/.test(r.path) && r.method !== 'GET'), 'another stock workflow was called')
+  } finally {
+    const i = tables.inventory_opening_lines.indexOf(existingLine)
+    if (i >= 0) tables.inventory_opening_lines.splice(i, 1)
+  }
 })
 
 const csvPath = path.join(outDir, 'opening-test.csv')
 writeFileSync(csvPath, 'SKU,Warehouse,Location,Source,Qty,Unit Cost\nMOCK-WC-1,MAIN,BIN-1,In House,3,450\nNOPE-1,MAIN,,In House,2,\nMOCK-WC-1,MAIN,BIN-1,Factory,1,\n')
+const csvNoSource = path.join(outDir, 'opening-test-no-source.csv')
+writeFileSync(csvNoSource, 'SKU,Warehouse,Location,Quantity,Unit Cost,Reference\nMOCK-WC-1,MAIN,BIN-1,3,450,CS-1\n')
 
-await step('opening stock import: rejected rows listed, only accepted rows staged after confirmation', async () => {
-  await goto('/inventory/opening-stock/import')
-  await waitFor(`document.querySelector('input[type=file]')`, 'upload')
-  const { root: doc } = await cdp('DOM.getDocument')
-  const { nodeId } = await cdp('DOM.querySelector', { nodeId: doc.nodeId, selector: 'input[type=file]' })
-  await cdp('DOM.setFileInputFiles', { nodeId, files: [csvPath] })
-  await waitFor(bodyHas('Column mapping'), 'mapping')
+await step('opening stock import: no Source mapping; an old Source column is ignored; rejected rows listed, only accepted rows staged', async () => {
+  const upload = async (file) => {
+    await goto('/inventory/opening-stock/import')
+    await waitFor(`document.querySelector('input[type=file]')`, 'upload')
+    const { root: doc } = await cdp('DOM.getDocument')
+    const { nodeId } = await cdp('DOM.querySelector', { nodeId: doc.nodeId, selector: 'input[type=file]' })
+    await cdp('DOM.setFileInputFiles', { nodeId, files: [file] })
+    await waitFor(bodyHas('Column mapping'), 'mapping')
+  }
+  const mappingLabels = `[...document.querySelectorAll('label[for^=om-]')].map((l) => l.innerText.replace('*', '').trim())`
+  // 1, 3. A file without a Source column maps with nothing missing, and the mapping screen has no Source field.
+  await upload(csvNoSource)
+  const labels = await evaluate(mappingLabels)
+  assert(!labels.includes('Source') && !(await evaluate(`!!document.querySelector('#om-source')`)), 'Source still in the mapping: ' + JSON.stringify(labels))
+  assert(JSON.stringify(await evaluate(`[...document.querySelectorAll('label[for^=om-]')].filter((l) => l.innerText.includes('*')).map((l) => l.innerText.replace('*', '').trim())`)) === '["SKU","Warehouse","Quantity"]', 'required fields')
+  assert(!(await evaluate(bodyHas('Map the required fields'))), 'a required field is missing for a file without Source')
+  await click('button', 'Validate rows')
+  await waitFor(bodyHas('Row results'), 'review')
+  assert(await evaluate(`[...document.querySelectorAll('th')].every((th) => th.innerText.trim() !== 'Source')`), 'Source column in the preview')
+  assert(await evaluate(bodyHas('Stage 1 accepted row(s) for approval')), 'file without Source not accepted')
+
+  // 2. An older file with a Source column: the column is ignored (an unrecognised value no longer rejects the row).
+  await upload(csvPath)
+  assert(await evaluate(`document.querySelector('[data-testid=source-ignored]')?.innerText.includes('"Source" is not used')`), 'ignored-column note')
+  assert(!(await evaluate(`[...document.querySelectorAll('[id^=om-] span')].some((s) => s.innerText.trim() === 'Source')`)), 'Source column mapped to a field')
   const before = rpcCalls('inventory_submit_opening_stock').length
   await click('button', 'Validate rows')
   await waitFor(bodyHas('Row results'), 'review')
-  for (const text of ['SKU "NOPE-1" was not found', 'Source "Factory" is not recognised']) assert(await evaluate(bodyHas(text)), `missing "${text}"`)
+  for (const text of ['SKU "NOPE-1" was not found', 'Duplicate of row 2']) assert(await evaluate(bodyHas(text)), `missing "${text}"`)
+  assert(!(await evaluate(bodyHas('is not recognised'))), 'the Source value was still validated')
   assert(rpcCalls('inventory_submit_opening_stock').length === before, 'validation wrote data')
   await screenshot('14-opening-import-review')
   await click('button', 'Stage 1 accepted row(s) for approval')
@@ -2960,7 +3070,7 @@ await step('opening stock import: rejected rows listed, only accepted rows stage
   await click('[role=alertdialog] button', 'Stage for approval')
   await waitFor(bodyHas('OS-000009 staged'), 'staged')
   const b = rpcCalls('inventory_submit_opening_stock').at(-1).body
-  assert(b.p_source === 'IMPORT' && b.p_lines.length === 1 && b.p_lines[0].line_no === 2 && b.p_lines[0].location_id === 'l2', JSON.stringify(b))
+  assert(b.p_source === 'IMPORT' && b.p_lines.length === 1 && b.p_lines[0].line_no === 2 && b.p_lines[0].location_id === 'l2' && b.p_lines[0].source_type === 'IN_HOUSE', JSON.stringify(b))
 })
 
 await step('alerts: evaluated on open and acknowledgeable', async () => {
@@ -5682,7 +5792,10 @@ await step('List cards 3: Purchase Orders, Goods Received, Ledger and the stock 
   await waitFor(`[...document.querySelectorAll('a[data-drill=kpi]')].length === 6`, 'six stock card figures')
   await click('a[data-drill=kpi]', 'Available')
   await waitFor(`location.pathname === '/drilldown/stock.product_available' && new URLSearchParams(location.search).get('seg') === 'p1'`, 'this product\'s lots')
-  assert(lastQuery('/rest/v1/inventory_stock_detail').includes('product_id=eq.p1') && lastQuery('/rest/v1/inventory_stock_detail').includes('available=neq.0'), lastQuery('/rest/v1/inventory_stock_detail'))
+  // The drill-down page sends its own query just after the address changes.
+  const stockQueryOk = () => lastQuery('/rest/v1/inventory_stock_detail').includes('product_id=eq.p1') && lastQuery('/rest/v1/inventory_stock_detail').includes('available=neq.0')
+  for (let t = Date.now(); !stockQueryOk() && Date.now() - t < 5000;) await sleep(100)
+  assert(stockQueryOk(), lastQuery('/rest/v1/inventory_stock_detail'))
   assert(await evaluate(`[...document.querySelectorAll('nav[aria-label=Breadcrumb] a')].some((a) => a.getAttribute('href').startsWith('/inventory/stock/p1'))`), 'breadcrumb back to the stock card')
 })
 

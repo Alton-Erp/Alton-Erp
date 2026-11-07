@@ -1,14 +1,18 @@
 // Opening-stock spreadsheet import: column mapping + row validation.
 // Pure TypeScript (unit-tested). Previewing never writes to the database; the
 // accepted rows are staged server-side for approval and re-validated there.
+//
+// Users never choose a stock source for opening stock. The database still stores
+// one per line, so it is derived from the product master (openingStockSource),
+// the same way production records IN_HOUSE and purchase receipts OUTSOURCED.
+// A Source column in an older spreadsheet is simply not mapped.
 
-import { parseSheetDate, parseStockSource } from './inventory-model.ts'
+import { parseSheetDate, type StockSourceCode } from './inventory-model.ts'
 
 export const OPENING_FIELDS = [
   { key: 'sku', label: 'SKU', required: true, synonyms: ['sku', 'product code', 'item code', 'sku code'] },
   { key: 'warehouse', label: 'Warehouse', required: true, synonyms: ['warehouse', 'warehouse code', 'store', 'godown'] },
   { key: 'location', label: 'Location', required: false, synonyms: ['location', 'location code', 'bin', 'rack', 'shelf'] },
-  { key: 'source', label: 'Source', required: true, synonyms: ['source', 'source type', 'stock source'] },
   { key: 'quantity', label: 'Quantity', required: true, synonyms: ['quantity', 'qty', 'opening qty', 'opening quantity', 'stock', 'on hand'] },
   { key: 'unit', label: 'Unit', required: false, synonyms: ['unit', 'uom'] },
   { key: 'batch', label: 'Batch', required: false, synonyms: ['batch', 'batch number', 'batch no', 'lot', 'lot number'] },
@@ -30,6 +34,43 @@ export interface OpeningProduct {
   track_batches: boolean
   track_expiry: boolean
   status: string
+  /** Product master sourcing strategy (IN_HOUSE / OUTSOURCED / HYBRID). */
+  default_source_type?: string | null
+  product_type?: string | null
+}
+
+/** Types the product master makes in-house by default (private.product_default_source). */
+const MADE_IN_HOUSE_TYPES = new Set(['FINISHED_GOOD', 'SUBASSEMBLY', 'COMPONENT'])
+
+/**
+ * The stock source stored for an opening stock line. Opening stock has no
+ * user-chosen source: IN_HOUSE products are recorded as IN_HOUSE, OUTSOURCED
+ * products as OUTSOURCED, and HYBRID (or missing) follows the product type the
+ * same way the product master defaults it. Never UNKNOWN, so opening stock is
+ * not flagged as "unverified source".
+ */
+export function openingStockSource(product: { default_source_type?: string | null; product_type?: string | null }): Exclude<StockSourceCode, 'UNKNOWN'> {
+  if (product.default_source_type === 'IN_HOUSE') return 'IN_HOUSE'
+  if (product.default_source_type === 'OUTSOURCED') return 'OUTSOURCED'
+  return MADE_IN_HOUSE_TYPES.has(product.product_type ?? '') ? 'IN_HOUSE' : 'OUTSOURCED'
+}
+
+/** One opening balance per product + location + batch (whatever source it was stored with). */
+export const openingBalanceKey = (productId: string, locationId: string, batch: string | null | undefined) =>
+  `${productId}|${locationId}|${(batch ?? '').trim().toLowerCase()}`
+
+export interface ExistingOpening {
+  product_id: string
+  location_id: string
+  batch_number: string | null
+  document_number: string | null
+}
+
+/** Existing pending/posted opening balances keyed by openingBalanceKey, valued by document number. */
+export function existingOpeningIndex(rows: ExistingOpening[]): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const r of rows) map.set(openingBalanceKey(r.product_id, r.location_id, r.batch_number), r.document_number ?? 'an earlier document')
+  return map
 }
 
 export interface OpeningLocation {
@@ -48,6 +89,8 @@ export interface OpeningContext {
   defaultEffectiveDate: string
   /** Company "today" (yyyy-mm-dd); future dates are rejected. */
   today: string
+  /** Opening balances already pending or posted (existingOpeningIndex). */
+  existing?: Map<string, string>
 }
 
 export interface OpeningPayload {
@@ -146,12 +189,6 @@ export function validateOpeningRows(rows: string[][], mapping: OpeningMapping, c
       }
     }
 
-    const rawSource = cell(row, 'source')
-    const source = rawSource ? parseStockSource(rawSource) : null
-    if (!rawSource) errors.push('Source is required (In-House, Outsourced, or Unknown for unverified legacy stock).')
-    else if (!source) errors.push(`Source "${rawSource}" is not recognised. Use In-House, Outsourced or Unknown.`)
-    else if (source === 'UNKNOWN') warnings.push('Unverified source: will be flagged for review after posting.')
-
     const qty = decimal(cell(row, 'quantity'), 3)
     if (qty === undefined) errors.push('Quantity is required.')
     else if (qty === null || qty <= 0) errors.push('Quantity must be a number greater than zero (up to 3 decimals).')
@@ -182,11 +219,13 @@ export function validateOpeningRows(rows: string[][], mapping: OpeningMapping, c
     if (eff === null) errors.push('Effective date is not a valid date.')
     else if (eff && eff > ctx.today) errors.push('Effective date cannot be in the future.')
 
-    if (product && location && source) {
-      const key = `${product.id}|${location.id}|${batch.toLowerCase()}|${source}`
+    if (product && location) {
+      const key = openingBalanceKey(product.id, location.id, batch)
       const first = seen.get(key)
-      if (first !== undefined) errors.push(`Duplicate of row ${first} (same product, location, batch and source).`)
+      if (first !== undefined) errors.push(`Duplicate of row ${first} (same product, location and batch).`)
       else seen.set(key, rowNumber)
+      const recorded = ctx.existing?.get(key)
+      if (recorded) errors.push(`Opening stock for this product, location and batch already exists (${recorded}).`)
     }
 
     out.push({
@@ -201,7 +240,7 @@ export function validateOpeningRows(rows: string[][], mapping: OpeningMapping, c
             line_no: rowNumber,
             product_id: product!.id,
             location_id: location!.id,
-            source_type: source!,
+            source_type: openingStockSource(product!),
             quantity: qty as number,
             unit: product!.base_unit,
             batch_number: batch || null,

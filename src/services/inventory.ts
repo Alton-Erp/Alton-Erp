@@ -1,5 +1,6 @@
 import { requireSupabase } from '@/lib/supabase'
 import type { Json } from '@/types/database'
+import type { ExistingOpening } from '@/features/inventory/opening-import'
 import type {
   AdjustmentRow,
   AlertRow,
@@ -615,6 +616,44 @@ export const postOpeningStock = (lines: OpeningLinePayload[], source: 'MANUAL' |
   })
 
 export const cancelOpeningStock = (id: string) => rpc('inventory_cancel_opening_stock', { p_opening_batch_id: id })
+
+export interface OpeningProductMeta {
+  id: string
+  sku: string
+  status: string
+  default_source_type: string | null
+  product_type: string | null
+}
+
+/**
+ * What opening stock entry needs to know about the chosen products, read-only:
+ * their sourcing defaults (the stored source is derived from them) and any
+ * opening balances already pending or posted for them, with the document number.
+ */
+export async function fetchOpeningContext(productIds: string[]): Promise<{ products: Map<string, OpeningProductMeta>; existing: ExistingOpening[] }> {
+  const ids = [...new Set(productIds)]
+  const products = new Map<string, OpeningProductMeta>()
+  const existing: ExistingOpening[] = []
+  for (let i = 0; i < ids.length; i += 200) {
+    const chunk = ids.slice(i, i + 200)
+    const [p, l] = await Promise.all([
+      db().from('products').select('id, sku, status, default_source_type, product_type').in('id', chunk),
+      db().from('inventory_opening_lines').select('product_id, location_id, batch_number, opening_batch_id').in('product_id', chunk).in('status', ['PENDING_APPROVAL', 'POSTED']).limit(5000),
+    ])
+    if (p.error) throw p.error
+    if (l.error) throw l.error
+    for (const row of p.data ?? []) products.set(row.id, row as OpeningProductMeta)
+    const batchIds = [...new Set((l.data ?? []).map((r) => r.opening_batch_id))]
+    const numbers = new Map<string, string>()
+    if (batchIds.length) {
+      const b = await db().from('inventory_opening_batches').select('id, document_number').in('id', batchIds)
+      if (b.error) throw b.error
+      for (const row of b.data ?? []) numbers.set(row.id, row.document_number)
+    }
+    for (const r of l.data ?? []) existing.push({ product_id: r.product_id, location_id: r.location_id, batch_number: r.batch_number, document_number: numbers.get(r.opening_batch_id) ?? null })
+  }
+  return { products, existing }
+}
 
 export async function fetchOpeningBatches(): Promise<OpeningBatchRow[]> {
   const { data, error } = await db().from('inventory_opening_batches').select('*').order('requested_at', { ascending: false }).limit(500)

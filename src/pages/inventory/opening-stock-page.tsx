@@ -1,5 +1,5 @@
-import { Check, ChevronDown, ChevronRight, FileSpreadsheet, Loader2, PackagePlus, Plus, Trash2, X } from 'lucide-react'
-import { Fragment, useState } from 'react'
+import { Check, ChevronDown, ChevronRight, FileSpreadsheet, Loader2, PackagePlus, Pencil, Plus, Trash2, X } from 'lucide-react'
+import { Fragment, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { useAuth } from '@/auth/use-auth'
@@ -14,11 +14,11 @@ import { Card } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
-import { DocumentStatusBadge, StockSourceBadge } from '@/features/inventory/inventory-badges'
+import { DocumentStatusBadge } from '@/features/inventory/inventory-badges'
 import { formatQty } from '@/features/inventory/inventory-model'
+import { existingOpeningIndex, openingBalanceKey, openingStockSource } from '@/features/inventory/opening-import'
 import { parseUnitQty, qtyInputMode, quantityRule } from '@/features/inventory/whole-units'
 import { LocationSelect, ProductPicker } from '@/features/inventory/pickers'
 import { useStorage } from '@/features/inventory/use-storage'
@@ -31,6 +31,7 @@ import {
   cancelOpeningStock,
   fetchInventoryPolicy,
   fetchOpeningBatches,
+  fetchOpeningContext,
   fetchOpeningLines,
   reviewOpeningStock,
   postOpeningStock,
@@ -103,7 +104,7 @@ export default function OpeningStockPage() {
               <TableRow className="hover:bg-transparent">
                 <TableHead className="w-8" />
                 <TableHead>Document</TableHead>
-                <TableHead>Source</TableHead>
+                <TableHead>Entry</TableHead>
                 <TableHead className="text-right">Lines</TableHead>
                 <TableHead>Submitted</TableHead>
                 <TableHead>Reviewed</TableHead>
@@ -171,14 +172,13 @@ function OpeningLines({ batchId }: { batchId: string }) {
   return (
     <div className="max-h-96 overflow-auto px-3 py-2">
       <table className="w-full text-xs">
-        <thead><tr className="text-left text-muted-foreground"><th className="p-1.5">Row</th><th className="p-1.5">SKU</th><th className="p-1.5">Location</th><th className="p-1.5">Source</th><th className="p-1.5">Batch</th><th className="p-1.5 text-right">Quantity</th><th className="p-1.5 text-right">Unit cost</th><th className="p-1.5">Effective</th><th className="p-1.5">Status</th></tr></thead>
+        <thead><tr className="text-left text-muted-foreground"><th className="p-1.5">Row</th><th className="p-1.5">SKU</th><th className="p-1.5">Location</th><th className="p-1.5">Batch</th><th className="p-1.5 text-right">Quantity</th><th className="p-1.5 text-right">Unit cost</th><th className="p-1.5">Effective</th><th className="p-1.5">Status</th></tr></thead>
         <tbody>
           {(data ?? []).map((l) => (
             <tr key={l.id} className="border-t">
               <td className="p-1.5">{l.line_no}</td>
               <td className="p-1.5 font-medium">{l.sku} <span className="font-normal text-muted-foreground">{l.product_name}</span></td>
               <td className="p-1.5">{l.warehouse_code} / {l.location_code}</td>
-              <td className="p-1.5"><StockSourceBadge source={l.source_type} /></td>
               <td className="p-1.5">{l.batch_number ?? '—'}{l.expiry_date && <span className="text-muted-foreground"> · exp {l.expiry_date}</span>}</td>
               <td className="p-1.5 text-right tabular-nums">{formatQty(l.quantity, l.base_unit)}</td>
               <td className="p-1.5 text-right">{l.unit_cost === null ? 'Unknown' : formatCurrency(Number(l.unit_cost))}</td>
@@ -195,7 +195,6 @@ function OpeningLines({ batchId }: { batchId: string }) {
 interface DraftLine {
   product: ProductOption
   locationId: string
-  source: string
   quantity: number
   batch: string
   mfg: string
@@ -212,7 +211,6 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
   // storage loads asynchronously; use its default until a location is picked.
   const [chosenLocationId, setLocationId] = useState('')
   const locationId = chosenLocationId || storage.defaultLocationId || ''
-  const [source, setSource] = useState('')
   const [qty, setQty] = useState('')
   const [batch, setBatch] = useState('')
   const [mfg, setMfg] = useState('')
@@ -222,46 +220,63 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
   const [reference, setReference] = useState('')
   const [notes, setNotes] = useState('')
   const [step, setStep] = useState<'edit' | 'review'>('edit')
-  const [busy, setBusy] = useState(false)
+  const [busy, setBusy] = useState<null | 'checking' | 'posting'>(null)
+  // Set synchronously, so a double click cannot start a second check or posting before the button disables.
+  const working = useRef(false)
   const [error, setError] = useState<string | null>(null)
+  // Problems found for lines already in the list, by line index.
+  const [lineErrors, setLineErrors] = useState<Record<number, string>>({})
   const [serverErrors, setServerErrors] = useState<{ line_no: number; message: string }[]>([])
   const { has } = usePermissions()
   // Auto-saved working copy, including the lines entered so far and the step (edit / review).
   const draft = usePersistentFormDraft({
     formKey: 'inventory.opening', scope: 'manual', enabled: has('inventory_opening.create'),
-    value: { lines, product, chosenLocationId, source, qty, batch, mfg, expiry, cost, effective, reference, notes, step },
+    value: { lines, product, chosenLocationId, qty, batch, mfg, expiry, cost, effective, reference, notes, step },
     onRestore: (d) => {
-      setLines(d.lines)
-      setProduct(d.product)
-      setLocationId(d.chosenLocationId)
-      setSource(d.source)
-      setQty(d.qty)
-      setBatch(d.batch)
-      setMfg(d.mfg)
-      setExpiry(d.expiry)
-      setCost(d.cost)
-      setEffective(d.effective)
-      setReference(d.reference)
-      setNotes(d.notes)
-      setStep(d.step === 'review' && d.lines.length ? 'review' : 'edit')
+      // Drafts saved before the source field was removed carry an extra "source" key; it is ignored.
+      const restored = Array.isArray(d.lines) ? d.lines.filter((l) => l?.product?.product_id) : []
+      setLines(restored)
+      setProduct(d.product ?? null)
+      setLocationId(d.chosenLocationId ?? '')
+      setQty(d.qty ?? '')
+      setBatch(d.batch ?? '')
+      setMfg(d.mfg ?? '')
+      setExpiry(d.expiry ?? '')
+      setCost(d.cost ?? '')
+      setEffective(d.effective || today || '')
+      setReference(d.reference ?? '')
+      setNotes(d.notes ?? '')
+      setStep(d.step === 'review' && restored.length ? 'review' : 'edit')
     },
   })
 
-  const addLine = () => {
-    setError(null)
+  // The line being typed counts as started once a product, quantity, cost or batch is entered
+  // (effective date and reference carry over between lines, so they do not count).
+  const pendingStarted = Boolean(product || qty.trim() || cost.trim() || batch.trim())
+
+  /** Checks the line being typed. Pure: returns the problem or the finished line. */
+  const checkPending = (): { error: string } | { line: DraftLine } => {
     const q = parseUnitQty(qty, product?.base_unit)
-    if (!product) return setError('Select a product.')
-    if (!locationId) return setError('Select a location.')
-    if (!source) return setError('Select the actual source (or Unknown for unverified legacy stock).')
-    if (!q) return setError(`Enter a quantity greater than zero (${quantityRule(product.base_unit)}).`)
-    if (product.track_batches && !batch.trim()) return setError('This product is batch-tracked: enter the batch number.')
-    if (product.track_expiry && !expiry) return setError('This product tracks expiry: enter the expiry date.')
-    if (!effective) return setError('Enter the effective date.')
-    if (today && effective > today) return setError('The effective date cannot be in the future.')
-    if (lines.some((l) => l.product.product_id === product.product_id && l.locationId === locationId && l.source === source && l.batch.toLowerCase() === batch.trim().toLowerCase())) {
-      return setError('That product, location, batch and source is already in the list.')
+    const cleanCost = cost.trim().replace(/,/g, '')
+    if (!product) return { error: 'Select a product.' }
+    if (!locationId) return { error: 'Select a warehouse / location.' }
+    if (!qty.trim()) return { error: 'Enter the quantity.' }
+    if (!q) return { error: `Enter a quantity greater than zero (${quantityRule(product.base_unit)}).` }
+    if (cleanCost && !/^\d+(\.\d{1,4})?$/.test(cleanCost)) return { error: 'Unit cost must be a number of zero or more (up to 4 decimals), or left blank.' }
+    if (product.track_batches && !batch.trim()) return { error: 'This product is batch-tracked: enter the batch number.' }
+    if (product.track_expiry && !expiry) return { error: 'This product tracks expiry: enter the expiry date.' }
+    if (!effective) return { error: 'Enter the effective date.' }
+    if (today && effective > today) return { error: 'The effective date cannot be in the future.' }
+    const k = openingBalanceKey(product.product_id, locationId, batch)
+    if (lines.some((l) => openingBalanceKey(l.product.product_id, l.locationId, l.batch) === k)) {
+      return { error: 'That product, location and batch is already in the list. Edit that line instead.' }
     }
-    setLines([...lines, { product, locationId, source, quantity: q, batch: batch.trim(), mfg, expiry, cost, effective, reference: reference.trim() }])
+    return { line: { product, locationId, quantity: q, batch: batch.trim(), mfg, expiry, cost: cleanCost, effective, reference: reference.trim() } }
+  }
+  const pending = pendingStarted ? checkPending() : null
+  const reviewCount = lines.length + (pending && 'line' in pending ? 1 : 0)
+
+  const clearPending = () => {
     setProduct(null)
     setQty('')
     setBatch('')
@@ -270,33 +285,152 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
     setCost('')
   }
 
-  const payload: OpeningLinePayload[] = lines.map((l, i) => ({
-    line_no: i + 1,
-    product_id: l.product.product_id,
-    location_id: l.locationId,
-    source_type: l.source,
-    quantity: l.quantity,
-    unit: l.product.base_unit,
-    batch_number: l.batch || null,
-    manufacturing_date: l.mfg || null,
-    expiry_date: l.expiry || null,
-    unit_cost: l.cost === '' ? null : Number(l.cost),
-    effective_date: l.effective,
-    reference: l.reference || null,
-    notes: null,
-  }))
+  const addLine = () => {
+    setError(null)
+    const r = checkPending()
+    if ('error' in r) return setError(r.error)
+    setLines([...lines, r.line])
+    clearPending()
+  }
+
+  const editLine = (i: number) => {
+    if (pendingStarted) return setError('Add or clear the line you are entering before editing another one.')
+    const l = lines[i]
+    setProduct(l.product)
+    setLocationId(l.locationId)
+    setQty(String(l.quantity))
+    setBatch(l.batch)
+    setMfg(l.mfg)
+    setExpiry(l.expiry)
+    setCost(l.cost)
+    setEffective(l.effective)
+    setReference(l.reference)
+    setLines(lines.filter((_, j) => j !== i))
+    setLineErrors({})
+    setServerErrors([])
+    setError(null)
+    setStep('edit')
+  }
+
+  const removeLine = (i: number) => {
+    const rest = lines.filter((_, j) => j !== i)
+    setLines(rest)
+    setLineErrors({})
+    setServerErrors([])
+    setError(null)
+    if (rest.length === 0) setStep('edit')
+  }
+
+  /** Lines whose product/location/batch already has an opening balance, and products that can no longer be used. */
+  const findProblems = async (all: DraftLine[]) => {
+    const ctx = await fetchOpeningContext(all.map((l) => l.product.product_id))
+    const existing = existingOpeningIndex(ctx.existing)
+    const problems: Record<number, string> = {}
+    all.forEach((l, i) => {
+      const meta = ctx.products.get(l.product.product_id)
+      const recorded = existing.get(openingBalanceKey(l.product.product_id, l.locationId, l.batch))
+      if (!meta) problems[i] = 'This product was not found.'
+      else if (meta.status !== 'ACTIVE') problems[i] = `Product ${meta.sku} is inactive.`
+      else if (recorded) problems[i] = `Opening stock for this product, location and batch already exists (${recorded}).`
+    })
+    return { problems, products: ctx.products }
+  }
+
+  // Review also takes the line still being typed, so nothing entered is lost or silently ignored.
+  const goToReview = async () => {
+    if (working.current) return
+    setError(null)
+    setServerErrors([])
+    let all = lines
+    if (pendingStarted) {
+      const r = checkPending()
+      if ('error' in r) return setError(`${r.error} Finish or clear the line you are entering, then review.`)
+      all = [...lines, r.line]
+      setLines(all)
+      clearPending()
+    }
+    if (all.length === 0) return setError('Add at least one line before reviewing.')
+    working.current = true
+    setBusy('checking')
+    try {
+      const { problems } = await findProblems(all)
+      setLineErrors(problems)
+      const count = Object.keys(problems).length
+      if (count) setError(`${count} line(s) cannot be recorded. Edit or remove the marked line(s), then review again.`)
+      else setStep('review')
+    } catch (e) {
+      setError(`The lines could not be checked: ${describeDataError(e)}`)
+    } finally {
+      working.current = false
+      setBusy(null)
+    }
+  }
+
+  const confirm = async () => {
+    if (working.current) return
+    working.current = true
+    setBusy('posting')
+    setError(null)
+    setServerErrors([])
+    try {
+      // Checked again here: a restored draft can open straight on the review step.
+      const { problems, products } = await findProblems(lines)
+      const count = Object.keys(problems).length
+      if (count) {
+        setLineErrors(problems)
+        setError(`${count} line(s) cannot be recorded. Edit or remove the marked line(s).`)
+        setStep('edit')
+        return
+      }
+      const payload: OpeningLinePayload[] = lines.map((l, i) => ({
+        line_no: i + 1,
+        product_id: l.product.product_id,
+        location_id: l.locationId,
+        // Not chosen by the user: derived from the product master (see openingStockSource).
+        source_type: openingStockSource(products.get(l.product.product_id)!),
+        quantity: l.quantity,
+        unit: l.product.base_unit,
+        batch_number: l.batch || null,
+        manufacturing_date: l.mfg || null,
+        expiry_date: l.expiry || null,
+        unit_cost: l.cost === '' ? null : Number(l.cost),
+        effective_date: l.effective,
+        reference: l.reference || null,
+        notes: null,
+      }))
+      const r = canPost
+        ? await postOpeningStock(payload, 'MANUAL', null, notes.trim() || null, key)
+        : await submitOpeningStock(payload, 'MANUAL', null, notes.trim() || null, key)
+      if (!r.ok) {
+        setServerErrors(r.errors)
+        setLineErrors(Object.fromEntries(r.errors.map((e) => [e.line_no - 1, e.message])))
+        renew()
+        setStep('edit')
+      } else {
+        void draft.markSubmitted()
+        onDone(canPost
+          ? `${r.document_number} posted with ${r.line_count} line(s). Stock is updated.`
+          : `${r.document_number} submitted with ${r.line_count} line(s). It now awaits approval; stock has not changed yet.`)
+      }
+    } catch (e) {
+      // The request key is kept, so trying again cannot record the lines twice.
+      setError(describeDataError(e))
+    } finally {
+      working.current = false
+      setBusy(null)
+    }
+  }
 
   return (
     <Dialog open onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent className="sm:max-w-3xl">
+      <DialogContent className="sm:max-w-3xl" data-testid="opening-entry">
         <DialogHeader>
           <DialogTitle>{step === 'review' ? 'Review opening stock' : 'Enter opening stock'}</DialogTitle>
           <DialogDescription>{step === 'review'
-            ? (canPost ? 'Check the lines. Confirming posts them to stock in one transaction: if any line cannot be posted, nothing is posted.' : 'These lines will be submitted for approval. Stock changes only after approval.')
-            : 'Add one line per product, location, batch and source as physically counted.'}</DialogDescription>
+            ? (canPost ? 'Check the lines. Confirming posts them to stock in one transaction: if any line cannot be posted, nothing is posted. Use Edit or Remove to change a line.' : 'These lines will be submitted for approval. Stock changes only after approval.')
+            : 'Add one line per product, location and batch as physically counted.'}</DialogDescription>
         </DialogHeader>
         <FormDraftBar draft={draft} className="mb-0" />
-        {error && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</p>}
         {serverErrors.length > 0 && (
           <ul role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
             {serverErrors.map((e) => <li key={`${e.line_no}-${e.message}`}>Line {e.line_no}: {e.message}</li>)}
@@ -305,16 +439,7 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
         {step === 'edit' && (
           <div className="grid gap-3 rounded-lg border p-3 sm:grid-cols-3">
             <div className="space-y-1 sm:col-span-3"><Label htmlFor="os-product">Product</Label><ProductPicker id="os-product" value={product} onChange={setProduct} autoFocus /></div>
-            <div className="space-y-1 sm:col-span-2"><Label htmlFor="os-loc">Warehouse / location</Label><LocationSelect id="os-loc" value={locationId} onChange={setLocationId} options={storage.activeLocations} /></div>
-            <div className="space-y-1"><Label htmlFor="os-src">Actual source</Label>
-              <Select value={source} onValueChange={setSource}>
-                <SelectTrigger id="os-src"><SelectValue placeholder="Select" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="IN_HOUSE">In-House</SelectItem>
-                  <SelectItem value="OUTSOURCED">Outsourced</SelectItem>
-                  <SelectItem value="UNKNOWN">Unknown (flag for review)</SelectItem>
-                </SelectContent>
-              </Select></div>
+            <div className="space-y-1 sm:col-span-3"><Label htmlFor="os-loc">Warehouse / location</Label><LocationSelect id="os-loc" value={locationId} onChange={setLocationId} options={storage.activeLocations} /></div>
             <div className="space-y-1"><Label htmlFor="os-qty">Quantity{product ? ` (${product.base_unit})` : ''}</Label><Input id="os-qty" inputMode={qtyInputMode(product?.base_unit)} value={qty} onChange={(e) => setQty(e.target.value)} /></div>
             <div className="space-y-1"><Label htmlFor="os-cost">Unit cost (₹, optional)</Label><Input id="os-cost" inputMode="decimal" value={cost} onChange={(e) => setCost(e.target.value)} /></div>
             <div className="space-y-1"><Label htmlFor="os-eff">Effective date</Label><Input id="os-eff" type="date" max={today} value={effective} onChange={(e) => setEffective(e.target.value)} /></div>
@@ -325,68 +450,56 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
                 <div className="space-y-1"><Label htmlFor="os-exp">Expiry</Label><Input id="os-exp" type="date" value={expiry} onChange={(e) => setExpiry(e.target.value)} /></div>
               </>
             )}
-            <div className="space-y-1 sm:col-span-2"><Label htmlFor="os-ref">Reference (e.g. count sheet no.)</Label><Input id="os-ref" value={reference} onChange={(e) => setReference(e.target.value)} maxLength={100} /></div>
-            <div className="flex items-end"><Button variant="outline" className="w-full" onClick={addLine}><Plus /> Add line</Button></div>
+            <div className="space-y-1 sm:col-span-2"><Label htmlFor="os-ref">Reference (optional, e.g. count sheet no.)</Label><Input id="os-ref" value={reference} onChange={(e) => setReference(e.target.value)} maxLength={100} /></div>
+            <div className="flex items-end"><Button variant="outline" className="w-full" disabled={busy !== null} onClick={addLine}><Plus /> Add line</Button></div>
           </div>
         )}
         {lines.length > 0 && (
-          <div className="max-h-64 overflow-auto rounded-lg border">
-            <table className="w-full text-sm">
-              <thead className="bg-surface-muted text-xs text-muted-foreground"><tr><th className="p-2 text-left">#</th><th className="p-2 text-left">Product</th><th className="p-2 text-left">Location</th><th className="p-2 text-left">Source</th><th className="p-2 text-left">Batch</th><th className="p-2 text-right">Qty</th><th className="p-2 text-right">Cost</th><th className="p-2">Date</th><th /></tr></thead>
+          <div className="max-h-72 overflow-auto rounded-lg border">
+            <table className="w-full text-sm" data-testid="opening-lines">
+              <thead className="bg-surface-muted text-xs text-muted-foreground"><tr><th className="p-2 text-left">#</th><th className="p-2 text-left">Product</th><th className="p-2 text-left">Location</th><th className="p-2 text-left">Batch</th><th className="p-2 text-right">Qty</th><th className="p-2 text-right">Cost</th><th className="p-2">Date</th><th className="p-2 text-left">Reference</th><th /></tr></thead>
               <tbody>
                 {lines.map((l, i) => (
-                  <tr key={i} className="border-t">
-                    <td className="p-2">{i + 1}</td>
-                    <td className="p-2">{l.product.sku}</td>
-                    <td className="p-2">{storage.locationLabel(l.locationId)}</td>
-                    <td className="p-2"><StockSourceBadge source={l.source} /></td>
-                    <td className="p-2">{l.batch || '—'}</td>
-                    <td className="p-2 text-right">{formatQty(l.quantity, l.product.base_unit)}</td>
-                    <td className="p-2 text-right">{l.cost === '' ? 'Unknown' : formatCurrency(Number(l.cost))}</td>
-                    <td className="p-2">{l.effective}</td>
-                    <td className="p-2">{step === 'edit' && <Button variant="ghost" size="icon-sm" aria-label="Remove line" onClick={() => setLines(lines.filter((_, j) => j !== i))}><Trash2 /></Button>}</td>
-                  </tr>
+                  <Fragment key={`${l.product.product_id}|${l.locationId}|${l.batch}`}>
+                    <tr className={lineErrors[i] ? 'border-t bg-red-50/60' : 'border-t'} data-testid="opening-line">
+                      <td className="p-2">{i + 1}</td>
+                      <td className="p-2"><span className="font-medium">{l.product.sku}</span><span className="block text-xs text-muted-foreground">{l.product.product_name}</span></td>
+                      <td className="p-2">{storage.locationLabel(l.locationId)}</td>
+                      <td className="p-2">{l.batch || '—'}</td>
+                      <td className="p-2 text-right tabular-nums whitespace-nowrap">{formatQty(l.quantity, l.product.base_unit)}</td>
+                      <td className="p-2 text-right">{l.cost === '' ? 'Unknown' : formatCurrency(Number(l.cost))}</td>
+                      <td className="p-2 whitespace-nowrap">{l.effective}</td>
+                      <td className="p-2">{l.reference || '—'}</td>
+                      <td className="p-2">
+                        <span className="flex justify-end gap-0.5">
+                          <Button variant="ghost" size="icon-sm" aria-label={`Edit line ${i + 1}`} disabled={busy !== null} onClick={() => editLine(i)}><Pencil /></Button>
+                          <Button variant="ghost" size="icon-sm" aria-label={`Remove line ${i + 1}`} disabled={busy !== null} onClick={() => removeLine(i)}><Trash2 /></Button>
+                        </span>
+                      </td>
+                    </tr>
+                    {lineErrors[i] && <tr><td colSpan={9} className="px-2 pb-2 text-xs text-red-700" data-testid="opening-line-error">Line {i + 1}: {lineErrors[i]}</td></tr>}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
           </div>
         )}
         {step === 'review' && <div className="space-y-1.5"><Label htmlFor="os-notes">{canPost ? 'Notes (optional)' : 'Notes for the approver'}</Label><Textarea id="os-notes" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={2000} /></div>}
+        {/* Next to the buttons, so a problem is never scrolled out of sight in a long dialog. */}
+        {error && <p role="alert" ref={(el) => el?.scrollIntoView({ block: 'nearest' })} data-testid="opening-entry-error" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</p>}
         <DialogFooter>
           {step === 'edit' ? (
             <>
-              <Button variant="outline" onClick={onClose}>Cancel</Button>
-              <Button disabled={lines.length === 0} onClick={() => { setError(null); setStep('review') }}>Review {lines.length} line(s)</Button>
+              <Button variant="outline" onClick={onClose} disabled={busy !== null}>Cancel</Button>
+              <Button data-testid="opening-review" disabled={busy !== null || (lines.length === 0 && !pendingStarted)} onClick={() => void goToReview()}>
+                {busy === 'checking' && <Loader2 className="animate-spin" />} Review {reviewCount} line(s)
+              </Button>
             </>
           ) : (
             <>
-              <Button variant="outline" disabled={busy} onClick={() => setStep('edit')}>Back</Button>
-              <Button disabled={busy} onClick={async () => {
-                setBusy(true)
-                setError(null)
-                setServerErrors([])
-                try {
-                  const r = canPost
-                    ? await postOpeningStock(payload, 'MANUAL', null, notes.trim() || null, key)
-                    : await submitOpeningStock(payload, 'MANUAL', null, notes.trim() || null, key)
-                  if (!r.ok) {
-                    setServerErrors(r.errors)
-                    renew()
-                    setStep('edit')
-                  } else if (canPost) {
-                    void draft.markSubmitted()
-                    onDone(`${r.document_number} posted with ${r.line_count} line(s). Stock is updated.`)
-                  } else {
-                    void draft.markSubmitted()
-                    onDone(`${r.document_number} submitted with ${r.line_count} line(s). It now awaits approval; stock has not changed yet.`)
-                  }
-                } catch (e) {
-                  setError(describeDataError(e))
-                } finally {
-                  setBusy(false)
-                }
-              }}>
-                {busy && <Loader2 className="animate-spin" />} {canPost ? 'Post opening stock' : 'Submit for approval'}
+              <Button variant="outline" disabled={busy !== null} onClick={() => { setError(null); setStep('edit') }}>Back</Button>
+              <Button data-testid="opening-confirm" disabled={busy !== null || lines.length === 0} onClick={() => void confirm()}>
+                {busy === 'posting' && <Loader2 className="animate-spin" />} {canPost ? 'Post opening stock' : 'Submit for approval'}
               </Button>
             </>
           )}

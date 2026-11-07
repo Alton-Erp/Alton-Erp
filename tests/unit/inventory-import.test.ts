@@ -6,9 +6,13 @@ import * as XLSX from 'xlsx'
 import { parseCountSheet } from '../../src/features/inventory/count-sheet.ts'
 import { parseSheetDate, parseStockSource } from '../../src/features/inventory/inventory-model.ts'
 import {
+  OPENING_FIELDS,
   autoMapOpening,
   detectOpeningHeader,
+  existingOpeningIndex,
   missingOpeningFields,
+  openingBalanceKey,
+  openingStockSource,
   validateOpeningRows,
   type OpeningContext,
 } from '../../src/features/inventory/opening-import.ts'
@@ -16,9 +20,12 @@ import { parseWorkbook } from '../../src/features/products/spreadsheet.ts'
 
 const ctx: OpeningContext = {
   products: new Map([
-    ['wc-1', { id: 'p1', sku: 'WC-1', base_unit: 'PCS', track_batches: false, track_expiry: false, status: 'ACTIVE' }],
-    ['seal-1', { id: 'p2', sku: 'SEAL-1', base_unit: 'BOX', track_batches: true, track_expiry: true, status: 'ACTIVE' }],
-    ['old-1', { id: 'p3', sku: 'OLD-1', base_unit: 'PCS', track_batches: false, track_expiry: false, status: 'INACTIVE' }],
+    ['wc-1', { id: 'p1', sku: 'WC-1', base_unit: 'PCS', track_batches: false, track_expiry: false, status: 'ACTIVE', default_source_type: 'OUTSOURCED', product_type: 'TRADED_GOOD' }],
+    ['wc-2', { id: 'p5', sku: 'WC-2', base_unit: 'PCS', track_batches: false, track_expiry: false, status: 'ACTIVE', default_source_type: 'OUTSOURCED', product_type: 'TRADED_GOOD' }],
+    ['seal-1', { id: 'p2', sku: 'SEAL-1', base_unit: 'BOX', track_batches: true, track_expiry: true, status: 'ACTIVE', default_source_type: 'OUTSOURCED', product_type: 'RAW_MATERIAL' }],
+    ['old-1', { id: 'p3', sku: 'OLD-1', base_unit: 'PCS', track_batches: false, track_expiry: false, status: 'INACTIVE', default_source_type: 'OUTSOURCED', product_type: 'RAW_MATERIAL' }],
+    ['basin-1', { id: 'p4', sku: 'BASIN-1', base_unit: 'PCS', track_batches: false, track_expiry: false, status: 'ACTIVE', default_source_type: 'IN_HOUSE', product_type: 'FINISHED_GOOD' }],
+    ['kit-1', { id: 'p6', sku: 'KIT-1', base_unit: 'PCS', track_batches: false, track_expiry: false, status: 'ACTIVE', default_source_type: 'HYBRID', product_type: 'FINISHED_GOOD' }],
   ]),
   locations: [
     { id: 'l1', warehouseCode: 'MAIN', locationCode: 'GENERAL', active: true, isDefault: true },
@@ -45,35 +52,46 @@ describe('parsing helpers', () => {
 })
 
 describe('opening-stock import', () => {
+  // An older file that still has a Source column: it must import, with that column ignored.
   const sheet = [
     ['Opening stock as on 01-10-2026'],
     [],
     ['SKU', 'Warehouse', 'Bin', 'Source', 'Qty', 'UOM', 'Batch No', 'Expiry', 'Unit Cost', 'Date'],
     ['WC-1', 'main', '', 'In House', '100', 'PCS', '', '', '450', ''],
     ['WC-1', 'MAIN', '', 'Outsourced', '40', '', '', '', '', ''],
-    ['wc-1', 'MAIN', 'GENERAL', 'in-house', '5', '', '', '', '', ''],
+    ['wc-1', 'MAIN', 'BIN-1', 'Factory', '5', '', '', '', '', ''],
     ['SEAL-1', 'MAIN', 'BIN-1', 'Outsourced', '12', 'BOX', 'B-7', '15-12-2026', '10.5', '05-10-2026'],
     ['SEAL-1', 'MAIN', 'BIN-1', 'Outsourced', '3', 'BOX', '', '', '', ''],
     ['NOPE', 'MAIN', '', 'In House', '1', '', '', '', '', ''],
     ['WC-1', 'MAIN', 'OLD', 'In House', '1', '', '', '', '', ''],
-    ['WC-1', 'MAIN', 'BIN-1', 'Factory', '1', '', '', '', '', ''],
-    ['WC-1', 'MAIN', 'BIN-1', 'In House', '-2', '', '', '', '', ''],
-    ['WC-1', 'MAIN', 'BIN-1', 'Outsourced', '1', 'KG', '', '', '', ''],
-    ['WC-1', 'MAIN', 'BIN-1', 'Unknown', '1', '', '', '', '', '20-10-2026'],
+    ['BASIN-1', 'MAIN', 'BIN-1', '', '7', '', '', '', '', ''],
+    ['WC-1', 'MAIN', 'BIN-2', 'In House', '-2', '', '', '', '', ''],
+    ['WC-2', 'MAIN', 'BIN-1', 'Outsourced', '1', 'KG', '', '', '', ''],
+    ['WC-2', 'MAIN', 'GENERAL', 'Unknown', '1', '', '', '', '', '20-10-2026'],
     ['OLD-1', 'MAIN', '', 'In House', '1', '', '', '', '', ''],
-    ['WC-1', 'ANNEX', '', 'In House', '1', '', '', '', '', ''],
+    ['WC-2', 'ANNEX', '', 'In House', '1', '', '', '', '', ''],
+    ['KIT-1', 'MAIN', 'BIN-1', '', '2', '', '', '', '', ''],
   ]
 
-  async function parsed() {
+  async function parsed(rows: unknown[][] = sheet) {
     const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sheet), 'Opening')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Opening')
     const book = await parseWorkbook(XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer)
-    const rows = book.rows('Opening')
-    const h = detectOpeningHeader(rows)
-    return { headers: rows[h], data: rows.slice(h + 1), first: h + 2 }
+    const all = book.rows('Opening')
+    const h = detectOpeningHeader(all)
+    return { headers: all[h], data: all.slice(h + 1), first: h + 2 }
   }
 
-  it('detects the header below title rows and maps columns', async () => {
+  it('has no Source field: SKU, Warehouse and Quantity are the only required fields', () => {
+    assert.ok(!OPENING_FIELDS.some((f) => (f.key as string) === 'source' || f.label === 'Source'), 'Source is still an import field')
+    assert.deepEqual(OPENING_FIELDS.filter((f) => f.required).map((f) => f.label), ['SKU', 'Warehouse', 'Quantity'])
+    assert.deepEqual(OPENING_FIELDS.filter((f) => !f.required).map((f) => f.label),
+      ['Location', 'Unit', 'Batch', 'Manufacturing Date', 'Expiry Date', 'Unit Cost', 'Effective Date', 'Reference', 'Notes'])
+    assert.deepEqual(missingOpeningFields(autoMapOpening(['SKU', 'Qty'])), ['Warehouse'])
+    assert.deepEqual(missingOpeningFields(autoMapOpening(['SKU', 'Warehouse', 'Qty'])), [])
+  })
+
+  it('detects the header below title rows and leaves an old Source column unmapped', async () => {
     const { headers, first } = await parsed()
     assert.equal(first, 4)
     const m = autoMapOpening(headers)
@@ -81,25 +99,36 @@ describe('opening-stock import', () => {
     assert.equal(m.quantity, 4)
     assert.equal(m.batch, 6)
     assert.deepEqual(missingOpeningFields(m), [])
-    assert.deepEqual(missingOpeningFields(autoMapOpening(['SKU', 'Qty'])), ['Warehouse', 'Source'])
+    assert.ok(!Object.values(m).includes(3), 'the Source column (index 3) was mapped to another field')
+    for (const h of ['Source', 'Source Type', 'Stock Source', 'Actual Source']) {
+      assert.ok(!Object.values(autoMapOpening(['SKU', 'Warehouse', h, 'Qty'])).includes(2), `${h} was mapped`)
+    }
+  })
+
+  it('imports a file without a Source column', async () => {
+    const { headers, data, first } = await parsed([['SKU', 'Warehouse', 'Location', 'Quantity', 'Unit Cost', 'Reference'], ['WC-1', 'MAIN', 'BIN-1', '25', '450', 'CS-1'], ['BASIN-1', 'MAIN', '', '3', '', '']])
+    const results = validateOpeningRows(data, autoMapOpening(headers), ctx, first)
+    assert.deepEqual(results.map((r) => r.status), ['valid', 'valid'])
+    assert.deepEqual(results.map((r) => [r.payload!.quantity, r.payload!.source_type, r.payload!.reference]), [[25, 'OUTSOURCED', 'CS-1'], [3, 'IN_HOUSE', null]])
   })
 
   it('accepts valid rows and rejects each invalid row with its spreadsheet row number', async () => {
     const { headers, data, first } = await parsed()
     const results = validateOpeningRows(data, autoMapOpening(headers), ctx, first)
     const byRow = new Map(results.map((r) => [r.rowNumber, r]))
-    assert.equal(results.length, 13)
+    assert.equal(results.length, 14)
 
     const r4 = byRow.get(4)!
     assert.equal(r4.status, 'valid')
     assert.deepEqual(
       { loc: r4.payload!.location_id, src: r4.payload!.source_type, qty: r4.payload!.quantity, cost: r4.payload!.unit_cost, eff: r4.payload!.effective_date },
-      { loc: 'l1', src: 'IN_HOUSE', qty: 100, cost: 450, eff: '2026-10-01' },
+      { loc: 'l1', src: 'OUTSOURCED', qty: 100, cost: 450, eff: '2026-10-01' },
+      'the source comes from the product master, not the "In House" cell',
     )
     assert.ok(r4.warnings.some((w) => w.includes('using MAIN/GENERAL')))
-    assert.equal(byRow.get(5)!.status, 'valid', 'same product/location with a different source is not a duplicate')
-    assert.ok(byRow.get(5)!.warnings.some((w) => w.includes('No unit cost')))
-    assert.ok(byRow.get(6)!.errors.some((e) => e.includes('Duplicate of row 4')))
+    assert.ok(byRow.get(5)!.errors.some((e) => e.includes('Duplicate of row 4')), 'a different Source cell no longer makes a second opening balance')
+    assert.equal(byRow.get(6)!.status, 'valid', 'an unrecognised Source cell is ignored')
+    assert.ok(byRow.get(6)!.warnings.some((w) => w.includes('No unit cost')))
     assert.equal(byRow.get(7)!.status, 'valid')
     assert.equal(byRow.get(7)!.payload!.expiry_date, '2026-12-15')
     assert.equal(byRow.get(7)!.payload!.effective_date, '2026-10-05')
@@ -107,13 +136,37 @@ describe('opening-stock import', () => {
     assert.ok(byRow.get(8)!.errors.some((e) => e.includes('Expiry date is required')))
     assert.ok(byRow.get(9)!.errors.some((e) => e.includes('not found')))
     assert.ok(byRow.get(10)!.errors.some((e) => e.includes('inactive')))
-    assert.ok(byRow.get(11)!.errors.some((e) => e.includes('"Factory"')))
+    assert.equal(byRow.get(11)!.payload!.source_type, 'IN_HOUSE', 'IN_HOUSE product')
     assert.ok(byRow.get(12)!.errors.some((e) => e.includes('greater than zero')))
     assert.ok(byRow.get(13)!.errors.some((e) => e.includes('does not match the product unit')))
     assert.ok(byRow.get(14)!.errors.some((e) => e.includes('future')))
     assert.ok(byRow.get(15)!.errors.some((e) => e.includes('inactive')))
     assert.ok(byRow.get(16)!.errors.some((e) => e.includes('ANNEX')))
-    for (const r of results) assert.equal(r.payload === null, r.status === 'error', 'rejected rows never carry a payload')
+    assert.equal(byRow.get(17)!.payload!.source_type, 'IN_HOUSE', 'HYBRID finished good follows its product type')
+    for (const r of results) {
+      assert.equal(r.payload === null, r.status === 'error', 'rejected rows never carry a payload')
+      assert.ok(![...r.errors, ...r.warnings].some((m) => /source/i.test(m)), `row ${r.rowNumber} mentions a source: ${[...r.errors, ...r.warnings].join(' | ')}`)
+      if (r.payload) assert.notEqual(r.payload.source_type, 'UNKNOWN')
+    }
+  })
+
+  it('rejects a row when that product, location and batch already has opening stock', async () => {
+    const { headers, data, first } = await parsed([['SKU', 'Warehouse', 'Location', 'Qty'], ['WC-1', 'MAIN', 'BIN-1', '5'], ['WC-1', 'MAIN', 'GENERAL', '5']])
+    // Recorded earlier with a source chosen by hand (any source counts).
+    const existing = existingOpeningIndex([{ product_id: 'p1', location_id: 'l2', batch_number: null, document_number: 'OS-000004' }])
+    const results = validateOpeningRows(data, autoMapOpening(headers), { ...ctx, existing }, first)
+    assert.ok(results[0].errors.some((e) => e.includes('already exists (OS-000004)')))
+    assert.equal(results[1].status, 'valid')
+  })
+
+  it('derives the stored source from the product master, never UNKNOWN', () => {
+    assert.equal(openingStockSource({ default_source_type: 'IN_HOUSE', product_type: 'RAW_MATERIAL' }), 'IN_HOUSE')
+    assert.equal(openingStockSource({ default_source_type: 'OUTSOURCED', product_type: 'FINISHED_GOOD' }), 'OUTSOURCED')
+    assert.equal(openingStockSource({ default_source_type: 'HYBRID', product_type: 'FINISHED_GOOD' }), 'IN_HOUSE')
+    assert.equal(openingStockSource({ default_source_type: 'HYBRID', product_type: 'RAW_MATERIAL' }), 'OUTSOURCED')
+    assert.equal(openingStockSource({}), 'OUTSOURCED')
+    assert.equal(openingBalanceKey('p', 'l', ' B-7 '), openingBalanceKey('p', 'l', 'b-7'))
+    assert.equal(openingBalanceKey('p', 'l', null), openingBalanceKey('p', 'l', ''))
   })
 })
 
