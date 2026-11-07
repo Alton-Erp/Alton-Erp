@@ -1054,6 +1054,8 @@ function filterRows(rows, params) {
 
 const requests = []
 let insertCounter = 100
+/** Extra rows in the stock register (set by the product image step only). */
+let STOCK_POSITION_EXTRA = 0
 
 function send(res, status, body, headers = {}) {
   res.writeHead(status, {
@@ -1172,6 +1174,15 @@ const api = http.createServer((req, res) => {
       return send(res, 200, { id: currentUser.id, aud: 'authenticated', role: 'authenticated', email: currentUser.email, app_metadata: {}, user_metadata: {}, created_at: '2026-10-01T00:00:00Z' })
     }
     if (url.pathname.startsWith('/storage/v1/object/list/')) return send(res, 200, [])
+    // Signed links of uploaded product images (one batch), and the image they point to.
+    if (req.method === 'POST' && /^\/storage\/v1\/object\/sign\/[^/]+$/.test(url.pathname)) {
+      const bucket = url.pathname.split('/').pop()
+      return send(res, 200, (body?.paths ?? []).map((p) => ({ path: p, error: null, signedURL: `/object/sign/${bucket}/${p}?token=smoke` })))
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/storage/v1/object/sign/')) {
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Access-Control-Allow-Origin': '*' })
+      return res.end(Buffer.from(SMOKE_PNG, 'base64'))
+    }
     // Storage remove (force reset clean-up): product images may be deleted, stored documents may not.
     if (req.method === 'DELETE' && /^\/storage\/v1\/object\/[^/]+$/.test(url.pathname)) {
       const bucket = url.pathname.split('/').at(-1)
@@ -1898,6 +1909,8 @@ const api = http.createServer((req, res) => {
               stock_status: 'LOW_STOCK', low_stock: true }),
             pos({ product_id: 'p4', sku: 'MOCK-GLZ', product_name: 'Mock glaze', product_type: 'RAW_MATERIAL', unit: 'KG', on_hand: 12, reserved: 0, available: 12,
               pending_po_quantity: 0, open_po_count: 0, expected_incoming_quantity: 0, ledger_on_hand: 11, discrepancy: true }),
+            ...Array.from({ length: STOCK_POSITION_EXTRA }, (_, i) => pos({ product_id: `px${i + 1}`, sku: `MOCK-X${String(i + 1).padStart(2, '0')}`, product_name: `Extra item ${i + 1}`,
+              on_hand: i + 1, reserved: 0, available: i + 1, pending_po_quantity: 0, open_po_count: 0, expected_incoming_quantity: 0, ledger_on_hand: i + 1 })),
           ] })
         }
         case 'inventory_stock_position_detail':
@@ -2905,7 +2918,7 @@ await step('stock register: on hand, reserved, available, pending PO, expected i
   await click('button', 'BOM shortage (1)')
   await waitFor(`${bodyHas('MOCK-CLAY')} && !(${bodyHas('MOCK-WC-1')})`, 'BOM shortage filter')
   await click('button', 'All (3)')
-  await click('button[aria-label="Show details of MOCK-WC-1"]')
+  await click('[data-testid=position-row][data-product="MOCK-WC-1"] td:nth-child(3)')
   await waitFor(`!!document.querySelector('[data-testid="position-detail-MOCK-WC-1"]')`, 'drill-down')
   assert(await evaluate(`!!document.querySelector('[data-testid="position-detail-MOCK-WC-1"] a[href="/purchase-orders/po3"]') && !!document.querySelector('[data-testid="position-detail-MOCK-WC-1"] a[href="/goods-receipts/gr1"]') && !!document.querySelector('[data-testid="position-detail-MOCK-WC-1"] a[href="/production/orders/po1"]')`),
     'drill-down lacks PO, GRN or production links')
@@ -2921,6 +2934,77 @@ await step('stock register: on hand, reserved, available, pending PO, expected i
   await waitFor(bodyHas('GENERAL'), 'detail rows')
   assert(requests.some((r) => r.path === '/rest/v1/inventory_stock_detail'), 'detail view not queried')
   await screenshot('12-stock-register-detail')
+})
+
+await step('Stock Register product rows: photo first (uploaded before link, placeholder, broken link), no arrow, whole row expands and collapses, sorting, search, pagination keeps images, one image query per page', async () => {
+  const [p1, , p3, p4] = products
+  const saved = [p1, p3, p4].map((p) => ({ image_url: p.image_url ?? null, product_image_path: p.product_image_path ?? null }))
+  const LINK = 'https://img.smoke.example/clay.png'
+  Object.assign(p1, { product_image_path: `${COMPANY_ID}/p1/basin.png`, image_url: 'https://img.smoke.example/broken-not-used.jpg' })
+  Object.assign(p3, { image_url: LINK })
+  Object.assign(p4, { image_url: 'https://img.smoke.example/broken-glaze.jpg' })
+  STOCK_POSITION_EXTRA = 30
+  const row = (sku) => `document.querySelector('[data-testid=position-row][data-product="${sku}"]')`
+  const thumb = (sku) => `${row(sku)}?.querySelector('[data-testid=product-thumb]')`
+  const loaded = (sku) => `(() => { const i = ${thumb(sku)}?.querySelector('img'); return !!i && i.complete && i.naturalWidth > 0 })()`
+  const imageQueries = () => requests.filter((r) => r.path === '/rest/v1/products' && r.query.includes('product_image_path') && r.query.includes('id=in.'))
+  const detail = (sku) => `!!document.querySelector('[data-testid="position-detail-${sku}"]')`
+  try {
+    const before = imageQueries().length
+    await goto('/inventory/stock')
+    await waitFor(`!!${row('MOCK-WC-1')} && !!${row('MOCK-X01')}`, 'register rows')
+    // 1. Uploaded image wins over the link.  2. Link when nothing is uploaded.  3. No image.  4. Broken link.
+    await waitFor(loaded('MOCK-WC-1'), 'uploaded image shown')
+    assert(await evaluate(`${thumb('MOCK-WC-1')}.querySelector('img').src.includes('/storage/v1/object/sign/product-images/')`), 'the link was used instead of the uploaded image')
+    await waitFor(`${loaded('MOCK-CLAY')} && ${thumb('MOCK-CLAY')}.querySelector('img').src === ${JSON.stringify(LINK)}`, 'image link shown')
+    await waitFor(`${thumb('MOCK-GLZ')}?.dataset.state === 'broken' && !!${thumb('MOCK-GLZ')}.querySelector('[data-testid=product-thumb-placeholder]')`, 'broken link placeholder')
+    assert(await evaluate(`${thumb('MOCK-X01')}?.dataset.state === 'none'`), 'no-image placeholder')
+    // Photo is the first cell; 48 px square, contained, lazy; no arrow anywhere in the rows.
+    assert(await evaluate(`${row('MOCK-WC-1')}.querySelector('td').querySelector('[data-testid=product-thumb]') !== null`), 'image not in the first cell')
+    assert(await evaluate(`(() => { const r = ${thumb('MOCK-CLAY')}.getBoundingClientRect(); const i = ${thumb('MOCK-CLAY')}.querySelector('img'); return r.width === 48 && r.height === 48 && getComputedStyle(i).objectFit === 'contain' && i.loading === 'lazy' })()`), 'thumbnail size / fit / lazy')
+    assert(await evaluate(`!document.querySelector('[data-testid=position-row] svg.lucide-chevron-right, [data-testid=position-row] svg.lucide-chevron-down') && !document.querySelector('button[aria-label^="Show details of"]')`), 'an expand arrow is still shown')
+    const heads = await evaluate(`[...document.querySelector('[data-testid=position-row]').closest('table').querySelectorAll('thead th')].map((t) => t.innerText.trim().toLowerCase())`)
+    assert(JSON.stringify(heads.slice(0, 8)) === JSON.stringify(['image', 'product', 'category', 'unit', 'on hand', 'reserved', 'available', 'stock status']), JSON.stringify(heads))
+    // 10. One batched image query for the page (25 rows), not one per row.
+    assert(imageQueries().length - before === 1, `image queries for one page: ${imageQueries().length - before}`)
+    await screenshot('190-stock-register-photos')
+    // 5, 6. Clicking anywhere on the row opens it; again closes it. The page stays on the Stock Register.
+    await click(`[data-testid=position-row][data-product="MOCK-WC-1"] td:nth-child(5)`)
+    await waitFor(detail('MOCK-WC-1'), 'row expanded')
+    assert(await evaluate(`location.pathname === '/inventory/stock' && ${row('MOCK-WC-1')}.getAttribute('aria-expanded') === 'true'`), 'navigated away or not marked expanded')
+    // 7. Existing details unchanged.
+    assert(await evaluate(bodyHasAll('MAIN / GENERAL', '8 PCS of 10')), 'expanded details changed')
+    await click(`[data-testid=position-row][data-product="MOCK-WC-1"] td:nth-child(1)`)
+    await waitFor(`!${detail('MOCK-WC-1')}`, 'row collapsed by clicking the photo cell')
+    // Keyboard: Enter on the focused row.
+    await evaluate(`(() => { const r = ${row('MOCK-CLAY')}; r.focus(); r.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })) })()`)
+    await waitFor(detail('MOCK-CLAY'), 'keyboard opens the row')
+    await click(`[data-testid=position-row][data-product="MOCK-CLAY"] td:nth-child(3)`)
+    await waitFor(`!${detail('MOCK-CLAY')}`, 'collapsed')
+    // 8. Sorting keeps each photo with its product.
+    await click('th button', 'ON HAND')
+    await waitFor(`document.querySelector('[data-testid=position-row]')?.dataset.product === 'MOCK-X01'`, 'sorted by on hand')
+    // MOCK-WC-1 and MOCK-CLAY are now on page 2; the photos on page 1 still belong to their own products.
+    assert(await evaluate(`${thumb('MOCK-GLZ')}?.dataset.state === 'broken' && ${thumb('MOCK-X05')}?.dataset.state === 'none'`), 'photo moved to another product after sorting')
+    await click('th button', 'PRODUCT')
+    await waitFor(`document.querySelector('[data-testid=position-row]')?.dataset.product === 'MOCK-CLAY'`, 'sorted by product')
+    // 9. Next page: its own photos (one more batched query); back again: the first page's photos are still there.
+    const beforePage = imageQueries().length
+    await click('button[aria-label="Next page"]')
+    await waitFor(`!${row('MOCK-WC-1')} && !!document.querySelector('[data-testid=position-row] [data-testid=product-thumb]')`, 'page 2 with placeholders')
+    for (let t = Date.now(); imageQueries().length === beforePage && Date.now() - t < 3000;) await sleep(100)
+    assert(imageQueries().length - beforePage === 1, `image queries for page 2: ${imageQueries().length - beforePage}`)
+    await click('button[aria-label="Previous page"]')
+    await waitFor(`${loaded('MOCK-WC-1')} && ${loaded('MOCK-CLAY')}`, 'photos visible again on page 1')
+    // Search still filters the register.
+    await fill('input[placeholder^="Search or scan SKU"]', 'clay')
+    for (let t = Date.now(); !rpcCalls('inventory_stock_position').some((c) => JSON.stringify(c.body.p_filters ?? {}).toLowerCase().includes('clay')) && Date.now() - t < 4000;) await sleep(100)
+    assert(rpcCalls('inventory_stock_position').some((c) => JSON.stringify(c.body.p_filters ?? {}).toLowerCase().includes('clay')), 'search not sent with the register query')
+    await fill('input[placeholder^="Search or scan SKU"]', '')
+  } finally {
+    STOCK_POSITION_EXTRA = 0
+    ;[p1, p3, p4].forEach((p, i) => Object.assign(p, saved[i]))
+  }
 })
 
 await step('receipt: barcode scan selects product; review step; one posting with a request id', async () => {

@@ -1,4 +1,4 @@
-import { AlertTriangle, ChevronDown, ChevronRight, ClipboardList, Download, Factory, Loader2, PackageSearch, Scale, SearchX, Table2, Truck } from 'lucide-react'
+import { AlertTriangle, ClipboardList, Download, Factory, Loader2, PackageSearch, Scale, SearchX, Table2, Truck } from 'lucide-react'
 import { Fragment, useMemo, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 
@@ -14,6 +14,8 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { StockStatusBadge } from '@/features/inventory/inventory-badges'
+import { ProductThumb } from '@/features/products/product-image'
+import { useProductImagesById } from '@/features/products/product-image-hooks'
 import { formatQty } from '@/features/inventory/inventory-model'
 import {
   INDICATOR_LABELS, PROBLEM_LABELS, indicators, reconciliationSheet, sortPositions, stockPositionSheet, type Indicator, type PositionSortKey,
@@ -73,6 +75,9 @@ export function StockPositionPanel({ filters, stockStatus, onClearFilters, filte
   const shown = sortPositions(all.filter((r) => view === 'all' || (view === 'low' ? r.low_stock : view === 'shortage' ? Number(r.bom_shortage_quantity) > 0
     : view === 'pending' ? Number(r.pending_po_quantity) > 0 : r.discrepancy)), sort.column, sort.ascending)
   const pageRows = shown.slice(page * pageSize, page * pageSize + pageSize)
+  // Images of the visible page only: one batched product query + one batch of signed links (cached), never one request per row.
+  const images = useProductImagesById(pageRows.map((r) => r.product_id))
+  const toggle = (id: string) => setOpen((o) => (o === id ? null : id))
 
   const exportExcel = async () => {
     setExporting(true)
@@ -118,16 +123,18 @@ export function StockPositionPanel({ filters, stockStatus, onClearFilters, filte
             <Table>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
-                  <TableHead className="w-8"><span className="sr-only">Details</span></TableHead>
+                  <TableHead className="w-16"><span className="sr-only">Image</span></TableHead>
                   <SortableHead column="sku" label="Product" sort={sort} onSort={setSort} />
+                  <TableHead>Category</TableHead>
+                  <TableHead>Unit</TableHead>
                   <SortableHead column="on_hand" label="On hand" sort={sort} onSort={setSort} align="right" />
                   <SortableHead column="reserved" label="Reserved" sort={sort} onSort={setSort} align="right" />
                   <SortableHead column="available" label="Available" sort={sort} onSort={setSort} align="right" />
+                  <TableHead>Stock status</TableHead>
                   <SortableHead column="pending_po_quantity" label="Pending PO" sort={sort} onSort={setSort} align="right" />
                   <SortableHead column="expected_incoming_quantity" label="Expected in" sort={sort} onSort={setSort} align="right" />
                   <SortableHead column="bom_required_quantity" label="BOM required" sort={sort} onSort={setSort} align="right" />
                   <SortableHead column="bom_shortage_quantity" label="BOM shortage" sort={sort} onSort={setSort} align="right" />
-                  <TableHead>Status</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -135,25 +142,21 @@ export function StockPositionPanel({ filters, stockStatus, onClearFilters, filte
                   const isOpen = open === r.product_id
                   return (
                     <Fragment key={r.product_id}>
-                      <TableRow className={cn('cursor-pointer', isOpen && 'bg-muted/40')} onClick={() => setOpen(isOpen ? null : r.product_id)}>
-                        <TableCell>
-                          <button type="button" aria-expanded={isOpen} aria-label={`${isOpen ? 'Hide' : 'Show'} details of ${r.sku}`}
-                            onClick={(e) => { e.stopPropagation(); setOpen(isOpen ? null : r.product_id) }} className="rounded p-0.5 text-muted-foreground hover:text-foreground">
-                            {isOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
-                          </button>
-                        </TableCell>
+                      {/* The whole row opens and closes the details (no arrow). Links inside it keep their own action. */}
+                      <TableRow className={cn('cursor-pointer outline-none focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset', isOpen && 'bg-muted/40')} data-testid="position-row" data-product={r.sku}
+                        tabIndex={0} aria-expanded={isOpen} aria-label={`${r.sku} ${r.product_name}: ${isOpen ? 'hide' : 'show'} details`}
+                        onClick={(e) => { if (!(e.target as HTMLElement).closest('a, button, input, select, textarea, [role=button]')) toggle(r.product_id) }}
+                        onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); toggle(r.product_id) } }}>
+                        <TableCell className="py-2"><ProductThumb size="row" src={images.get(r.product_id)} alt={r.product_name} preview={false} /></TableCell>
                         <TableCell className="min-w-48 whitespace-normal">
-                          <Link to={`/inventory/stock/${r.product_id}`} onClick={(e) => e.stopPropagation()} className="font-medium text-primary hover:underline">{r.sku}</Link>
-                          <span className="block text-xs text-muted-foreground">{r.product_name} · {r.unit}</span>
+                          <Link to={`/inventory/stock/${r.product_id}`} className="font-medium text-primary hover:underline">{r.sku}</Link>
+                          <span className="block text-xs text-muted-foreground">{r.product_name}</span>
                         </TableCell>
+                        <TableCell className="max-w-48 truncate text-muted-foreground">{r.category_name ?? '—'}</TableCell>
+                        <TableCell>{r.unit}</TableCell>
                         <TableCell className="text-right tabular-nums">{qty(r.on_hand)}</TableCell>
                         <TableCell className="text-right tabular-nums text-amber-800">{qty(r.reserved)}</TableCell>
                         <TableCell className={cn('text-right font-medium tabular-nums', r.low_stock ? 'text-amber-700' : 'text-green-700')}>{qty(r.available)}</TableCell>
-                        <TableCell className="text-right tabular-nums text-blue-700">{qty(r.pending_po_quantity)}
-                          {Number(r.open_po_count) > 0 && <span className="block text-xs text-muted-foreground">{r.open_po_count} PO</span>}</TableCell>
-                        <TableCell className="text-right tabular-nums">{qty(r.expected_incoming_quantity)}</TableCell>
-                        <TableCell className="text-right tabular-nums">{qty(r.bom_required_quantity)}</TableCell>
-                        <TableCell className={cn('text-right tabular-nums', Number(r.bom_shortage_quantity) > 0 && 'font-semibold text-shortage')}>{qty(r.bom_shortage_quantity)}</TableCell>
                         <TableCell>
                           <span className="flex flex-wrap items-center gap-1.5">
                             {r.stock_status && <StockStatusBadge status={r.stock_status} />}
@@ -163,10 +166,15 @@ export function StockPositionPanel({ filters, stockStatus, onClearFilters, filte
                             })}
                           </span>
                         </TableCell>
+                        <TableCell className="text-right tabular-nums text-blue-700">{qty(r.pending_po_quantity)}
+                          {Number(r.open_po_count) > 0 && <span className="block text-xs text-muted-foreground">{r.open_po_count} PO</span>}</TableCell>
+                        <TableCell className="text-right tabular-nums">{qty(r.expected_incoming_quantity)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{qty(r.bom_required_quantity)}</TableCell>
+                        <TableCell className={cn('text-right tabular-nums', Number(r.bom_shortage_quantity) > 0 && 'font-semibold text-shortage')}>{qty(r.bom_shortage_quantity)}</TableCell>
                       </TableRow>
                       {isOpen && (
                         <TableRow className="hover:bg-transparent">
-                          <TableCell colSpan={10} className="bg-muted/20 p-0 whitespace-normal">
+                          <TableCell colSpan={13} className="bg-muted/20 p-0 whitespace-normal">
                             <PositionDetail row={r} warehouseId={filters.warehouse_id ?? null} />
                           </TableCell>
                         </TableRow>

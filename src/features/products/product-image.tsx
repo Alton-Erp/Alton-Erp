@@ -10,7 +10,8 @@ import { cn } from '@/lib/utils'
 
 const failed = new Set<string>()
 
-const SIZES = { xs: 'size-8', sm: 'size-10', md: 'size-16', lg: 'size-40' } as const
+// row = 48px, for list rows (fixed box, so nothing shifts while an image loads).
+const SIZES = { xs: 'size-8', sm: 'size-10', row: 'size-12', md: 'size-16', lg: 'size-40' } as const
 
 /**
  * A product thumbnail. Click opens a larger preview (unless `preview` is false). A missing or broken
@@ -35,7 +36,7 @@ export function ProductThumb({ src, alt, size = 'sm', preview = true, className,
       data-testid="product-thumb-img"
       onError={() => { failed.add(shown); setBrokenSrc(shown) }} />
   ) : (
-    <ImageOff aria-hidden className={cn('text-muted-foreground/70', size === 'lg' ? 'size-8' : 'size-4')} data-testid="product-thumb-placeholder" />
+    <ImageOff aria-hidden className={cn('text-muted-foreground/70', size === 'lg' ? 'size-8' : size === 'row' || size === 'md' ? 'size-5' : 'size-4')} data-testid="product-thumb-placeholder" />
   )
   if (!shown || !preview) {
     return <span className={box} data-testid="product-thumb" data-state={shown ? 'image' : src ? 'broken' : 'none'} title={src && broken ? 'The image could not be loaded' : undefined}>{image}</span>
