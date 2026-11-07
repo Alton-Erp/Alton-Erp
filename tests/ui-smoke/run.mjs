@@ -1529,6 +1529,8 @@ const api = http.createServer((req, res) => {
           return send(res, 200, { job_id: 'job10', created: [{ first_row: 2, customer_reference: 'PO-1', sales_order_id: 'so1', sales_order_number: 'SO-000011', status: 'READY_FOR_DISPATCH', grand_total: 2360 }],
             failed: [{ first_row: 4, customer_reference: 'N-1', messages: ['Customer "Nobody Ltd" was not found.'] }], created_count: 1, failed_count: 1 })
         // V2 Stage 7: management overview, dashboards, settings, search, activity, reconciliation, reports
+        case 'inventory_stock_value_summary':
+          return send(res, 200, stockValueSummary(body.p_unit, body.p_search))
         case 'management_overview':
           return send(res, 200, MGMT_OVERVIEW(body.p_from, body.p_to))
         case 'module_dashboard':
@@ -2104,6 +2106,33 @@ const api = http.createServer((req, res) => {
     return send(res, 404, { message: 'not mocked: ' + url.pathname })
   })
 })
+
+
+// Stock valuation (migration 20261125090000): p1 has two costed lots, MOCK-CLAY has no cost.
+Object.assign(tables, {
+  inventory_product_stock_value: [
+    { ...tables.inventory_product_stock[0], unit_cost: 458.5714285714, stock_value: 64200, valued_on_hand: 140, unvalued_on_hand: 0, valuation_status: 'VALUED' },
+    { ...tables.inventory_product_stock[0], product_id: 'p3', sku: 'MOCK-CLAY', product_name: 'Mock ceramic body', barcode: null, category_name: 'Raw materials', product_type: 'RAW_MATERIAL',
+      base_unit: 'KG', on_hand: 50, reserved: 0, available: 50, in_house_on_hand: 50, outsourced_on_hand: 0, unit_cost: null, stock_value: null, valued_on_hand: 0, unvalued_on_hand: 50,
+      valuation_status: 'NOT_VALUED' },
+  ],
+  inventory_balance_value: [
+    { balance_id: 'b1', company_id: COMPANY_ID, product_id: 'p1', batch_id: 'lot-IN_HOUSE', warehouse_id: 'w1', location_id: 'l1', on_hand: 100, unit_cost: 450, stock_value: 45000 },
+    { balance_id: 'b2', company_id: COMPANY_ID, product_id: 'p1', batch_id: 'lot-OUTSOURCED', warehouse_id: 'w1', location_id: 'l1', on_hand: 40, unit_cost: 480, stock_value: 19200 },
+  ],
+})
+function stockValueSummary(unit, search) {
+  const term = (search ?? '').toLowerCase()
+  const rows = tables.inventory_product_stock_value.filter((r) => (!unit || r.base_unit === unit) && (!term || [r.sku, r.product_name, r.barcode].some((v) => String(v ?? '').toLowerCase().includes(term))))
+  const units = [...new Set(rows.map((r) => r.base_unit))].sort().map((u) => {
+    const of = rows.filter((r) => r.base_unit === u)
+    const sum = (k) => of.reduce((s, r) => s + Number(r[k]), 0)
+    return { unit: u, on_hand: sum('on_hand'), reserved: sum('reserved'), available: sum('available') }
+  })
+  return { products: rows.length, units, total_value: rows.reduce((s, r) => s + Number(r.stock_value ?? 0), 0),
+    valued_products: rows.filter((r) => r.valuation_status === 'VALUED').length, partly_valued_products: rows.filter((r) => r.valuation_status === 'PARTIAL').length,
+    not_valued_products: rows.filter((r) => r.valuation_status === 'NOT_VALUED').length, method: 'mock' }
+}
 
 // User management lists the company's profiles and their role assignments.
 Object.assign(tables, {
@@ -4020,6 +4049,78 @@ await step('management dashboard: nine figures, period filter (today / week / mo
   assert(await noHorizontalScroll(), 'mobile: dashboard scrolls horizontally')
   await screenshot('v2-management-dashboard-mobile')
   await cdp('Emulation.clearDeviceMetricsOverride')
+})
+
+await step('Total Stock valuation: unit cost and stock value columns, Not Valued, server summary cards, search, sorting, columns, export, product stock card', async () => {
+  const th = `[...document.querySelectorAll('[data-testid=drill-table] th')].map((t) => t.innerText.trim().toLowerCase())`
+  const rowText = (sku) => `([...document.querySelectorAll('[data-testid=drill-table] tbody tr')].find((tr) => tr.innerText.includes(${JSON.stringify(sku)}))?.innerText ?? '')`
+  const cardText = (id) => evaluate(`document.querySelector('[data-testid=${id}]')?.innerText.replace(/\\s+/g, ' ') ?? ''`)
+  const lastQuery = (p) => decodeURIComponent((requests.filter((r) => r.path === p).at(-1)?.query ?? '').split('+').join(' '))
+  await goto('/')
+  await waitFor(`!!document.querySelector('[data-testid=kpi-total-stock] a, a[data-testid=kpi-total-stock]')`, 'total stock card link')
+  await click('[data-testid=kpi-total-stock] a, a[data-testid=kpi-total-stock]')
+  await waitFor(`location.pathname === '/drilldown/inventory.on_hand' && !!document.querySelector('[data-testid=drill-table]')`, 'Total Stock drill-down')
+  assert(lastQuery('/rest/v1/inventory_product_stock_value').includes('on_hand=neq.0'), lastQuery('/rest/v1/inventory_product_stock_value'))
+  const heads = await evaluate(th)
+  assert(JSON.stringify(heads) === JSON.stringify(['sku', 'product', 'category', 'unit', 'on hand', 'reserved', 'available', 'unit cost (₹)', 'total stock value (₹)', 'stock status']), JSON.stringify(heads))
+  // 1 / 4: known cost (two lots: 100 @ 450 + 40 @ 480).  6: no cost -> Not Valued, never ₹0.
+  await waitFor(`${rowText('MOCK-WC-1')}.includes('₹458.57') && ${rowText('MOCK-WC-1')}.includes('₹64,200.00')`, 'valued product row')
+  const clay = await evaluate(rowText('MOCK-CLAY'))
+  assert((clay.match(/Not Valued/g) ?? []).length === 2 && !clay.includes('₹0'), clay)
+  // Summary cards from the server function.
+  await waitFor(`document.querySelector('[data-testid=sv-value]')?.innerText.includes('₹64,200.00')`, 'summary cards')
+  assert((await cardText('sv-products')).includes('2'), await cardText('sv-products'))
+  assert((await cardText('sv-on-hand')).includes('140 PCS') && (await cardText('sv-on-hand')).includes('50 KG'), await cardText('sv-on-hand'))
+  assert((await cardText('sv-reserved')).includes('10 PCS') && (await cardText('sv-available')).includes('130 PCS'), await cardText('sv-available'))
+  assert((await cardText('sv-value')).includes('1 product(s) not fully valued'), await cardText('sv-value'))
+  await screenshot('180-total-stock-valuation')
+  // 7. Search: the list and the summary use the same text.
+  await fill('input[aria-label="Search records"]', 'clay')
+  await waitFor(`document.querySelector('[data-testid=sv-products]')?.innerText.includes('1') && document.querySelector('[data-testid=sv-value]')?.innerText.includes('₹0.00')`, 'summary follows the search')
+  assert(rpcCalls('inventory_stock_value_summary').at(-1).body.p_search === 'clay', JSON.stringify(rpcCalls('inventory_stock_value_summary').at(-1).body))
+  assert(lastQuery('/rest/v1/inventory_product_stock_value').includes('ilike'), lastQuery('/rest/v1/inventory_product_stock_value'))
+  await fill('input[aria-label="Search records"]', '')
+  await waitFor(`document.querySelector('[data-testid=sv-value]')?.innerText.includes('₹64,200.00')`, 'search cleared')
+  // Sorting by stock value and unit cost happens on the server.
+  await click('[data-testid=drill-table] th button', 'Total Stock Value')
+  await waitFor(`new URLSearchParams(location.search).get('sort') === 'stock_value'`, 'sort by value')
+  for (let t = Date.now(); !lastQuery('/rest/v1/inventory_product_stock_value').includes('order=stock_value.asc') && Date.now() - t < 5000;) await sleep(100)
+  assert(lastQuery('/rest/v1/inventory_product_stock_value').includes('order=stock_value.asc.nullslast'), lastQuery('/rest/v1/inventory_product_stock_value'))
+  await click('[data-testid=drill-table] th button', 'Total Stock Value')
+  await waitFor(`new URLSearchParams(location.search).get('sort') === '-stock_value'`, 'sort by value, highest first')
+  await click('[data-testid=drill-table] th button', 'Unit Cost')
+  await waitFor(`new URLSearchParams(location.search).get('sort') === 'unit_cost'`, 'sort by unit cost')
+  await click('[data-testid=drill-table] th button', 'SKU')
+  await waitFor(`new URLSearchParams(location.search).get('sort') === 'sku'`, 'SKU sort kept')
+  // Columns selector lists the new columns; hiding one hides it.
+  await click('button', 'Columns')
+  await waitFor(`[...document.querySelectorAll('[role=dialog] label, [data-radix-popper-content-wrapper] label')].some((l) => l.innerText.includes('Unit Cost (₹)'))`, 'columns selector')
+  assert(await evaluate(`[...document.querySelectorAll('[data-radix-popper-content-wrapper] label')].some((l) => l.innerText.includes('Total Stock Value (₹)'))`), 'value column not in the selector')
+  await evaluate(`[...document.querySelectorAll('[data-radix-popper-content-wrapper] label')].find((l) => l.innerText.includes('Unit Cost (₹)')).querySelector('button').click()`)
+  await waitFor(`!${th}.includes('unit cost (₹)')`, 'unit cost hidden')
+  await evaluate(`[...document.querySelectorAll('[data-radix-popper-content-wrapper] label')].find((l) => l.innerText.includes('Unit Cost (₹)')).querySelector('button').click()`)
+  await waitFor(`${th}.includes('unit cost (₹)')`, 'unit cost shown again')
+  await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' })
+  // 10. Excel export carries the same values (numbers; Not Valued as text).
+  for (const f of readdirSync(downloadDir)) rmSync(path.join(downloadDir, f), { force: true })
+  await click('button', 'Export to Excel')
+  let file
+  for (let i = 0; i < 50 && !file; i++) { await sleep(100); file = readdirSync(downloadDir).find((f) => f.startsWith('Total-Units-on-Hand') && f.endsWith('.xlsx')) }
+  assert(file, 'export not downloaded')
+  const wb = XLSX.read(readFileSync(path.join(downloadDir, file)))
+  const sheet = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1 })
+  const h = sheet[0]
+  const wc = sheet.find((r) => r[0] === 'MOCK-WC-1')
+  const cl = sheet.find((r) => r[0] === 'MOCK-CLAY')
+  assert(h.includes('Unit Cost (₹)') && h.includes('Total Stock Value (₹)'), JSON.stringify(h))
+  assert(Math.abs(wc[h.indexOf('Unit Cost (₹)')] - 458.5714285714) < 0.0001 && wc[h.indexOf('Total Stock Value (₹)')] === 64200, JSON.stringify(wc))
+  assert(cl[h.indexOf('Unit Cost (₹)')] === 'Not Valued' && cl[h.indexOf('Total Stock Value (₹)')] === 'Not Valued', JSON.stringify(cl))
+  // Product stock card: average cost, total value, value per location and lot.
+  await click('[data-testid=drill-table] a', 'MOCK-WC-1')
+  await waitFor(`location.pathname === '/inventory/stock/p1'`, 'stock card')
+  await waitFor(`document.querySelector('[data-testid=ps-avg-cost]')?.innerText.includes('₹458.57') && document.querySelector('[data-testid=ps-stock-value]')?.innerText.includes('₹64,200.00')`, 'average cost and value')
+  await waitFor(bodyHasAll('₹45,000.00', '₹19,200.00', '₹450.00', '₹480.00'), 'each lot at its own cost')
+  await screenshot('181-product-stock-valuation')
 })
 
 await step('global search: records (product, sales order) and modules; choosing a record opens it', async () => {

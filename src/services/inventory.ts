@@ -970,3 +970,39 @@ export async function fetchBatches() {
   if (error) throw error
   return data ?? []
 }
+
+// ---------------------------------------------------------------------------
+// Stock valuation (migration 20261125090000): the stock report rule, read-only
+// ---------------------------------------------------------------------------
+export interface ProductStockValuation {
+  unit_cost: number | null
+  stock_value: number | null
+  valued_on_hand: number
+  unvalued_on_hand: number
+  valuation_status: 'VALUED' | 'PARTIAL' | 'NOT_VALUED' | 'NO_STOCK'
+  /** Value of each lot in each location, by balance id. */
+  lots: Map<string, { unit_cost: number | null; stock_value: number | null }>
+}
+
+/** One product's average inventory cost, stock value and the value of each lot/location, computed by the database. */
+export async function fetchProductStockValuation(productId: string): Promise<ProductStockValuation> {
+  // Views of migration 20261125090000 are not in the generated types yet.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const client = db() as any
+  const [p, l] = await Promise.all([
+    client.from('inventory_product_stock_value').select('unit_cost, stock_value, valued_on_hand, unvalued_on_hand, valuation_status').eq('product_id', productId).maybeSingle(),
+    client.from('inventory_balance_value').select('balance_id, unit_cost, stock_value').eq('product_id', productId).limit(2000),
+  ])
+  if (p.error) throw p.error
+  if (l.error) throw l.error
+  const row = (p.data ?? {}) as Record<string, unknown>
+  const num = (v: unknown) => (v === null || v === undefined ? null : Number(v))
+  return {
+    unit_cost: num(row.unit_cost),
+    stock_value: num(row.stock_value),
+    valued_on_hand: Number(row.valued_on_hand ?? 0),
+    unvalued_on_hand: Number(row.unvalued_on_hand ?? 0),
+    valuation_status: (row.valuation_status as ProductStockValuation['valuation_status']) ?? 'NO_STOCK',
+    lots: new Map(((l.data ?? []) as Record<string, unknown>[]).map((r) => [String(r.balance_id), { unit_cost: num(r.unit_cost), stock_value: num(r.stock_value) }])),
+  }
+}

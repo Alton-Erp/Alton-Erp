@@ -12,6 +12,10 @@ export interface DrillColumn {
   sortable?: boolean
   /** Value from a nested field (RPC rows). */
   get?: (row: Record<string, unknown>) => unknown
+  /** Text shown (and exported) when the value is empty, instead of a dash. */
+  empty?: (row: Record<string, unknown>) => string | null
+  /** Short note after the formatted value (screen only). */
+  note?: (row: Record<string, unknown>) => string | null
 }
 
 const c = (key: string, label: string, kind: ColumnKind = 'text', visible = true, sortable = true): DrillColumn => ({ key, label, kind, visible, sortable })
@@ -21,6 +25,9 @@ const unitsText = (row: Record<string, unknown>, field: 'ordered' | 'dispatched'
   return list.map((u) => `${Number(u[field] ?? 0)} ${u.unit}`).join(', ')
 }
 
+/** Stock on hand with no lot cost (the stock reports never value it at zero). */
+const notValued = (r: Record<string, unknown>) => (Number(r.on_hand ?? 0) > 0 ? 'Not Valued' : null)
+
 /** Columns of each list, in the order shown. */
 export const COLUMNS: Record<SourceKey, DrillColumn[]> = {
   products: [c('sku', 'SKU'), c('product_name', 'Product'), c('product_type', 'Type', 'status'), c('default_source_type', 'Source', 'status'), c('status', 'Status', 'status'),
@@ -29,6 +36,14 @@ export const COLUMNS: Record<SourceKey, DrillColumn[]> = {
   product_stock: [c('sku', 'SKU'), c('product_name', 'Product'), c('category_name', 'Category'), c('product_type', 'Type', 'status', false), c('base_unit', 'Unit'),
     c('on_hand', 'On hand', 'number'), c('reserved', 'Reserved', 'number'), c('available', 'Available', 'number'), c('reorder_level', 'Reorder level', 'number', false),
     c('in_house_on_hand', 'In-house', 'number', false), c('outsourced_on_hand', 'Outsourced', 'number', false), c('stock_status', 'Stock status', 'status'),
+    c('last_movement_at', 'Last movement', 'datetime', false)],
+  // Total Stock: valuation from inventory_product_stock_value. No cost is shown as "Not Valued", never ₹0.
+  product_stock_value: [c('sku', 'SKU'), c('product_name', 'Product'), c('category_name', 'Category'), c('product_type', 'Type', 'status', false), c('base_unit', 'Unit'),
+    c('on_hand', 'On hand', 'number'), c('reserved', 'Reserved', 'number'), c('available', 'Available', 'number'),
+    { ...c('unit_cost', 'Unit Cost (₹)', 'money'), empty: notValued },
+    { ...c('stock_value', 'Total Stock Value (₹)', 'money'), empty: notValued, note: (r) => (r.valuation_status === 'PARTIAL' ? 'part valued' : null) },
+    c('stock_status', 'Stock status', 'status'), c('valuation_status', 'Valuation', 'status', false), c('unvalued_on_hand', 'Quantity not valued', 'number', false),
+    c('reorder_level', 'Reorder level', 'number', false), c('in_house_on_hand', 'In-house', 'number', false), c('outsourced_on_hand', 'Outsourced', 'number', false),
     c('last_movement_at', 'Last movement', 'datetime', false)],
   stock_detail: [c('sku', 'SKU'), c('product_name', 'Product'), c('warehouse_code', 'Warehouse'), c('location_code', 'Location'), c('batch_number', 'Lot / batch'),
     c('source_type', 'Source', 'status', false), c('base_unit', 'Unit'), c('on_hand', 'On hand', 'number'), c('reserved', 'Reserved', 'number'), c('available', 'Available', 'number'),
@@ -77,6 +92,7 @@ const to = (path: string, value: string | null) => (value ? path.replace(':id', 
 export const RECORD_LINK: Record<SourceKey, (row: Record<string, unknown>) => string | null> = {
   products: (r) => to('/products/:id', id(r, 'id')),
   product_stock: (r) => to('/inventory/stock/:id', id(r, 'product_id')),
+  product_stock_value: (r) => to('/inventory/stock/:id', id(r, 'product_id')),
   stock_detail: (r) => to('/inventory/stock/:id', id(r, 'product_id')),
   movements: (r) => to('/inventory/stock/:id', id(r, 'product_id')),
   purchase_orders: (r) => to('/purchase-orders/:id', id(r, 'id')),
@@ -98,6 +114,7 @@ export const RECORD_LINK: Record<SourceKey, (row: Record<string, unknown>) => st
 export const MODULE_LIST: Record<SourceKey, { label: string; path: string }> = {
   products: { label: 'Product Master', path: '/products' },
   product_stock: { label: 'Stock Register', path: '/inventory/stock' },
+  product_stock_value: { label: 'Stock Register', path: '/inventory/stock' },
   stock_detail: { label: 'Stock Register', path: '/inventory/stock' },
   movements: { label: 'Stock Movements', path: '/inventory/movements' },
   purchase_orders: { label: 'Purchase Orders', path: '/purchase-orders' },

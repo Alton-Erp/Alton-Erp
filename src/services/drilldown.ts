@@ -152,3 +152,20 @@ export async function fetchAllDrillRows(metric: DrillMetric, ctx: DrillContext, 
   }
   return rows
 }
+
+export interface StockValueSummary {
+  products: number
+  units: { unit: string; on_hand: number; reserved: number; available: number }[]
+  total_value: number
+  valued_products: number
+  partly_valued_products: number
+  not_valued_products: number
+  method: string
+}
+
+/** Totals of the Total Stock drill-down, computed on the server over the listed records (same unit filter and search). */
+export async function fetchStockValueSummary(unit: string | null, search: string): Promise<StockValueSummary> {
+  const { data, error } = await requireSupabase().rpc('inventory_stock_value_summary' as never, { p_unit: unit, p_search: search.trim() || null } as never)
+  if (error) throw error
+  return data as unknown as StockValueSummary
+}

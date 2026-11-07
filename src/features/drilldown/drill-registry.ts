@@ -93,7 +93,7 @@ export const STOCK_HEALTH = ['HEALTHY', 'LOW_STOCK', 'FULLY_RESERVED', 'OUT_OF_S
 // Sources: the lists the records are read from
 // ---------------------------------------------------------------------------
 export type SourceKey =
-  | 'products' | 'product_stock' | 'stock_detail' | 'movements' | 'purchase_orders' | 'grns' | 'grn_lines'
+  | 'products' | 'product_stock' | 'product_stock_value' | 'stock_detail' | 'movements' | 'purchase_orders' | 'grns' | 'grn_lines'
   | 'production_orders' | 'production_outputs' | 'production_consumption' | 'invoices' | 'payments' | 'sales_orders_view'
   | 'sales_orders' | 'parties' | 'production_shortages' | 'sales_shortages'
 
@@ -119,6 +119,8 @@ export type DrillSource = ViewSource | RpcSource
 export const SOURCES: Record<SourceKey, DrillSource> = {
   products: { kind: 'view', relation: 'products', id: 'id', search: ['sku', 'product_name', 'barcode', 'model_number'], sort: { column: 'sku', ascending: true } },
   product_stock: { kind: 'view', relation: 'inventory_product_stock', id: 'product_id', search: ['sku', 'product_name', 'barcode'], sort: { column: 'sku', ascending: true } },
+  // inventory_product_stock plus its stock valuation (migration 20261125090000; the stock report rule).
+  product_stock_value: { kind: 'view', relation: 'inventory_product_stock_value', id: 'product_id', search: ['sku', 'product_name', 'barcode'], sort: { column: 'sku', ascending: true } },
   stock_detail: { kind: 'view', relation: 'inventory_stock_detail', id: 'balance_id', search: ['sku', 'product_name', 'batch_number', 'location_code'], sort: { column: 'sku', ascending: true } },
   movements: { kind: 'view', relation: 'inventory_transaction_list', id: 'id', search: ['transaction_number', 'sku', 'product_name', 'reference_number'], sort: { column: 'transaction_date', ascending: false } },
   purchase_orders: { kind: 'view', relation: 'purchase_order_list_v2', id: 'id', search: ['po_number', 'supplier_name', 'reference_number'], sort: { column: 'po_date', ascending: false } },
@@ -186,6 +188,8 @@ export interface DrillMetric {
   uses?: ('period' | 'today' | 'unit' | 'segment' | 'segmentRange' | 'customer' | 'status' | 'payment')[]
   /** Dashboard function and field the figure comes from (database check). */
   basis: string
+  /** Extra summary cards computed on the server (stock_value: inventory_stock_value_summary). */
+  summary?: 'stock_value'
 }
 
 const COUNT: Measure = { kind: 'count' }
@@ -277,7 +281,9 @@ const list: DrillMetric[] = [
   // --- Inventory ------------------------------------------------------------
   { ...INV, key: 'inventory.active_products', label: 'Total Active Products', definition: 'Active products that are not archived.', measure: COUNT, basis: 'inventory_overview.active_products',
     conditions: () => activeStock },
-  unitQty('on_hand', 'Total Units on Hand', 'inventory.on_hand', 'Physical quantity in stock in every location, per product.'),
+  // "Total Stock" of the Management Dashboard: the same records, with each product's stock value.
+  { ...unitQty('on_hand', 'Total Units on Hand', 'inventory.on_hand', 'Physical quantity in stock in every location, per product, with its value at average inventory cost.'),
+    source: 'product_stock_value', summary: 'stock_value' },
   unitQty('reserved', 'Total Reserved Units', 'inventory.reserved', 'Quantity reserved for orders and not yet issued.'),
   unitQty('available', 'Total Available Units', 'inventory.available', 'On hand minus reserved, in storage locations.'),
   unitQty('in_house_on_hand', 'In-House Stock', 'inventory.in_house', 'Stock in lots made in-house.'),

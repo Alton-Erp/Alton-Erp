@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, Columns3, Download, ExternalLink, Filter, Printer, RefreshCw, Search, ShieldX, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, Boxes, Columns3, Download, ExternalLink, Filter, IndianRupee, Lock, PackageCheck, Printer, RefreshCw, Search, ShieldX, Warehouse, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
@@ -24,14 +24,15 @@ import { useAsync } from '@/hooks/use-async'
 import { describeDataError } from '@/lib/errors'
 import { formatDate, formatDateTime, formatNumber, parseIsoDate, toIsoDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { EXPORT_LIMIT, fetchAllDrillRows, fetchDrillPage } from '@/services/drilldown'
+import { EXPORT_LIMIT, fetchAllDrillRows, fetchDrillPage, fetchStockValueSummary } from '@/services/drilldown'
+import { KpiCard } from '@/components/common/kpi-card'
 
 const PAGE_SIZES = [25, 50, 100]
 const humanize = (s: string) => s.charAt(0) + s.slice(1).toLowerCase().replace(/_/g, ' ')
 
 function cellText(col: DrillColumn, row: Record<string, unknown>): string {
   const v = columnValue(col, row)
-  if (v === null || v === undefined || v === '') return '—'
+  if (v === null || v === undefined || v === '') return col.empty?.(row) ?? '—'
   switch (col.kind) {
     case 'money': return money(Number(v))
     case 'number': return formatNumber(Number(v))
@@ -45,7 +46,7 @@ function cellText(col: DrillColumn, row: Record<string, unknown>): string {
 /** Excel cell: numbers stay numbers. */
 function cellExport(col: DrillColumn, row: Record<string, unknown>): string | number | null {
   const v = columnValue(col, row)
-  if (v === null || v === undefined || v === '') return null
+  if (v === null || v === undefined || v === '') return col.empty?.(row) ?? null
   if (col.kind === 'money' || col.kind === 'number') return Number(v)
   return cellText(col, row)
 }
@@ -207,6 +208,8 @@ function Drilldown({ metricKey }: { metricKey: string }) {
         </CardContent>
       </Card>
 
+      {metric.summary === 'stock_value' && <StockValueSummary unit={uses.has('unit') ? ctx.unit ?? null : null} search={search} refresh={refresh} />}
+
       <div className="mb-3 flex flex-wrap items-center gap-2 print:hidden">
         <div className="relative w-full sm:w-72">
           <Search aria-hidden className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -271,6 +274,7 @@ function Drilldown({ metricKey }: { metricKey: string }) {
                       {shown.map((c, ci) => (
                         <td key={c.key} className={cn('px-3 py-2', c.kind === 'money' || c.kind === 'number' ? 'text-right tabular-nums whitespace-nowrap' : 'max-w-72 truncate')}>
                           {ci === 0 && to ? <Link to={to} className="font-medium text-primary hover:underline">{cellText(c, r)}</Link> : cellText(c, r)}
+                          {c.note?.(r) && <span className="ml-1 text-xs text-muted-foreground">({c.note(r)})</span>}
                         </td>
                       ))}
                     </tr>
@@ -299,5 +303,29 @@ function Drilldown({ metricKey }: { metricKey: string }) {
         </div>
       )}
     </>
+  )
+}
+
+const unitsText = (list: { unit: string; quantity: number }[]) => list.filter((u) => u.quantity !== 0).map((u) => `${formatNumber(u.quantity)} ${u.unit}`).join(' · ') || '0'
+
+/**
+ * Summary cards of the Total Stock drill-down, added up on the server (inventory_stock_value_summary)
+ * over exactly the records listed: the same unit filter and search.
+ */
+function StockValueSummary({ unit, search, refresh }: { unit: string | null; search: string; refresh: number }) {
+  const s = useAsync(() => fetchStockValueSummary(unit, search), [unit, search, refresh])
+  if (s.error) return <p role="alert" className="mb-4 text-sm text-red-700" data-testid="stock-value-error">Stock value totals could not be loaded: {describeDataError(s.error)}</p>
+  const d = s.data
+  const units = (k: 'on_hand' | 'reserved' | 'available') => (d ? unitsText(d.units.map((u) => ({ unit: u.unit, quantity: Number(u[k]) }))) : '…')
+  const notValued = d ? d.not_valued_products + d.partly_valued_products : 0
+  return (
+    <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5" data-testid="stock-value-summary">
+      <KpiCard testId="sv-products" icon={Boxes} label="Total Products" value={d ? formatNumber(d.products) : '…'} />
+      <KpiCard testId="sv-on-hand" icon={Warehouse} label="Total On Hand Quantity" value={units('on_hand')} />
+      <KpiCard testId="sv-reserved" icon={Lock} accent="pending" label="Total Reserved Quantity" value={units('reserved')} />
+      <KpiCard testId="sv-available" icon={PackageCheck} accent="available" label="Total Available Quantity" value={units('available')} />
+      <KpiCard testId="sv-value" icon={IndianRupee} label="Total Inventory Value (₹)" value={d ? money(Number(d.total_value)) : '…'}
+        hint={d ? (notValued ? `Average inventory cost · ${formatNumber(notValued)} product(s) not fully valued (no cost recorded)` : 'Average inventory cost, as in the stock reports') : undefined} />
+    </div>
   )
 }
