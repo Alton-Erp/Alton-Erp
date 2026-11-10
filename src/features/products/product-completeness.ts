@@ -11,8 +11,10 @@ export interface CompletenessInput {
   gst_rate: number | null
   category_id: string | null
   selling_price: number | null
+  /** Cost (the one product cost; the database keeps standard_manufacturing_cost equal to it). */
   standard_cost: number | null
-  standard_manufacturing_cost: number | null
+  /** Earlier column: equal to Cost after migration 20261127090000; read only so the rule matches product_kpis() before it. */
+  standard_manufacturing_cost?: number | null
 }
 
 export interface ProductGap {
@@ -32,7 +34,7 @@ export function productGaps(p: CompletenessInput, hasActiveBom?: boolean): Produ
   if (p.product_type === 'FINISHED_GOOD') {
     if (p.selling_price === null || p.selling_price === undefined) gaps.push({ key: 'price', message: 'Selling price is missing.' })
   } else if ((p.standard_cost ?? null) === null && (p.standard_manufacturing_cost ?? null) === null) {
-    gaps.push({ key: 'cost', message: 'No standard purchase or manufacturing cost, so production costs will be incomplete.' })
+    gaps.push({ key: 'cost', message: 'Cost is missing, so production costs will be incomplete.' })
   }
   if (hasActiveBom === false && BOM_EXPECTED_TYPES.includes(p.product_type as ProductType)) {
     gaps.push({ key: 'bom', message: 'No active bill of materials, so material requirements cannot be calculated yet.' })

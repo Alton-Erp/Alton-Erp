@@ -88,7 +88,6 @@ function toFormValues(p: ProductRow): ProductFormValues {
     standard_cost: str(p.standard_cost),
     minimum_selling_price: str(p.minimum_selling_price),
     reorder_level: str(p.reorder_level),
-    standard_manufacturing_cost: str(p.standard_manufacturing_cost),
     minimum_level: str(p.minimum_level),
     lead_time_days: str(p.lead_time_days),
     reorder_level_days: str(p.reorder_level_days),
@@ -523,11 +522,9 @@ function ProductForm({ existing, categories, suppliers }: { existing: ProductRow
             <Field label="Selling Price (₹)" htmlFor="p-selling_price" error={errors.selling_price} hint="Before GST. Can be below the MRP (discounts, negotiated prices).">
               <Input {...bind('selling_price')} inputMode="decimal" />
             </Field>
-            <Field label="Standard Purchase Cost (₹)" htmlFor="p-standard_cost" error={errors.standard_cost}>
+            <Field label="Standard Manufacturing Cost (₹)" htmlFor="p-standard_cost" error={errors.standard_cost}
+              hint="The fallback Cost. The Product Master Cost is the second-most-recent purchase receipt; until a product has two valid receipts it shows this value. Purchases never change it.">
               <Input {...bind('standard_cost')} inputMode="decimal" />
-            </Field>
-            <Field label="Standard Manufacturing Cost (₹)" htmlFor="p-standard_manufacturing_cost" error={errors.standard_manufacturing_cost}>
-              <Input {...bind('standard_manufacturing_cost')} inputMode="decimal" />
             </Field>
             <Field label="Minimum Selling Price (₹)" htmlFor="p-minimum_selling_price" error={errors.minimum_selling_price}>
               <Input {...bind('minimum_selling_price')} inputMode="decimal" />

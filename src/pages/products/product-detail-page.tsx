@@ -19,7 +19,9 @@ import { BOM_OUTPUT_TYPES, PRODUCT_TYPE_LABELS, SOURCE_TYPE_DESCRIPTIONS, unitLa
 import { useAsync } from '@/hooks/use-async'
 import { cn } from '@/lib/utils'
 import { describeDataError } from '@/lib/errors'
-import { formatCurrency, formatDateTime, formatNumber } from '@/lib/format'
+import { costChange, masterCost, masterCostNote, type ProductMasterCostFields } from '@/features/products/master-cost'
+import { signedMoney } from '@/features/products/purchase-cost'
+import { formatCurrency, formatDate, formatDateTime, formatNumber } from '@/lib/format'
 import { fetchResourceAudit } from '@/services/audit-logs'
 import { fetchProductBomSummary } from '@/services/production'
 import { fetchDisplayNames, getProduct, listCategories, setProductArchived, setProductStatus } from '@/services/products'
@@ -92,6 +94,10 @@ export default function ProductDetailPage() {
   const unitName = unitLabel(p.base_unit)
   const name = (id: string | null) => (id ? (names.get(id) ?? 'Another user') : 'System')
   const money = (v: number | null | undefined) => (v === null || v === undefined ? null : formatCurrency(Number(v)))
+  // Product Master Cost (migration 20261128090000): second-most-recent purchase receipt, else the standard cost.
+  const pm = p as typeof p & Partial<ProductMasterCostFields>
+  const mc = masterCost(pm)
+  const change = costChange(pm.last_purchase_cost, mc.cost)
 
   const runAction = async (kind: NonNullable<typeof confirm>) => {
     setNotice(null)
@@ -238,8 +244,23 @@ export default function ProductDetailPage() {
             <Item label="GST Rate">{p.gst_rate === null ? null : `${Number(p.gst_rate)}%`}</Item>
             <Item label="MRP (incl. taxes)">{money(p.mrp)}</Item>
             <Item label="Selling Price (before GST)">{money(p.selling_price)}</Item>
-            <Item label="Standard Purchase Cost">{money(p.standard_cost)}</Item>
-            <Item label="Standard Manufacturing Cost">{money(p.standard_manufacturing_cost)}</Item>
+            <Item label="Cost">
+              {mc.cost === null ? null : (
+                <span data-testid="pd-cost" data-source={mc.source ?? 'none'}>
+                  {money(mc.cost)}
+                  <span className="block text-xs text-muted-foreground">{masterCostNote(mc, formatDate)}</span>
+                </span>
+              )}
+            </Item>
+            <Item label="Last Purchase Cost">
+              {pm.last_purchase_cost === null || pm.last_purchase_cost === undefined ? null : (
+                <span data-testid="pd-last-cost">
+                  {money(pm.last_purchase_cost)}{pm.last_purchase_date ? <span className="text-xs text-muted-foreground"> · {formatDate(pm.last_purchase_date)}</span> : null}
+                  {change && <span className="block text-xs text-muted-foreground">Cost Change {signedMoney(change.difference, (v) => formatCurrency(v))}</span>}
+                </span>
+              )}
+            </Item>
+            <Item label="Standard Manufacturing Cost (fallback)">{money(mc.fallback)}</Item>
             <Item label="Minimum Selling Price">{money(p.minimum_selling_price)}</Item>
           </InfoCard>
 

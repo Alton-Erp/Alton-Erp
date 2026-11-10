@@ -2,11 +2,19 @@ import { PRODUCT_TYPE_LABELS, SOURCE_TYPE_LABELS } from './product-model.ts'
 import type { CellValue } from '@/features/products/spreadsheet'
 import type { ProductCategoryRow, ProductRow } from '@/types/database'
 
+import { masterCost, type ProductMasterCostFields } from './master-cost.ts'
+
+type MasterRow = ProductRow & Partial<ProductMasterCostFields>
+
 /**
  * Export columns. Every header except Status and Has BOM is recognised by the
  * import, so an exported file can be corrected and re-imported in
  * "update existing products" mode. Inventory planning is exported in days;
  * earlier quantity levels are not part of the template.
+ * Cost = the Product Master Cost (second-most-recent purchase receipt, else the
+ * standard cost); Last Purchase Cost / Date are for reading only (never imported).
+ * Standard Manufacturing Cost is the entered fallback: on re-import it is the column
+ * that is read, so a calculated Cost is never saved as the standard cost.
  */
 export const EXPORT_COLUMNS = [
   'SKU',
@@ -19,7 +27,9 @@ export const EXPORT_COLUMNS = [
   'GST Rate',
   'MRP',
   'Selling Price',
-  'Standard Purchase Cost',
+  'Cost',
+  'Last Purchase Cost',
+  'Last Purchase Date',
   'Standard Manufacturing Cost',
   'Minimum Selling Price',
   'Lead Time (Days)',
@@ -66,8 +76,10 @@ export function productExportRows(
       num(p.gst_rate),
       num(p.mrp),
       num(p.selling_price),
-      num(p.standard_cost),
-      num(p.standard_manufacturing_cost),
+      num(masterCost(p as MasterRow).cost),
+      num((p as MasterRow).last_purchase_cost),
+      (p as MasterRow).last_purchase_date ?? null,
+      num(masterCost(p as MasterRow).fallback),
       num(p.minimum_selling_price),
       num(p.lead_time_days),
       num(p.reorder_level_days),

@@ -239,11 +239,11 @@ export interface ProductInput {
   hsn_code: string | null
   gst_rate: number | null
   selling_price: number | null
+  /** Cost per base unit (Product Master "Cost"). The database keeps standard_manufacturing_cost equal to it (migration 20261127090000). */
   standard_cost: number | null
   minimum_selling_price: number | null
   /** Earlier quantity-based reorder level (kept as stored; never converted to days). */
   reorder_level: number | null
-  standard_manufacturing_cost: number | null
   /** Earlier quantity-based minimum stock (kept as stored; no longer edited on the form). */
   minimum_level: number | null
   /** Days needed to procure or manufacture the product. */

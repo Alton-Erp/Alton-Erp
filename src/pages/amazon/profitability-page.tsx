@@ -127,7 +127,7 @@ function MappingTab({ demo, canManage, onChanged }: { demo: boolean; canManage: 
       searchValue: (l) => `${l.seller_sku} ${l.asin ?? ''} ${l.title ?? ''}`, sortValue: (l) => l.seller_sku },
     { id: 'title', header: 'Title', cell: (l) => <span className="line-clamp-2 max-w-64 text-xs">{l.title ?? ''}</span> },
     { id: 'erp', header: 'ERP product', cell: (l) => l.product_id ? <span className="text-xs">{productName.get(l.product_id) ?? 'Mapped'}</span> : <StatusBadge label={l.is_demo ? 'Demo (not mapped)' : 'Not mapped'} tone={l.is_demo ? 'neutral' : 'warning'} /> },
-    { id: 'cost', header: 'Cost override', align: 'right', cell: (l) => <Val v={money(l.unit_cost_override, true)} title="Uses ERP standard cost" /> },
+    { id: 'cost', header: 'Cost override', align: 'right', cell: (l) => <Val v={money(l.unit_cost_override, true)} title="Uses the ERP product cost" /> },
     { id: 'gst', header: 'GST %', align: 'right', cell: (l) => <Val v={num(l.gst_rate, 2)} title="Uses ERP GST rate" /> },
     { id: 'fees', header: 'Fee estimates', align: 'right', cell: (l) => <span className="text-xs">{l.referral_fee_pct ?? '-'}% · {money(l.fulfilment_fee_per_unit, true) ?? '-'}</span> },
     { id: 'lead', header: 'Lead time', align: 'right', cell: (l) => <Val v={l.lead_time_days === null ? null : `${l.lead_time_days} d`} title="Not set" /> },

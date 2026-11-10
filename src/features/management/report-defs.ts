@@ -23,7 +23,7 @@ export const REPORTS: ReportDef[] = [
     filters: ['product'], link: id('id', '/products/'), columns: [
       { key: 'sku', label: 'SKU' }, { key: 'product_name', label: 'Product' }, { key: 'product_type', label: 'Type' }, { key: 'category', label: 'Category' },
       { key: 'unit', label: 'Unit' }, { key: 'hsn_code', label: 'HSN' }, { key: 'gst_rate', label: 'GST %', type: 'number' }, { key: 'mrp', label: 'MRP', type: 'money' },
-      { key: 'selling_price', label: 'Selling price', type: 'money' }, { key: 'standard_cost', label: 'Standard cost', type: 'money' },
+      { key: 'selling_price', label: 'Selling price', type: 'money' }, { key: 'standard_cost', label: 'Cost', type: 'money' },
       { key: 'lead_time_days', label: 'Lead time (days)', type: 'number' }, { key: 'reorder_level_days', label: 'Reorder level (days)', type: 'number' },
       { key: 'reorder_level', label: 'Reorder qty (earlier)', type: 'number' }, { key: 'supplier_model_number', label: 'Supplier model no.' },
       { key: 'supplier_product_name', label: 'Supplier product name' }, { key: 'length_cm', label: 'Length (cm)', type: 'number' },

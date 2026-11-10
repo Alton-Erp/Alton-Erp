@@ -71,7 +71,7 @@ export interface BomHistory {
 /** Product attributes shown in comparisons, in this order; anything else follows alphabetically. */
 export const PRODUCT_FIELD_LABELS: Record<string, string> = {
   sku: 'SKU', product_name: 'Name', description: 'Description', product_type: 'Product type', category_id: 'Category', base_unit: 'Unit (UOM)',
-  hsn_code: 'HSN / SAC', gst_rate: 'GST rate %', standard_cost: 'Standard cost', standard_manufacturing_cost: 'Standard manufacturing cost',
+  hsn_code: 'HSN / SAC', gst_rate: 'GST rate %', standard_cost: 'Cost', standard_manufacturing_cost: 'Standard manufacturing cost (merged into Cost)',
   selling_price: 'Selling price', minimum_selling_price: 'Minimum selling price', mrp: 'MRP', status: 'Status', brand: 'Brand', model_number: 'Model number',
   barcode: 'Barcode', ean: 'EAN', default_source_type: 'Source', track_batches: 'Batch tracking', track_expiry: 'Expiry tracking',
   inventory_tracked: 'Stock tracked', is_manufacturable: 'Manufacturable', length_cm: 'Length (cm)', width_cm: 'Width (cm)', height_cm: 'Height (cm)',

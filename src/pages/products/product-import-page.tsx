@@ -31,6 +31,7 @@ import {
   matchIds,
   matchKeyLabel,
   matchValue,
+  costColumnNote,
   legacyQuantityColumns,
   missingRequiredFields,
   modifiableFields,
@@ -314,7 +315,8 @@ export default function ProductImportPage() {
 
   const downloadTemplate = async () => {
     const { downloadSheets } = await import('@/features/products/spreadsheet')
-    const header = IMPORT_FIELDS.map((f) => f.label)
+    // Earlier cost columns are still read, but the template has only Cost.
+    const header = IMPORT_FIELDS.filter((f) => !('legacy' in f)).map((f) => f.label)
     await downloadSheets(
       [
         { name: 'Products', rows: [header] },
@@ -331,6 +333,7 @@ export default function ProductImportPage() {
             ['HSN Code', '4, 6 or 8 digits (optional)'],
             ['GST Rate', `Percentage 0–100 (optional). Common rates: ${STANDARD_GST_RATES.join(', ')}`],
             ['Prices and costs', 'Non-negative, up to 2 decimals (optional)'],
+            ['Cost', 'The standard (fallback) cost per unit, optional and non-negative. The Product Master shows it as Cost until the product has two valid purchase receipts, then the second-most-recent receipt cost. In an exported file the Standard Manufacturing Cost column is read instead of the calculated Cost. Last Purchase Cost and Last Purchase Date are never imported: they come from posted GRNs.'],
             ['MRP', 'Maximum retail price in ₹ incl. taxes, non-negative, up to 2 decimals (optional). Kept separate from the selling price.'],
             ['Lead Time (Days) / Reorder Level (Days)', 'Number of days from 0 to 3650, up to 2 decimals (optional). Reorder when the days of stock cover fall to the reorder level. Quantity columns of earlier templates (Reorder Level, Minimum Stock Level) are not imported.'],
             ['Length / Width / Height (cm)', 'Positive size in centimetres, up to 2 decimals (optional)'],
@@ -489,6 +492,11 @@ export default function ProductImportPage() {
                 <CardDescription>Match each product field to a spreadsheet column. New products need a Product Name and a Product Type{matchKey === 'NONE' ? '.' : `; existing products are matched by ${keyLabel}.`}</CardDescription>
               </div>
             </CardHeader>
+            {costColumnNote(mapping) && (
+              <p role="status" className="mx-6 mb-3 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900" data-testid="import-cost-note">
+                {costColumnNote(mapping)}
+              </p>
+            )}
             {legacyQuantityColumns(allRows[headerIndex] ?? []).length > 0 && (
               <p role="status" className="mx-6 mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
                 Not imported: {legacyQuantityColumns(allRows[headerIndex] ?? []).join(', ')}. These earlier columns hold quantities; inventory planning now uses

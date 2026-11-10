@@ -63,8 +63,7 @@ export function PurchaseCostHistoryTab({ productId, timezone }: { productId: str
             </span>
           ) : cur ? 'No valid receipt remains' : 'No purchases yet'} />
         <CostTile label="Average Inventory Cost" value={h.average_inventory_cost == null ? '—' : formatCost(h.average_inventory_cost)} sub="Stock on hand, weighted by lot (valuation)" />
-        <CostTile label="Standard Purchase Cost" value={formatCost(h.product.standard_cost)} sub="Set on the Product Master" />
-        <CostTile label="Standard Manufacturing Cost" value={formatCost(h.product.standard_manufacturing_cost)} sub="Not changed by purchases" />
+        <CostTile label="Standard Manufacturing Cost" value={formatCost(h.product.standard_cost)} sub="Fallback Cost (fewer than two receipts); not changed by purchases" />
         <CostTile label="MRP" value={formatCost(h.product.mrp)} sub="Not changed by purchases" />
         <CostTile label="Selling Price" value={formatCost(h.product.selling_price)} sub="Not changed by purchases" />
       </div>

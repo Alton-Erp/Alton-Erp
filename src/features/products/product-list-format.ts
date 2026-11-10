@@ -1,10 +1,10 @@
-// Product Master list cells: COST (standard manufacturing cost), HSN and GST, exactly as stored.
+// Product Master list cells: COST (the product Cost), HSN and GST, exactly as stored.
 
 const inr = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 const blank = (v: unknown) => v === null || v === undefined || v === ''
 
-/** Standard manufacturing cost in rupees with two decimals; "—" when not entered. No other field is used instead. */
+/** Cost in rupees with two decimals; "—" when not entered. No other field is used instead. */
 export const formatCost = (v: number | string | null | undefined): string => (blank(v) || !Number.isFinite(Number(v)) ? '—' : inr.format(Number(v)))
 
 /** MRP in rupees with two decimals; "—" when not entered. Only the MRP field is used (never a price or cost). */

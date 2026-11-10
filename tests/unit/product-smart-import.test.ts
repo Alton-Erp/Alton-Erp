@@ -19,7 +19,7 @@ const stored = (id: string, sku: string, over: Record<string, unknown> = {}): Ex
   values: productRowToFormValues({
     sku, product_name: `Product ${sku}`, description: null, category_id: 'cat-wc', brand: null, model_number: null, barcode: null,
     status: 'ACTIVE', product_type: 'FINISHED_GOOD', default_source_type: 'IN_HOUSE', base_unit: 'PCS', track_batches: false, track_expiry: false,
-    hsn_code: '6910', gst_rate: 18, selling_price: 700, standard_cost: null, minimum_selling_price: null, reorder_level: null,
+    hsn_code: '6910', gst_rate: 18, selling_price: 700, standard_cost: 450, minimum_selling_price: null, reorder_level: null,
     standard_manufacturing_cost: 450, mrp: 850, is_manufacturable: true, has_bom: false, production_notes: null, remarks: 'Keep me',
     ...over,
   } as Parameters<typeof productRowToFormValues>[0]),
@@ -55,13 +55,13 @@ describe('smart import: new, modified, unchanged, invalid', () => {
     assert.equal(rowKind(r), 'modified')
     assert.equal(r.productId, 'p1', 'the product id is kept (its transactions stay linked)')
     assert.equal(r.productUpdatedAt, '2026-11-01T10:00:00.123456+00:00')
-    assert.deepEqual(r.input, { standard_manufacturing_cost: 475, mrp: 900 })
+    assert.deepEqual(r.input, { standard_cost: 475, mrp: 900 })
     const byLabel = new Map(r.compared!.map((c) => [c.label, c]))
-    assert.deepEqual(byLabel.get('Standard Manufacturing Cost'), { field: 'standard_manufacturing_cost', label: 'Standard Manufacturing Cost', from: '₹450.00', to: '₹475.00', changed: true, action: 'update' })
+    assert.deepEqual(byLabel.get('Standard Cost'), { field: 'standard_cost', label: 'Standard Cost', from: '₹450.00', to: '₹475.00', changed: true, action: 'update' })
     assert.deepEqual(byLabel.get('MRP'), { field: 'mrp', label: 'MRP', from: '₹850.00', to: '₹900.00', changed: true, action: 'update' })
     assert.deepEqual(byLabel.get('GST Rate'), { field: 'gst_rate', label: 'GST Rate', from: '18%', to: '18%', changed: false, action: 'unchanged' })
     assert.equal(byLabel.get('Category')?.from, 'Water Closets', 'names, not ids')
-    assert.deepEqual(r.changes?.map((c) => c.label), ['MRP', 'Standard Manufacturing Cost'])
+    assert.deepEqual(r.changes?.map((c) => c.label), ['MRP', 'Standard Cost'])
   })
 
   it('3. new and existing products in one file: new ones added, changed ones updated, unchanged skipped', () => {
@@ -81,7 +81,7 @@ describe('smart import: new, modified, unchanged, invalid', () => {
     const first = validateImportRows(file, mapping, ctxWith(erp()))
     assert.deepEqual(first.map(rowKind), ['modified', 'new', 'new'])
     // After the first import: WC-100 has the new cost, WC-300 exists, the seat got an automatic SKU.
-    const after = [stored('p1', 'WC-100', { standard_manufacturing_cost: 475 }), stored('p2', 'WC-200'),
+    const after = [stored('p1', 'WC-100', { standard_cost: 475, standard_manufacturing_cost: 475 }), stored('p2', 'WC-200'),
       stored('p3', 'WC-300', { product_name: 'New closet', category_id: null })]
     const second = validateImportRows(file, mapping, ctxWith(after, { existingNames: new Map([['brand-new seat', 'CMP-000001']]) }))
     assert.deepEqual(second.map(rowKind), ['skipped', 'skipped', 'ambiguous'])

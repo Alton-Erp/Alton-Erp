@@ -31,7 +31,7 @@ const notValued = (r: Record<string, unknown>) => (Number(r.on_hand ?? 0) > 0 ? 
 /** Columns of each list, in the order shown. */
 export const COLUMNS: Record<SourceKey, DrillColumn[]> = {
   products: [c('sku', 'SKU'), c('product_name', 'Product'), c('product_type', 'Type', 'status'), c('default_source_type', 'Source', 'status'), c('status', 'Status', 'status'),
-    c('base_unit', 'Unit'), c('hsn_code', 'HSN', 'text', false), c('standard_cost', 'Standard cost', 'money', false), c('selling_price', 'Selling price', 'money', false),
+    c('base_unit', 'Unit'), c('hsn_code', 'HSN', 'text', false), c('standard_cost', 'Cost', 'money', false), c('selling_price', 'Selling price', 'money', false),
     c('has_bom', 'BOM', 'bool', false), c('created_at', 'Created', 'datetime'), c('updated_at', 'Updated', 'datetime', false)],
   product_stock: [c('sku', 'SKU'), c('product_name', 'Product'), c('category_name', 'Category'), c('product_type', 'Type', 'status', false), c('base_unit', 'Unit'),
     c('on_hand', 'On hand', 'number'), c('reserved', 'Reserved', 'number'), c('available', 'Available', 'number'), c('reorder_level', 'Reorder level', 'number', false),

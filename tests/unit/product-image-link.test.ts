@@ -27,7 +27,7 @@ const OTHER = 'https://cdn.example.com/basins/wb-001.webp'
 const row = (over: Record<string, unknown> = {}) => ({
   sku: 'WB-001', product_name: 'Ceramic Wash Basin', description: null, category_id: null, brand: 'Alton', model_number: null, barcode: null,
   ean: '8901234567890', image_url: null, status: 'ACTIVE', product_type: 'FINISHED_GOOD', default_source_type: 'IN_HOUSE', base_unit: 'PCS',
-  track_batches: false, track_expiry: false, hsn_code: '6910', gst_rate: 18, selling_price: 1300, standard_cost: 800, minimum_selling_price: null,
+  track_batches: false, track_expiry: false, hsn_code: '6910', gst_rate: 18, selling_price: 1300, standard_cost: 1200, minimum_selling_price: null,
   reorder_level: null, standard_manufacturing_cost: 1200, mrp: 1500, is_manufacturable: true, has_bom: false, production_notes: null, remarks: null,
   ...over,
 })

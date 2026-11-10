@@ -51,7 +51,6 @@ export interface ProductFormValues {
   minimum_selling_price: string
   /** Earlier quantity-based reorder level (not on the form; kept unless cleared). */
   reorder_level: string
-  standard_manufacturing_cost: string
   /** Earlier minimum stock quantity (not on the form; kept unless cleared). */
   minimum_level: string
   lead_time_days: string
@@ -104,7 +103,6 @@ export const EMPTY_PRODUCT_FORM: ProductFormValues = {
   standard_cost: '',
   minimum_selling_price: '',
   reorder_level: '',
-  standard_manufacturing_cost: '',
   minimum_level: '',
   lead_time_days: '',
   reorder_level_days: '',
@@ -200,7 +198,7 @@ export function validateProduct(values: ProductFormValues, options: ProductValid
     warnings.push(`GST rate ${gst}% is not a commonly used rate. Please double-check it.`)
   }
 
-  const money = (field: 'selling_price' | 'standard_cost' | 'minimum_selling_price' | 'standard_manufacturing_cost' | 'mrp') => {
+  const money = (field: 'selling_price' | 'standard_cost' | 'minimum_selling_price' | 'mrp') => {
     const n = parseDecimal(values[field], 2)
     if (Number.isNaN(n) || (n !== undefined && n < 0)) {
       errors[field] = 'Enter a non-negative amount with up to 2 decimals.'
@@ -211,16 +209,12 @@ export function validateProduct(values: ProductFormValues, options: ProductValid
   const selling = money('selling_price')
   const cost = money('standard_cost')
   const minimum = money('minimum_selling_price')
-  const mfgCost = money('standard_manufacturing_cost')
   const mrp = money('mrp')
   if (selling !== undefined && minimum !== undefined && minimum > selling) {
     errors.minimum_selling_price = 'Minimum selling price cannot exceed the selling price.'
   }
   if (selling !== undefined && cost !== undefined && selling < cost) {
-    warnings.push('Selling price is below the standard purchase cost.')
-  }
-  if (selling !== undefined && mfgCost !== undefined && selling < mfgCost) {
-    warnings.push('Selling price is below the standard manufacturing cost.')
+    warnings.push('Selling price is below the cost.')
   }
   // MRP includes all taxes; the selling price is before GST. Selling below the
   // MRP (discounts, negotiated prices) is normal and never flagged.
@@ -229,9 +223,8 @@ export function validateProduct(values: ProductFormValues, options: ProductValid
     if (selling !== undefined && selling * gstFactor > mrp + 0.005) {
       warnings.push(`Selling price${gst !== undefined ? ' incl. GST' : ''} (${rupees(selling * gstFactor)}) is above the MRP (${rupees(mrp)}). Goods cannot be sold to consumers above the MRP.`)
     }
-    const unitCost = cost ?? mfgCost
-    if (unitCost !== undefined && unitCost > mrp) {
-      warnings.push('The MRP is below the standard cost.')
+    if (cost !== undefined && cost > mrp) {
+      warnings.push('The MRP is below the cost.')
     }
   }
 
@@ -307,7 +300,6 @@ export function validateProduct(values: ProductFormValues, options: ProductValid
       standard_cost: cost ?? null,
       minimum_selling_price: minimum ?? null,
       reorder_level: reorder ?? null,
-      standard_manufacturing_cost: mfgCost ?? null,
       minimum_level: minLevel ?? null,
       lead_time_days: leadTime ?? null,
       reorder_level_days: reorderDays ?? null,

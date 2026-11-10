@@ -23,7 +23,7 @@ const stored = (id: string, sku: string, over: Record<string, unknown> = {}): Ex
   values: productRowToFormValues({
     sku, product_name: `Product ${sku}`, description: 'Stored description', category_id: 'cat-wc', brand: null, model_number: null, barcode: null,
     status: 'ACTIVE', product_type: 'FINISHED_GOOD', default_source_type: 'IN_HOUSE', base_unit: 'PCS', track_batches: false, track_expiry: false,
-    hsn_code: '84818020', gst_rate: 18, selling_price: 700, standard_cost: null, minimum_selling_price: null, reorder_level: null,
+    hsn_code: '84818020', gst_rate: 18, selling_price: 700, standard_cost: 450, minimum_selling_price: null, reorder_level: null,
     standard_manufacturing_cost: 450, mrp: 850, is_manufacturable: true, has_bom: false, production_notes: null, remarks: null,
     ...over,
   } as Parameters<typeof productRowToFormValues>[0]),
@@ -60,8 +60,8 @@ describe('fields to modify in existing products', () => {
   it('1. only the cost is updated when only the cost is selected', () => {
     const [r] = validateImportRows([allChanged('WC-100')], mapping, ctxWith(erp(), ['standard_manufacturing_cost']))
     assert.equal(rowKind(r), 'modified')
-    assert.deepEqual(r.input, { standard_manufacturing_cost: 475 })
-    assert.deepEqual(r.compared?.map((c) => [c.field, c.action]), [['standard_manufacturing_cost', 'update']])
+    assert.deepEqual(r.input, { standard_cost: 475 })
+    assert.deepEqual(r.compared?.map((c) => [c.field, c.action]), [['standard_cost', 'update']])
   })
 
   it('2. only the MRP is updated when only the MRP is selected', () => {
@@ -80,9 +80,9 @@ describe('fields to modify in existing products', () => {
     row[8] = 'Bucket of bolts'
     const [r] = validateImportRows([row], mapping, ctxWith(erp(), ['standard_manufacturing_cost', 'mrp', 'gst_rate']))
     assert.equal(rowKind(r), 'modified', r.errors.join())
-    assert.deepEqual(r.input, { standard_manufacturing_cost: 475, mrp: 900, gst_rate: 12 })
+    assert.deepEqual(r.input, { standard_cost: 475, mrp: 900, gst_rate: 12 })
     for (const f of ['product_name', 'category_id', 'hsn_code', 'selling_price', 'base_unit', 'sku']) assert.ok(!(f in r.input!), `${f} must not change`)
-    assert.deepEqual(r.compared?.map((c) => c.field).sort(), ['gst_rate', 'mrp', 'standard_manufacturing_cost'])
+    assert.deepEqual(r.compared?.map((c) => c.field).sort(), ['gst_rate', 'mrp', 'standard_cost'])
     assert.equal(r.productId, 'p1')
   })
 
@@ -102,7 +102,7 @@ describe('fields to modify in existing products', () => {
     assert.equal(r.input?.sku, 'WC-900')
     assert.equal(r.input?.category_id, 'cat-b')
     assert.equal(r.input?.hsn_code, '69101000')
-    assert.equal(r.input?.standard_manufacturing_cost, 300)
+    assert.equal(r.input?.standard_cost, 300)
   })
 
   it('9. blank cells never erase data, even in selected fields', () => {
@@ -159,9 +159,9 @@ describe('SKU matching and duplicate protection', () => {
     const first = validateImportRows(file, mapping, ctxWith(erp()))
     assert.deepEqual(first.map(rowKind), ['modified', 'new', 'new'])
     // After saving: WC-100 has the new values, WC-300 exists and the seat got an automatic SKU.
-    const after = [stored('p1', 'WC-100', { product_name: 'Renamed product', category_id: 'cat-b', standard_manufacturing_cost: 475, mrp: 900, selling_price: 750,
+    const after = [stored('p1', 'WC-100', { product_name: 'Renamed product', category_id: 'cat-b', standard_cost: 475, standard_manufacturing_cost: 475, mrp: 900, selling_price: 750,
       hsn_code: '69101000', gst_rate: 12, base_unit: 'BOX' }), stored('p2', 'WC-200'),
-    stored('p3', 'WC-300', { product_name: 'New closet', category_id: 'cat-b', standard_manufacturing_cost: 300, mrp: 600, selling_price: null, hsn_code: '69101000' }),
+    stored('p3', 'WC-300', { product_name: 'New closet', category_id: 'cat-b', standard_cost: 300, standard_manufacturing_cost: 300, mrp: 600, selling_price: null, hsn_code: '69101000' }),
     stored('p4', 'CMP-000001', { product_name: 'Seat cover', product_type: 'COMPONENT' })]
     const second = validateImportRows(file, mapping, ctxWith(after))
     assert.equal(second.filter((r) => r.action === 'create').length, 0, 'no new product the second time')

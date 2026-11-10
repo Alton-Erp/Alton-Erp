@@ -11,7 +11,7 @@ describe('product version comparison', () => {
     const d = compareProductVersions(v1, v2)
     assert.deepEqual(d.filter((x) => x.changed).map((x) => x.key), ['product_name', 'hsn_code', 'standard_cost'])
     assert.equal(d[0].key, 'sku')
-    assert.equal(d.find((x) => x.key === 'standard_cost')?.label, 'Standard cost')
+    assert.equal(d.find((x) => x.key === 'standard_cost')?.label, 'Cost')
     assert.ok(!d.find((x) => x.key === 'sku')?.changed)
   })
   it('attributes present in only one version count as changed', () => {

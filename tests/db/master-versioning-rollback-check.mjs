@@ -37,6 +37,8 @@ const counts = `select (select count(*) from public.products)::int p, (select co
   (select count(*) from public.inventory_transactions)::int t`
 const before = (await db.query(counts)).rows[0]
 
+// The Product Master view (20261128090000) selects every products column: it is rolled back first.
+await db.exec(await read('supabase', 'rollback', '20261128090000_product_master_cost_down.sql'))
 await db.exec(await read('supabase', 'rollback', MIGRATION.replace('.sql', '_down.sql')))
 check('rollback: version tables, snapshot columns and functions removed',
   await yes(`to_regclass('public.product_versions') is null and to_regclass('public.production_order_revisions') is null and ${COLS} = 0

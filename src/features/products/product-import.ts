@@ -66,8 +66,13 @@ export const IMPORT_FIELDS = [
   { key: 'gst_rate', label: 'GST Rate', required: false, synonyms: ['gst rate', 'gst', 'gst %', 'gst rate (%)', 'gst rate %', 'tax rate'] },
   { key: 'selling_price', label: 'Selling Price', required: false, synonyms: ['selling price', 'sale price', 'price', 'rate'] },
   { key: 'mrp', label: 'MRP', required: false, synonyms: ['mrp', 'mrp (inr)', 'maximum retail price', 'm.r.p', 'm r p'] },
-  { key: 'standard_cost', label: 'Standard Purchase Cost', required: false, synonyms: ['standard purchase cost', 'purchase cost', 'standard cost', 'cost', 'cost price', 'purchase price'] },
-  { key: 'standard_manufacturing_cost', label: 'Standard Manufacturing Cost', required: false, synonyms: ['standard manufacturing cost', 'manufacturing cost', 'mfg cost', 'production cost'] },
+  // The standard (fallback) cost: the "Cost" column of the template, or the Standard Manufacturing Cost column
+  // of an export / earlier template. Not in the template: legacy columns. See costColumn().
+  { key: 'standard_cost', label: 'Cost', required: false, synonyms: ['cost', 'cost (₹)', 'cost (inr)', 'standard cost', 'unit cost', 'cost price'] },
+  { key: 'standard_manufacturing_cost', label: 'Standard Manufacturing Cost', required: false, legacy: true,
+    synonyms: ['standard manufacturing cost', 'manufacturing cost', 'mfg cost', 'production cost'] },
+  { key: 'standard_purchase_cost', label: 'Standard Purchase Cost (earlier column)', required: false, legacy: true,
+    synonyms: ['standard purchase cost', 'purchase cost', 'purchase price'] },
   { key: 'minimum_selling_price', label: 'Minimum Selling Price', required: false, synonyms: ['minimum selling price', 'min selling price', 'min price'] },
   { key: 'lead_time_days', label: 'Lead Time (Days)', required: false, synonyms: ['lead time (days)', 'lead time days', 'lead time', 'lead days'] },
   { key: 'reorder_level_days', label: 'Reorder Level (Days)', required: false, synonyms: ['reorder level (days)', 'reorder level days', 'reorder days', 'days of cover'] },
@@ -301,7 +306,7 @@ export const IMPORT_FIELD_TARGET: Record<ImportFieldKey, keyof ProductInput> = {
   barcode: 'barcode', ean: 'ean', supplier_model_number: 'supplier_model_number', supplier_product_name: 'supplier_product_name',
   product_type: 'product_type', source_type: 'default_source_type', unit: 'base_unit', length_cm: 'length_cm', width_cm: 'width_cm', height_cm: 'height_cm',
   hsn_code: 'hsn_code', gst_rate: 'gst_rate', selling_price: 'selling_price', mrp: 'mrp', standard_cost: 'standard_cost',
-  standard_manufacturing_cost: 'standard_manufacturing_cost', minimum_selling_price: 'minimum_selling_price', lead_time_days: 'lead_time_days',
+  standard_manufacturing_cost: 'standard_cost', standard_purchase_cost: 'standard_cost', minimum_selling_price: 'minimum_selling_price', lead_time_days: 'lead_time_days',
   reorder_level_days: 'reorder_level_days', minimum_cover_days: 'minimum_cover_days', group_head: 'group_head', is_manufacturable: 'is_manufacturable',
   preferred_supplier: 'preferred_supplier_id', remarks: 'remarks', image_url: 'image_url',
 }
@@ -313,7 +318,32 @@ export const IMPORT_FIELD_TARGET: Record<ImportFieldKey, keyof ProductInput> = {
 export function modifiableFields(mapping: ColumnMapping, matchKey: MatchKey = 'SKU'): { key: ImportFieldKey; label: string }[] {
   if (matchKey === 'NONE') return []
   const locked = matchColumn(matchKey)
-  return IMPORT_FIELDS.filter((f) => f.key !== locked && mapping[f.key] !== null).map((f) => ({ key: f.key, label: f.label }))
+  const cost = costColumn(mapping)
+  // Only the cost column that is read is offered (the other cost columns are ignored).
+  return IMPORT_FIELDS.filter((f) => f.key !== locked && mapping[f.key] !== null && (!COST_COLUMNS.includes(f.key) || f.key === cost))
+    .map((f) => ({ key: f.key, label: f.label }))
+}
+
+/**
+ * Columns that fill the standard (fallback) cost, in priority order. Standard Manufacturing Cost comes first:
+ * an export has it next to the calculated Cost (second-most-recent purchase), which must never be saved as
+ * the standard cost. A file with only "Cost" (the template) uses Cost. Standard Purchase Cost (earlier
+ * template) is read only when the file has neither.
+ */
+export const COST_COLUMNS: ImportFieldKey[] = ['standard_manufacturing_cost', 'standard_cost', 'standard_purchase_cost']
+
+/** The column read for the standard cost (see COST_COLUMNS). */
+export function costColumn(mapping: ColumnMapping): ImportFieldKey | null {
+  return COST_COLUMNS.find((c) => mapping[c] !== null) ?? null
+}
+
+/** Explains which cost column is used and which are ignored (null when at most one is mapped). */
+export function costColumnNote(mapping: ColumnMapping): string | null {
+  const mapped = COST_COLUMNS.filter((c) => mapping[c] !== null)
+  if (mapped.length < 2) return null
+  const label = (k: ImportFieldKey) => IMPORT_FIELDS.find((f) => f.key === k)!.label.replace(' (earlier column)', '')
+  return `The standard (fallback) cost is read from "${label(mapped[0])}"; ${mapped.slice(1).map((k) => `"${label(k)}"`).join(' and ')} ${mapped.length > 2 ? 'are' : 'is'} ignored.`
+    + (mapped.includes('standard_cost') && mapped[0] !== 'standard_cost' ? ' (An exported Cost is calculated from purchases and is never saved.)' : '')
 }
 
 function parseBoolean(value: string): boolean | null | undefined {
@@ -341,8 +371,7 @@ const FIELD_LABELS: Partial<Record<ProductField, string>> = {
   hsn_code: 'HSN Code',
   gst_rate: 'GST Rate',
   selling_price: 'Selling Price',
-  standard_cost: 'Standard Purchase Cost',
-  standard_manufacturing_cost: 'Standard Manufacturing Cost',
+  standard_cost: 'Standard Cost',
   minimum_selling_price: 'Minimum Selling Price',
   mrp: 'MRP',
   minimum_level: 'Minimum Stock Level (earlier, quantity)',
@@ -366,7 +395,6 @@ const FIELD_LABELS: Partial<Record<ProductField, string>> = {
 const TEXT_FIELDS: [ImportFieldKey, ProductField][] = [
   ['product_name', 'product_name'], ['description', 'description'], ['brand', 'brand'], ['model_number', 'model_number'],
   ['barcode', 'barcode'], ['ean', 'ean'], ['group_head', 'group_head'], ['minimum_cover_days', 'minimum_cover_days'], ['hsn_code', 'hsn_code'], ['gst_rate', 'gst_rate'], ['selling_price', 'selling_price'],
-  ['standard_cost', 'standard_cost'], ['standard_manufacturing_cost', 'standard_manufacturing_cost'],
   ['minimum_selling_price', 'minimum_selling_price'], ['mrp', 'mrp'], ['lead_time_days', 'lead_time_days'], ['reorder_level_days', 'reorder_level_days'],
   ['supplier_model_number', 'supplier_model_number'], ['supplier_product_name', 'supplier_product_name'],
   ['length_cm', 'length_cm'], ['width_cm', 'width_cm'], ['height_cm', 'height_cm'],
@@ -376,7 +404,7 @@ const TEXT_FIELDS: [ImportFieldKey, ProductField][] = [
 const UPDATABLE: (keyof ProductInput)[] = [
   'product_name', 'description', 'category_id', 'brand', 'model_number', 'barcode', 'ean', 'group_head', 'minimum_cover_days', 'supplier_model_number', 'supplier_product_name',
   'product_type', 'default_source_type', 'base_unit', 'length_cm', 'width_cm', 'height_cm',
-  'hsn_code', 'gst_rate', 'mrp', 'selling_price', 'standard_cost', 'standard_manufacturing_cost', 'minimum_selling_price',
+  'hsn_code', 'gst_rate', 'mrp', 'selling_price', 'standard_cost', 'minimum_selling_price',
   'lead_time_days', 'reorder_level_days', 'preferred_supplier_id', 'remarks', 'is_manufacturable', 'image_url',
 ]
 
@@ -406,6 +434,7 @@ export function validateImportRows(
     return index === null ? '' : String(row[index] ?? '').trim()
   }
   const mappedIndexes = Object.values(mapping).filter((i): i is number => i !== null)
+  const costCol = costColumn(mapping)
   const categoryByKey = new Map<string, ImportCategory>()
   for (const c of ctx.categories) {
     categoryByKey.set(`name:${c.name.trim().toLowerCase()}`, c)
@@ -560,6 +589,11 @@ export function validateImportRows(
         provided.add(field as keyof ProductInput)
       }
     }
+    // Cost: one column (Cost, else the earlier manufacturing cost, else the earlier purchase cost).
+    if (costCol) {
+      const v = val(costCol)
+      if (v !== '') { values.standard_cost = v; provided.add('standard_cost') }
+    }
 
     // Image link: never used to match. An invalid link is reported and not saved; the rest of the row still imports.
     // A blank cell never removes a saved link; the same link is unchanged.
@@ -685,7 +719,7 @@ export function validateImportRows(
         const from = before?.[field] ?? null
         if (!provided.has(field)) {
           // A selected column left blank in the file: shown, and the stored value is kept.
-          const col = COLUMN_OF.get(field)
+          const col = field === 'standard_cost' ? costCol ?? undefined : COLUMN_OF.get(field)
           if (col && mapping[col] !== null && selected(col) && cell(row, col) === '') {
             compared.push({ field, label, from: show(field, from), to: 'Blank', changed: false, action: 'blank' })
           }
@@ -738,13 +772,13 @@ export function validateImportRows(
 }
 
 const GAP_LABELS: Record<ProductGap['key'], string> = {
-  hsn: 'HSN code', gst: 'GST rate', category: 'category', price: 'selling price', cost: 'standard cost', bom: 'BOM',
+  hsn: 'HSN code', gst: 'GST rate', category: 'category', price: 'selling price', cost: 'cost', bom: 'BOM',
 }
 
 /** The import column that fills each product field. */
 const COLUMN_OF = new Map(Object.entries(IMPORT_FIELD_TARGET).map(([col, field]) => [field, col as ImportFieldKey]))
 
-const MONEY_FIELDS = new Set<keyof ProductInput>(['selling_price', 'mrp', 'standard_cost', 'standard_manufacturing_cost', 'minimum_selling_price'])
+const MONEY_FIELDS = new Set<keyof ProductInput>(['selling_price', 'mrp', 'standard_cost', 'minimum_selling_price'])
 
 function display(value: unknown): string {
   if (value === null || value === undefined || value === '') return '—'
@@ -932,7 +966,6 @@ export function productRowToFormValues(p: {
     standard_cost: str(p.standard_cost),
     minimum_selling_price: str(p.minimum_selling_price),
     reorder_level: str(p.reorder_level),
-    standard_manufacturing_cost: str(p.standard_manufacturing_cost),
     minimum_level: str(p.minimum_level),
     lead_time_days: str(p.lead_time_days),
     reorder_level_days: str(p.reorder_level_days),

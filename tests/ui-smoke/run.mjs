@@ -655,8 +655,19 @@ const PC_EVENTS = [
     receipt_number: 'GRN-000010', goods_receipt_id: 'gr9', effective_date: TODAY, created_at: `${TODAY}T09:00:00Z` }),
   pcEvent('pce1', {}),
 ]
+/** product_master_list row (migration 20261128090000) for the mock catalogue. */
+function masterRow(p) {
+  const fallback = p.standard_manufacturing_cost ?? p.standard_cost ?? null
+  const bought = p.id === 'p1'
+  const cost = bought ? 850 : fallback
+  const last = bought ? 920 : null
+  return { ...p, master_cost: cost, master_cost_source: bought ? 'PURCHASE' : fallback === null ? null : 'STANDARD',
+    master_cost_receipt_number: bought ? 'GRN-000009' : null, master_cost_receipt_date: bought ? '2026-10-20' : null, fallback_cost: fallback,
+    last_purchase_cost: last, last_purchase_date: bought ? TODAY : null, master_cost_change: last === null || cost === null ? null : last - cost,
+    master_cost_change_percent: last === null || !cost ? null : Math.round((last - cost) / cost * 10000) / 100 }
+}
 const PC_HISTORY = {
-  product: { id: 'p1', sku: 'MOCK-WC-1', product_name: 'Mock Closet 1', base_unit: 'PCS', standard_cost: 800, standard_manufacturing_cost: 1200, mrp: 1500, selling_price: 1300 },
+  product: { id: 'p1', sku: 'MOCK-WC-1', product_name: 'Mock Closet 1', base_unit: 'PCS', standard_cost: 1200, standard_manufacturing_cost: 1200, mrp: 1500, selling_price: 1300 },
   current: { cost: 920, date: TODAY, previous_cost: 850, difference: 70, change_percent: 8.24, change_type: 'INCREASE', supplier_name: 'Morbi Tiles LLP', source_event_id: 'pce2' },
   average_inventory_cost: 884.5,
   settings: { auto_update: true, increase_alerts: true, decrease_alerts: true, alert_percent: 10, zero_policy: 'IGNORE', override_permission: 'purchase_exception.approve',
@@ -1121,7 +1132,10 @@ const api = http.createServer((req, res) => {
     const url = new URL(req.url, `http://localhost:${API_PORT}`)
     const body = raw ? JSON.parse(raw) : null
     const single = (req.headers.accept ?? '').includes('vnd.pgrst.object')
-    requests.push({ method: req.method, path: url.pathname, query: url.search, body })
+    // Product Master list / detail / export read the view product_master_list (migration 20261128090000); logged under the
+    // products path so the list assertions apply to both, with the relation kept for the checks that need it.
+    const viaView = url.pathname === '/rest/v1/product_master_list'
+    requests.push({ method: req.method, path: viaView ? '/rest/v1/products' : url.pathname, query: url.search, body, ...(viaView ? { relation: 'product_master_list' } : {}) })
 
     if (url.pathname === '/auth/v1/token') {
       const user = USERS[body?.email]
@@ -2110,6 +2124,11 @@ const api = http.createServer((req, res) => {
     }
     if (url.pathname === '/rest/v1/product_categories') return send(res, 200, categories)
 
+    if (url.pathname === '/rest/v1/product_master_list' && req.method === 'GET') {
+      const rows = filterRows(products.map(masterRow), url.searchParams)
+      if (single) return rows[0] ? send(res, 200, rows[0]) : send(res, 406, { code: 'PGRST116', message: 'not found' })
+      return send(res, 200, rows, { 'Content-Range': rows.length ? `0-${rows.length - 1}/${rows.length}` : '*/0' })
+    }
     if (url.pathname === '/rest/v1/products') {
       if (req.method === 'GET') {
         const rows = filterRows(products, url.searchParams)
@@ -2123,11 +2142,12 @@ const api = http.createServer((req, res) => {
         return send(res, 201)
       }
       if (req.method === 'PATCH') {
-        // The standard manufacturing cost of an edit is kept, so the list shows the saved value. Other fields are
-        // not kept: later steps (purchase orders, GST previews, deactivation) use the original catalogue.
-        for (const field of ['standard_manufacturing_cost', 'mrp', 'base_unit', 'image_url']) {
+        // The Cost of an edit is kept (the database mirrors it into standard_manufacturing_cost), so the list shows the
+        // saved value. Other fields are not kept: later steps (purchase orders, GST previews, deactivation) use the original catalogue.
+        for (const field of ['standard_cost', 'mrp', 'base_unit', 'image_url']) {
           if (body && field in body) for (const p of filterRows(products, url.searchParams)) p[field] = body[field]
         }
+        if (body && 'standard_cost' in body) for (const p of filterRows(products, url.searchParams)) p.standard_manufacturing_cost = body.standard_cost
         return send(res, 204, undefined, { 'Content-Range': '*/1' })
       }
     }
@@ -2906,7 +2926,7 @@ await step('export downloads the filtered list as CSV', async () => {
   const file = readdirSync(downloadDir).find((f) => f.endsWith('.csv'))
   assert(file, 'no CSV downloaded')
   const csv = readFileSync(path.join(downloadDir, file), 'utf8')
-  assert(csv.includes('SKU,Product Name,Category,Product Type,Source Type,Unit,HSN Code,GST Rate,MRP,Selling Price,Standard Purchase Cost,Standard Manufacturing Cost'), 'CSV header')
+  assert(csv.includes('SKU,Product Name,Category,Product Type,Source Type,Unit,HSN Code,GST Rate,MRP,Selling Price,Cost,Last Purchase Cost,Last Purchase Date,Standard Manufacturing Cost,Minimum Selling Price') && !csv.includes('Standard Purchase Cost'), 'CSV header')
   assert(csv.includes('Lead Time (Days),Reorder Level (Days)') && csv.includes('Supplier Model No.,Supplier Product Name,Length (cm),Width (cm),Height (cm)') && !csv.includes('Minimum Stock Level'), 'CSV planning / supplier columns')
   assert(csv.includes('MOCK-WC-1'), 'CSV rows')
 })
@@ -5691,9 +5711,10 @@ await step('Product Master columns: Product Name, SKU, Category, Cost, MRP, HSN,
   assert(!(await evaluate(bodyHas('HSN / GST'))), 'the old combined column is still there')
   const before = requests.length
   await click('th button', 'COST') // headings are styled in capitals
-  await waitFor(`new URLSearchParams(location.search).get('sort') === 'standard_manufacturing_cost'`, 'sorted by cost')
-  for (let i = 0; i < 30 && !requests.slice(before).some((r) => r.path === '/rest/v1/products' && r.query.includes('order=standard_manufacturing_cost.asc')); i++) await sleep(100)
-  assert(requests.slice(before).some((r) => r.path === '/rest/v1/products' && r.query.includes('order=standard_manufacturing_cost.asc')), 'cost sort not sent to the database')
+  await waitFor(`new URLSearchParams(location.search).get('sort') === 'master_cost'`, 'sorted by cost')
+  for (let i = 0; i < 30 && !requests.slice(before).some((r) => r.path === '/rest/v1/products' && r.query.includes('order=master_cost.asc')); i++) await sleep(100)
+  assert(requests.slice(before).some((r) => r.path === '/rest/v1/products' && r.query.includes('order=master_cost.asc')), 'cost sort not sent to the database')
+  assert(requests.slice(before).some((r) => r.relation === 'product_master_list' && r.query.includes('order=master_cost.asc')), 'the list does not read the Product Master Cost view')
   await click('th button', 'MRP')
   await waitFor(`new URLSearchParams(location.search).get('sort') === 'mrp'`, 'sorted by MRP')
   for (let i = 0; i < 30 && !requests.some((r) => r.path === '/rest/v1/products' && r.query.includes('order=mrp.asc')); i++) await sleep(100)
@@ -5707,10 +5728,12 @@ await step('Product Master columns: Product Name, SKU, Category, Cost, MRP, HSN,
   await click('th button', 'GST')
   await waitFor(`new URLSearchParams(location.search).get('sort') === 'gst_rate'`, 'sorted by GST')
   await screenshot('155-product-columns')
-  // Edit: the list shows the saved standard manufacturing cost (two decimals, rupees).
+  // Edit: one Cost field (no separate purchase / manufacturing cost); the list shows the saved Cost (two decimals, rupees).
   await goto('/products/p2/edit')
-  await waitFor(`!!document.querySelector('#p-standard_manufacturing_cost')`, 'edit form')
-  await fill('#p-standard_manufacturing_cost', '1234.5')
+  await waitFor(`!!document.querySelector('#p-standard_cost')`, 'edit form')
+  assert(!(await evaluate(`!!document.querySelector('#p-standard_manufacturing_cost') || ${bodyHas('Standard Purchase Cost')}`)), 'old cost fields still on the form')
+  assert(await evaluate(`[...document.querySelectorAll('label')].some((l) => l.htmlFor === 'p-standard_cost' && l.innerText.trim().startsWith('Standard Manufacturing Cost'))`), 'standard cost label')
+  await fill('#p-standard_cost', '1234.5')
   await fill('#p-mrp', '1250')
   await fill('#p-change-reason', 'New moulding cost')
   await click('button[type=submit]')
@@ -5885,12 +5908,15 @@ await step('Purchase cost intelligence: Product Master columns, history with fil
     assert((await evaluate(`${row}.querySelector('[data-col=last-date]').innerText`)) !== '—', 'last purchase date')
     const change = await evaluate(`${row}.querySelector('[data-col=cost-change]').innerText`)
     assert(change.includes('+8.24%') && change.includes('+₹70.00') && (await evaluate(`!!${row}.querySelector('[data-col=cost-change] [data-trend=up]')`)), change)
-    assert(!(await evaluate(`${row}.querySelector('[data-col=cost]').innerText.includes('920')`)), 'COST column must stay the manufacturing cost')
+    assert(!(await evaluate(`${row}.querySelector('[data-col=cost]').innerText.includes('920')`)), 'COST column must not be the last purchase cost')
+    assert((await evaluate(`${row}.querySelector('[data-col=cost]').innerText`)).includes('₹850.00')
+      && (await evaluate(`${row}.querySelector('[data-col=cost]').dataset.source`)) === 'PURCHASE'
+      && (await evaluate(`${row}.querySelector('[data-col=cost]').title`)).includes('Second-most-recent purchase receipt GRN-000009'), 'Cost = second-most-recent receipt')
     await evaluate(`${row}.querySelector('[data-col=last-cost] a').click()`)
     await waitFor(`location.pathname === '/products/p1' && location.search.includes('tab=purchase-cost') && !!document.querySelector('[data-testid=pc-event]')`, 'history tab')
     const tile = await evaluate(`document.querySelector('[data-testid=pc-current]').innerText`)
     assert(tile.includes('₹920.00') && tile.includes('+8.24%') && tile.includes('Morbi Tiles LLP'), tile)
-    for (const text of ['Average Inventory Cost', 'Standard Manufacturing Cost', 'Selling Price', 'Purchase cost trend', 'Price history', 'GRN-000010', 'PO-000003']) {
+    for (const text of ['Average Inventory Cost', 'Last Purchase Cost', 'Standard Manufacturing Cost', 'Fallback Cost (fewer than two receipts)', 'Selling Price', 'Purchase cost trend', 'Price history', 'GRN-000010', 'PO-000003']) {
       assert(await evaluate(bodyHas(text)), `missing "${text}"`)
     }
     assert(await evaluate(`!!document.querySelector('[data-testid=pc-chart] svg')`), 'trend chart')
@@ -6002,7 +6028,7 @@ await step('Missing Information bulk delete: Super Admin selects products, sees 
   assert(counts.includes('2 will be permanently deleted') && counts.includes('1 protected'), counts)
   const clay = await evaluate(`document.querySelector('[data-testid=bulk-delete-dialog] tr[data-sku="MOCK-CLAY"]').innerText`)
   assert(clay.includes('Protected') && clay.includes('Stock ledger entries (3)') && clay.includes('Mock ceramic body'), clay)
-  assert(await evaluate(`[...document.querySelectorAll('[data-testid=bulk-delete-dialog] th')].map((th) => th.innerText.toLowerCase()).join('|').includes('std. mfg. cost|mrp|hsn|gst')`), 'cost, MRP, HSN and GST columns')
+  assert(await evaluate(`[...document.querySelectorAll('[data-testid=bulk-delete-dialog] th')].map((th) => th.innerText.toLowerCase()).join('|').includes('cost|mrp|hsn|gst') && !document.querySelector('[data-testid=bulk-delete-dialog]').innerText.toLowerCase().includes('mfg')`), 'cost, MRP, HSN and GST columns')
   const runBtn = `[...document.querySelectorAll('[data-testid=bulk-delete-dialog] button')].find((b) => b.innerText.includes('Delete 2 products'))`
   assert(await evaluate(`${runBtn}.disabled`), 'enabled before the phrase is typed')
   await fill('#bd-phrase', 'delete products')

@@ -57,7 +57,7 @@ describe('incomplete products are accepted', () => {
 
   it('validates the new fields and keeps the earlier quantity levels as stored', () => {
     const base = { ...EMPTY_PRODUCT_FORM, product_name: 'Clay', product_type: 'RAW_MATERIAL' as const }
-    assert.ok(validateProduct({ ...base, standard_manufacturing_cost: '-1' }).errors.standard_manufacturing_cost)
+    assert.ok(validateProduct({ ...base, standard_cost: '-1' }).errors.standard_cost)
     assert.ok(validateProduct({ ...base, minimum_level: 'abc' }).errors.minimum_level)
     // Quantity levels are no longer edited on the form; stored values pass through unchanged (never turned into days).
     const r = validateProduct({ ...base, minimum_level: '100', reorder_level: '50', remarks: '  keep dry  ' })

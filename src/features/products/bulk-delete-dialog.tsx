@@ -120,7 +120,7 @@ export function BulkDeleteDialog({ open, onOpenChange, selected, onFinished }: {
                     <TableHead>Product name</TableHead>
                     <TableHead>SKU</TableHead>
                     <TableHead>Category</TableHead>
-                    <TableHead className="text-right">Std. mfg. cost</TableHead>
+                    <TableHead className="text-right">Cost</TableHead>
                     <TableHead className="text-right">MRP</TableHead>
                     <TableHead>HSN</TableHead>
                     <TableHead className="text-right">GST</TableHead>

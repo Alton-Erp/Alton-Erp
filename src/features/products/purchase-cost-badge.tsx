@@ -1,6 +1,7 @@
 import { ArrowDownRight, ArrowRight, ArrowUpRight, Minus } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
+import { costChange } from '@/features/products/master-cost'
 import { formatCost } from '@/features/products/product-list-format'
 import { CHANGE_LABELS, percentText, signedMoney, type ChangeType, type ProductPurchaseCost, type Trend } from '@/features/products/purchase-cost'
 import { formatDate } from '@/lib/format'
@@ -54,6 +55,20 @@ export function LastPurchaseCostCell({ productId, cost }: { productId: string; c
 
 export function LastPurchaseDateCell({ cost }: { cost: ProductPurchaseCost | undefined }) {
   return <span className="whitespace-nowrap tabular-nums text-muted-foreground">{cost?.last_date ? formatDate(cost.last_date) : '—'}</span>
+}
+
+/** Product Master Cost Change = Last Purchase Cost − Cost (the calculated Cost, migration 20261128090000). */
+export function MasterCostChangeCell({ productId, last, cost }: { productId: string; last: number | null | undefined; cost: number | null }) {
+  const c = costChange(last, cost)
+  if (!c) return <span className="text-muted-foreground">—</span>
+  return (
+    <Link to={historyLink(productId)} className="hover:underline" data-testid="cost-change" title="Last Purchase Cost − Cost">
+      <span className="inline-flex flex-col items-end" data-change={c.trend}>
+        <CostTrend trend={c.trend} percent={c.percent} />
+        {c.trend !== 'same' && <span className="text-[11px] tabular-nums text-muted-foreground">{signedMoney(c.difference, formatCost)}</span>}
+      </span>
+    </Link>
+  )
 }
 
 export function CostChangeCell({ productId, cost }: { productId: string; cost: ProductPurchaseCost | undefined }) {

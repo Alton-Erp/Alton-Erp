@@ -135,11 +135,12 @@ describe('product import / export templates', () => {
     assert.deepEqual(row.changes?.map((c) => [c.field, c.from, c.to]), [['mrp', '₹1,500.00', '₹1,600.00']])
     assert.deepEqual(row.input, { mrp: 1600 })
   })
-  it('every export column except Status and Has BOM is read back by the import', () => {
+  it('every export column except Status, Has BOM and the purchase-history columns is read back by the import', () => {
     const mapping = autoMapColumns([...EXPORT_COLUMNS])
     const mapped = new Set(Object.values(mapping).filter((i): i is number => i !== null))
     const unmapped = EXPORT_COLUMNS.filter((_, i) => !mapped.has(i))
-    assert.deepEqual(unmapped, ['Status', 'Has BOM'])
+    // Last Purchase Cost / Date come from posted GRNs and are never imported.
+    assert.deepEqual(unmapped, ['Last Purchase Cost', 'Last Purchase Date', 'Status', 'Has BOM'])
     for (const c of ['MRP', 'Lead Time (Days)', 'Reorder Level (Days)', 'Supplier Model No.', 'Supplier Product Name', 'Length (cm)']) assert.ok(EXPORT_COLUMNS.includes(c as never), c)
     assert.ok(!EXPORT_COLUMNS.includes('Minimum Stock Level' as never))
   })

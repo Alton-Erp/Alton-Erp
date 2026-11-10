@@ -13,7 +13,7 @@ import type { Database, ProductCategoryRow, ProductRow } from '@/types/database'
 
 export type ProductStatusFilter = 'current' | 'active' | 'inactive' | 'archived' | 'all'
 export type ProductSortColumn = 'sku' | 'product_name' | 'product_type' | 'default_source_type' | 'status' | 'selling_price' | 'updated_at'
-  | 'standard_manufacturing_cost' | 'mrp' | 'hsn_code' | 'gst_rate' | 'base_unit'
+  | 'master_cost' | 'mrp' | 'hsn_code' | 'gst_rate' | 'base_unit'
 
 export interface ProductListParams {
   search: string
@@ -51,8 +51,32 @@ export interface ProductKpis {
   incomplete: number
 }
 
-function buildQuery(params: Omit<ProductListParams, 'page' | 'pageSize' | 'sort'>, columns: string, count: boolean) {
-  let query = requireSupabase().from('products').select(columns, count ? { count: 'exact' } : undefined)
+/**
+ * Product Master rows come from the view product_master_list (products + the calculated Cost, migration
+ * 20261128090000). Until that migration is applied the view is missing: the products table is read instead
+ * and the screens show the standard cost as Cost.
+ */
+const MASTER_VIEW = 'product_master_list'
+let masterViewMissing = false
+const isMissingRelation = (e: unknown) => {
+  const err = e as { code?: string; message?: string } | null
+  return Boolean(err) && (err!.code === 'PGRST205' || err!.code === '42P01' || /product_master_list/.test(err!.message ?? ''))
+}
+/** Runs a read on the view; falls back to the products table (once known missing, directly). */
+async function fromMaster<T>(run: (relation: string) => PromiseLike<{ data: T; error: unknown; count?: number | null }>) {
+  if (!masterViewMissing) {
+    const r = await run(MASTER_VIEW)
+    if (!r.error || !isMissingRelation(r.error)) return r
+    masterViewMissing = true
+  }
+  return run('products')
+}
+/** The calculated Cost sorts on the view; on the products table, by the standard cost. */
+const sortColumnFor = (relation: string, column: string) => (relation === 'products' && column === 'master_cost' ? 'standard_cost' : column)
+
+function buildQuery(params: Omit<ProductListParams, 'page' | 'pageSize' | 'sort'>, columns: string, count: boolean, relation = 'products') {
+  // The view has every products column (plus the cost columns), so it is typed as the products table.
+  let query = requireSupabase().from(relation as 'products').select(columns, count ? { count: 'exact' } : undefined)
 
   const like = productSearchPattern(params.search)
   if (like) {
@@ -87,10 +111,10 @@ function buildQuery(params: Omit<ProductListParams, 'page' | 'pageSize' | 'sort'
 
 export async function listProducts(params: ProductListParams): Promise<{ rows: ProductRow[]; total: number }> {
   const from = params.page * params.pageSize
-  const { data, error, count } = await buildQuery(params, '*', true)
-    .order(params.sort.column, { ascending: params.sort.ascending, nullsFirst: false })
+  const { data, error, count } = await fromMaster((relation) => buildQuery(params, '*', true, relation)
+    .order(sortColumnFor(relation, params.sort.column), { ascending: params.sort.ascending, nullsFirst: false })
     .order('id')
-    .range(from, from + params.pageSize - 1)
+    .range(from, from + params.pageSize - 1))
   if (error) throw error
   return { rows: (data ?? []) as unknown as ProductRow[], total: count ?? 0 }
 }
@@ -102,10 +126,10 @@ export async function listAllProducts(
 ): Promise<ProductRow[]> {
   const rows: ProductRow[] = []
   for (let from = 0; from < limit; from += 1000) {
-    const { data, error } = await buildQuery(params, '*', false)
-      .order(params.sort.column, { ascending: params.sort.ascending, nullsFirst: false })
+    const { data, error } = await fromMaster((relation) => buildQuery(params, '*', false, relation)
+      .order(sortColumnFor(relation, params.sort.column), { ascending: params.sort.ascending, nullsFirst: false })
       .order('id')
-      .range(from, from + 999)
+      .range(from, from + 999))
     if (error) throw error
     const page = (data ?? []) as unknown as ProductRow[]
     rows.push(...page)
@@ -115,9 +139,9 @@ export async function listAllProducts(
 }
 
 export async function getProduct(id: string): Promise<ProductRow> {
-  const { data, error } = await requireSupabase().from('products').select('*').eq('id', id).single()
+  const { data, error } = await fromMaster((relation) => requireSupabase().from(relation as 'products').select('*').eq('id', id).single())
   if (error) throw error
-  return data
+  return data as ProductRow
 }
 
 export async function fetchProductKpis(): Promise<ProductKpis> {

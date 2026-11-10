@@ -10,7 +10,7 @@ import { describeDataError } from '@/lib/errors'
 import { saveListing, type ErpProduct, type Listing } from '@/services/amazon'
 
 const NUM_FIELDS = [
-  ['unit_cost_override', 'Unit cost override (ex-GST)', 'Leave empty to use the ERP standard cost.'],
+  ['unit_cost_override', 'Unit cost override (ex-GST)', 'Leave empty to use the ERP product cost.'],
   ['gst_rate', 'GST rate % override', 'Leave empty to use the ERP product GST rate.'],
   ['referral_fee_pct', 'Referral fee % (estimate)', 'Used only for days without settlement fee data.'],
   ['closing_fee_per_unit', 'Closing fee per unit (estimate)', ''],
@@ -87,7 +87,7 @@ export function ListingDialog({ listing, products, onClose, onSaved }: { listing
               <Select value={productId} onValueChange={setProductId}><SelectTrigger id="ls-product"><SelectValue /></SelectTrigger>
                 <SelectContent className="max-h-72"><SelectItem value="none">Not mapped</SelectItem>
                   {products.map((p) => <SelectItem key={p.id} value={p.id}>{p.sku} — {p.product_name}</SelectItem>)}</SelectContent></Select>
-              {erp && <p className="text-xs text-muted-foreground">ERP standard cost {erp.standard_cost ?? 'not set'} · GST {erp.gst_rate ?? 'not set'}% · HSN {erp.hsn_code ?? '-'}</p>}
+              {erp && <p className="text-xs text-muted-foreground">ERP cost {erp.standard_cost ?? 'not set'} · GST {erp.gst_rate ?? 'not set'}% · HSN {erp.hsn_code ?? '-'}</p>}
             </>}
           </div>
           {NUM_FIELDS.map(([k, label, help]) => (
