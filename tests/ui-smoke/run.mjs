@@ -94,9 +94,48 @@ const DEPT_CATS = {
   BILLING: [['billing.draft_invoices', 'DELETE', 'Draft and discarded invoices', 0, 0, {}]],
   LEDGER: [['ledger.archive_dormant', 'ARCHIVE', 'Deactivate dormant customers and suppliers', 0, 0, {}]],
 }
-const DEPT_OVERVIEW = Object.entries(DEPT_CATS).map(([department, cats]) => ({ department,
-  categories: cats.map(([code, operation, label, records, blocked]) => ({ code, operation, label, description: label, records, rows: records, blocked })) }))
-function deptPreview(dept, op, codes) {
+// Purchase & GRN (20261126090000): records with type, status and reasons. 'blocked' = the reported
+// situation (0 eligible, 2 blocked); 'mixed' adds eligible orders and a GRN draft.
+let deptPurchaseState = 'blocked'
+const PD_RECORDS = [
+  { category: 'purchase.unposted_orders', table: 'purchase_orders', key: 'po-d1', record: 'PO-000010', type: 'PO', status: 'DRAFT', revision: 0, rows: 3,
+    tables: { purchase_orders: 1, purchase_order_lines: 1, purchase_order_events: 1 } },
+  { category: 'purchase.unposted_orders', table: 'purchase_orders', key: 'po-c1', record: 'PO-000011', type: 'PO', status: 'CANCELLED', revision: 0, rows: 5,
+    tables: { purchase_orders: 1, purchase_order_lines: 1, purchase_order_events: 2, erp_form_drafts: 1 } },
+  { category: 'purchase.unposted_receipts', table: 'erp_form_drafts', key: 'grn-d1', record: 'GRN draft (receipt without a PO)', type: 'GRN draft', status: 'DRAFT', rows: 1,
+    tables: { erp_form_drafts: 1 } },
+]
+const PD_BLOCKED = [
+  { category: 'purchase.unposted_orders', table: 'purchase_orders', key: 'po-b1', record: 'PO-000002', type: 'PO', status: 'CANCELLED', revision: 0,
+    reasons: ['Goods receipt was posted and later reversed: its stock movements are permanent history', 'Stock movement posted for this order'],
+    references: [{ table: 'goods_receipts', department: 'PURCHASE', record: 'GRN-000001' }, { table: 'inventory_transactions', department: 'INVENTORY', record: 'TXN-000004' }] },
+  { category: 'purchase.unposted_orders', table: 'purchase_orders', key: 'po-b2', record: 'PO-000005', type: 'PO', status: 'DRAFT', revision: 1,
+    reasons: ['Opened (approved) before and amended back to draft (revision 1). Cancel it first: a cancelled order without stock movements can be deleted.',
+      'Posted goods receipt: stock and the supplier payable were recorded'],
+    references: [{ table: 'goods_receipts', department: 'PURCHASE', record: 'GRN-000003' }] },
+]
+const pdDeleted = new Set()
+const pdRecords = () => deptPurchaseState === 'blocked' ? [] : PD_RECORDS.filter((r) => !pdDeleted.has(r.key))
+function purchasePreview(codes, keys) {
+  const records = pdRecords().filter((r) => codes.includes(r.category) && (!keys || keys.includes(r.key)))
+  const blocked = PD_BLOCKED.filter((b) => codes.includes(b.category) && (!keys || keys.includes(b.key)))
+  const tables = {}
+  for (const r of records) for (const [k, n] of Object.entries(r.tables)) tables[k] = (tables[k] ?? 0) + n
+  const total = Object.values(tables).reduce((a, b) => a + b, 0)
+  return { department: 'PURCHASE', operation: 'DELETE', categories: codes, plan_hash: `hash-PURCHASE-${records.map((r) => r.key).sort().join('+')}`, tables, total,
+    records, records_total: records.length, blocked, blocked_total: blocked.length, affected_departments: total ? ['PURCHASE'] : [],
+    by_category: codes.map((c) => ({ code: c, label: c, description: c, records: records.filter((r) => r.category === c).length,
+      rows: records.filter((r) => r.category === c).reduce((n, r) => n + r.rows, 0), blocked: blocked.filter((b) => b.category === c).length })) }
+}
+const deptOverview = () => Object.entries(DEPT_CATS).map(([department, cats]) => ({ department,
+  categories: department === 'PURCHASE'
+    ? [['purchase.unposted_orders', 'Draft and cancelled purchase orders'], ['purchase.unposted_receipts', 'Unposted GRN drafts']].map(([code, label]) => {
+      const p = purchasePreview([code], null)
+      return { code, operation: 'DELETE', label, description: label, records: p.records_total, rows: p.total, blocked: p.blocked_total }
+    })
+    : cats.map(([code, operation, label, records, blocked]) => ({ code, operation, label, description: label, records, rows: records, blocked })) }))
+function deptPreview(dept, op, codes, keys = null) {
+  if (dept === 'PURCHASE' && op === 'DELETE') return purchasePreview(codes, keys)
   const cats = (DEPT_CATS[dept] ?? []).filter(([code, operation]) => operation === op && codes.includes(code))
   const tables = {}
   for (const c of cats) for (const [k, n] of Object.entries(c[5])) tables[k] = (tables[k] ?? 0) + n
@@ -1249,17 +1288,20 @@ const api = http.createServer((req, res) => {
         // Department data management (20261119090000)
         case 'department_data_overview':
           if (!currentUser?.permissions.includes('system.reset_data')) return send(res, 403, { code: '42501', message: 'Only an active Super Admin with the system.reset_data permission can manage department data.' })
-          return send(res, 200, { generated_at: NOW, backup: deptBackup, last_runs: deptRuns, departments: DEPT_OVERVIEW })
-        case 'department_data_preview': {
-          const p = deptPreview(body.p_department, body.p_operation, body.p_categories)
+          return send(res, 200, { generated_at: NOW, backup: deptBackup, last_runs: deptRuns, departments: deptOverview() })
+        case 'department_data_preview':
+        case 'department_data_preview_records': {
+          const p = deptPreview(body.p_department, body.p_operation, body.p_categories, body.p_keys ?? null)
           return send(res, 200, { ...p, confirmation_phrase: `${body.p_operation} ${body.p_department}`, requires_backup: body.p_operation === 'DELETE',
             requires_password: body.p_operation === 'DELETE', backup: body.p_operation === 'DELETE' ? deptBackup : null })
         }
-        case 'department_data_execute': {
+        case 'department_data_execute':
+        case 'department_data_execute_records': {
           if (body.p_confirmation !== `${body.p_operation} ${body.p_department}`) return send(res, 200, { status: 'DENIED', error: `Type ${body.p_operation} ${body.p_department} to confirm.` })
           if (body.p_operation === 'DELETE' && (!deptBackup || body.p_backup_id !== deptBackup.id)) return send(res, 200, { status: 'DENIED', error: 'Record a backup taken in the last 24 hours first (each backup record can be used once).' })
-          const p = deptPreview(body.p_department, body.p_operation, body.p_categories)
+          const p = deptPreview(body.p_department, body.p_operation, body.p_categories, body.p_keys ?? null)
           const stale = body.p_plan_hash !== p.plan_hash || body.p_categories.includes('sales.unposted_orders')
+          if (!stale && p.records) for (const r of p.records) pdDeleted.add(r.key)
           const run = { id: `run-${deptRuns.length + 1}`, department: body.p_department, operation: body.p_operation, categories: body.p_categories,
             status: stale ? 'BLOCKED' : 'COMPLETED', started_at: NOW, finished_at: NOW, deleted_counts: stale ? {} : p.tables, deleted_total: stale ? 0 : p.total,
             error_message: stale ? 'The data changed after the preview. Nothing was changed; preview again.' : null, requested_by: 'Owner Tester', replayed: false }
@@ -5087,42 +5129,89 @@ await step('Department data 1: Super Admin sees seven department cards with cate
   await screenshot('140-department-data')
 })
 
-await step('Department data 2: permanent delete shows the preview with blocked records, then needs backup, phrase and password; the database call carries the plan', async () => {
+await step('Department data 2: Purchase & GRN with 0 eligible and 2 blocked explains why (each record, every reason, the related GRN and stock movement); nothing can be confirmed', async () => {
+  await waitFor(`${bodyHasAll('Nothing can be deleted permanently: 2 records are kept because other records depend on them.')} && !!document.querySelector('${deptCard('PURCHASE')} [data-testid=dept-nothing-hint]')`, 'explanation under the disabled button')
+  assert(await evaluate(`[...document.querySelectorAll('${deptCard('PURCHASE')} button')].find((b) => b.innerText.includes('Delete permanently')).disabled`), 'delete enabled with nothing eligible')
+  assert(await evaluate(`document.querySelector('[data-category="purchase.unposted_orders"]').innerText.includes('0 eligible · 2 blocked')`), 'category counts')
+  await screenshot('140b-purchase-nothing-deletable')
+  await click('[data-testid="dept-why-purchase.unposted_orders"]')
+  await waitFor(`!!document.querySelector('[data-testid=dept-nothing]') && document.querySelectorAll('[data-testid=dept-record][data-state=blocked]').length === 2`, 'explanation dialog')
+  const row = (key) => `document.querySelector('[data-testid=dept-record][data-key="${key}"]').innerText`
+  const b1 = await evaluate(row('po-b1'))
+  for (const t of ['PO-000002', 'PO', 'Cancelled', 'Blocked', 'posted and later reversed', 'Stock movement posted for this order', 'GRN-000001', 'TXN-000004', 'Inventory Management']) assert(b1.includes(t), `PO-000002 row lacks ${t}: ${b1}`)
+  const b2 = await evaluate(row('po-b2'))
+  for (const t of ['PO-000005', 'Draft (revision 1)', 'amended back to draft', 'Posted goods receipt', 'GRN-000003']) assert(b2.includes(t), `PO-000005 row lacks ${t}: ${b2}`)
+  assert(await evaluate(bodyHasAll('Nothing can be deleted permanently.', 'All 2 records below are kept')), 'banner text')
+  assert(!(await evaluate(`!!document.querySelector('[data-testid=dept-execute]') || !!document.querySelector('#dept-phrase') || !!document.querySelector('[data-testid=dept-records] button[role=checkbox]')`)),
+    'a blocked record can be selected or confirmed')
+  assert(deptCalls('department_data_execute').length + deptCalls('department_data_execute_records').length === 0, 'something was executed')
+  await screenshot('141-purchase-blocked-reasons')
+  await click('[role=dialog] button', 'Close')
+  await waitFor(`!document.querySelector('[data-testid=dept-dialog]')`, 'closed')
+})
+
+await step('Department data 3: eligible orders and GRN drafts are listed and selectable (blocked ones are not); the delete runs on the selection with its own preview, backup, phrase and password', async () => {
+  deptPurchaseState = 'mixed'
+  const overviews = rpcCalls('department_data_overview').length
+  await click('button[aria-label="Refresh counts"]')
+  for (let t = Date.now(); rpcCalls('department_data_overview').length === overviews && Date.now() - t < 3000;) await sleep(100)
+  assert(rpcCalls('department_data_overview').length === overviews + 1, 'Refresh counts did not reload the counts')
+  await waitFor(`document.querySelector('[data-category="purchase.unposted_orders"]')?.innerText.includes('2 eligible · 2 blocked') && !document.querySelector('${deptCard('PURCHASE')} [data-testid=dept-nothing-hint]')`, 'counts after refresh')
   await click(`[data-category="purchase.unposted_orders"] button[role=checkbox]`)
-  await click(`${deptCard('PURCHASE')} button`, 'Delete permanently (1)')
-  await waitFor(`!!document.querySelector('[data-testid=dept-preview]')`, 'preview')
-  await waitFor(bodyHasAll('Rows to change', '9', 'Purchase order lines', 'Kept because other records depend on them', 'PO-000002', 'Used by goods receipts', 'Purchase & GRN: GRN-000001'), 'preview content')
-  const executeDisabled = () => evaluate(`document.querySelector('[data-testid=dept-execute]').disabled`)
-  assert(await executeDisabled(), 'execute enabled before confirmation')
-  await screenshot('141-department-preview')
-  // Backup record
+  await click(`[data-category="purchase.unposted_receipts"] button[role=checkbox]`)
+  await click(`${deptCard('PURCHASE')} button`, 'Delete permanently (2)')
+  await waitFor(`document.querySelectorAll('[data-testid=dept-record][data-state=eligible]').length === 3 && document.querySelectorAll('[data-testid=dept-record][data-state=blocked]').length === 2`, 'record list')
+  assert(await evaluate(`document.querySelector('[data-testid=dept-fig-eligible]').innerText.includes('3')`), 'eligible figure')
+  const e1 = await evaluate(`document.querySelector('[data-testid=dept-record][data-key="po-c1"]').innerText`)
+  for (const t of ['PO-000011', 'Cancelled', 'Eligible', 'Unposted form drafts: 1', 'Purchase order lines: 1']) assert(e1.includes(t), `PO-000011 row lacks ${t}: ${e1}`)
+  assert(await evaluate(`document.querySelector('[data-testid=dept-record][data-key="grn-d1"]').innerText.includes('GRN draft')`), 'GRN draft type')
+  assert(await evaluate(`[...document.querySelectorAll('[data-testid=dept-record][data-state=eligible] button[role=checkbox]')].every((c) => c.getAttribute('data-state') === 'checked')`), 'eligible records not selected by default')
+  assert(await evaluate(`[...document.querySelectorAll('[data-testid=dept-record][data-state=blocked]')].every((r) => !r.querySelector('button[role=checkbox]'))`), 'a blocked record has a checkbox')
+  // Untick the cancelled order: the database previews exactly the selection.
+  const before = deptCalls('department_data_preview_records').length
+  await click('[data-testid=dept-record][data-key="po-c1"] button[role=checkbox]')
+  await waitFor(`document.querySelector('[data-testid=dept-fig-eligible]')?.innerText.includes('2') && ${bodyHas('Delete permanently 2 records')}`, 'narrowed preview')
+  const pr = deptCalls('department_data_preview_records').at(-1).body
+  assert(deptCalls('department_data_preview_records').length > before && JSON.stringify(pr.p_keys.sort()) === JSON.stringify(['grn-d1', 'po-d1']), JSON.stringify(pr))
+  // Nothing selected: the delete stays disabled with the reason.
+  // Header checkbox: mixed → all selected (back to 3); again → none selected (delete disabled with the reason).
+  await click('[aria-label="Select all eligible records"]')
+  await waitFor(`${bodyHas('Delete permanently 3 records')} && document.querySelector('[aria-label="Select all eligible records"]').getAttribute('data-state') === 'checked'`, 'all selected')
+  await click('[aria-label="Select all eligible records"]')
+  await fill('#dept-phrase', 'DELETE PURCHASE')
+  await waitFor(`document.querySelector('[data-testid=dept-execute]').disabled && ${bodyHas('Select at least one eligible record.')}`, 'nothing selected')
+  await fill('#dept-phrase', '')
+  await click('[aria-label="Select all eligible records"]')
+  await click('[data-testid=dept-record][data-key="po-c1"] button[role=checkbox]')
+  await waitFor(bodyHas('Delete permanently 2 records'), 'selection back to 2')
+  await screenshot('142-purchase-records-selection')
   await fill('#dd-bk-ref', 'Supabase daily backup 04 Nov 02:00')
   await click('#dd-bk-restore')
   await click('#dd-bk-external')
   await click('[data-testid=dept-backup] button', 'Record backup')
   await waitFor(`!!document.querySelector('[data-testid=dept-backup-ok]')`, 'backup recorded')
   await fill('#dept-phrase', 'delete purchase')
-  assert(await executeDisabled(), 'wrong phrase accepted')
+  assert(await evaluate(`document.querySelector('[data-testid=dept-execute]').disabled`), 'wrong phrase accepted')
   await fill('#dept-phrase', 'DELETE PURCHASE')
-  assert(await executeDisabled(), 'enabled without the password')
   await fill('#dept-password', 'correct-horse')
   await waitFor(`!document.querySelector('[data-testid=dept-execute]').disabled`, 'execute enabled')
   const tokenCalls = requests.filter((r) => r.path === '/auth/v1/token').length
   await click('[data-testid=dept-execute]')
   await waitFor(`document.querySelector('[data-testid=dept-result]')?.dataset.status === 'COMPLETED'`, 'completed')
-  await waitFor(bodyHasAll('Completed', '9 row(s) changed', 'Purchase order events'), 'result counts')
-  assert(requests.filter((r) => r.path === '/auth/v1/token').length === tokenCalls + 1 && requests.filter((r) => r.path === '/auth/v1/token').at(-1).body.password === 'correct-horse',
-    'password not confirmed with Supabase Auth before the delete')
-  const call = deptCalls('department_data_execute').at(-1).body
-  assert(call.p_department === 'PURCHASE' && call.p_operation === 'DELETE' && call.p_confirmation === 'DELETE PURCHASE' && call.p_plan_hash === 'hash-PURCHASEDELETEpurchase.unposted_orders'
-    && /^bk-/.test(call.p_backup_id) && /^[0-9a-f-]{36}$/.test(call.p_request_id) && JSON.stringify(call.p_categories) === '["purchase.unposted_orders"]', JSON.stringify(call))
+  await waitFor(bodyHasAll('Completed', '4 row(s) changed', 'Purchase order history'), 'result counts')
+  assert(requests.filter((r) => r.path === '/auth/v1/token').length === tokenCalls + 1, 'password not confirmed with Supabase Auth before the delete')
+  assert(deptCalls('department_data_execute').length === 0, 'the all-records function was used for a selection')
+  const call = deptCalls('department_data_execute_records').at(-1).body
+  assert(call.p_department === 'PURCHASE' && call.p_operation === 'DELETE' && call.p_confirmation === 'DELETE PURCHASE' && call.p_plan_hash === 'hash-PURCHASE-grn-d1+po-d1'
+    && JSON.stringify([...call.p_keys].sort()) === '["grn-d1","po-d1"]' && /^bk-/.test(call.p_backup_id) && /^[0-9a-f-]{36}$/.test(call.p_request_id)
+    && JSON.stringify(call.p_categories) === '["purchase.unposted_orders","purchase.unposted_receipts"]', JSON.stringify(call))
   assert(!JSON.stringify(call).includes('company'), 'the browser sent a company id')
-  await screenshot('142-department-done')
+  await screenshot('143-purchase-delete-done')
   await click('[role=dialog] button', 'Close')
-  await waitFor(`!document.querySelector('[data-testid=dept-dialog]')`, 'closed')
+  await waitFor(`!document.querySelector('[data-testid=dept-dialog]') && document.querySelector('[data-category="purchase.unposted_orders"]')?.innerText.includes('1 eligible · 2 blocked')`, 'closed and refreshed')
 })
 
-await step('Department data 3: archive needs only the phrase (no backup, no password); a stale preview stops with "preview again"', async () => {
+await step('Department data 4: archive needs only the phrase (no backup, no password); a stale preview stops with "preview again"', async () => {
   await click(`[data-category="products.archive_inactive"] button[role=checkbox]`)
   await click(`${deptCard('PRODUCTS')} button`, 'Archive (1)')
   await waitFor(`!!document.querySelector('[data-testid=dept-preview]')`, 'archive preview')
@@ -5150,7 +5239,7 @@ await step('Department data 3: archive needs only the phrase (no backup, no pass
   await click('[role=dialog] button', 'Close')
 })
 
-await step('Department data 4: history lists every operation; a user without the Super Admin role does not see the section', async () => {
+await step('Department data 5: history lists every operation; a user without the Super Admin role does not see the section', async () => {
   await click('[data-testid=department-data-section] button', 'History')
   await waitFor(`${bodyHasAll('Department data history', 'Purchase & GRN', 'Permanent delete', 'COMPLETED', 'BLOCKED', 'Owner Tester')}`, 'history')
   await click('[role=dialog] button', 'Close')

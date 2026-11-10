@@ -371,3 +371,51 @@ Removal order, dependants first (matching `erp_reset_tables().ord`): **Billing �
 1. Apply the pending migrations in order (… 20261118 → 20261119).
 2. On the hosted project, open ERP Settings → System → Department Data Management as Super Admin. Check that the preview counts make sense.
 3. Run one **Archive**, then one **Permanent delete** on a test company. The second confirms the password re-check works with the hosted Supabase Auth: the session token must carry `amr: [{ method: "password", timestamp }]`.
+
+## Purchase & GRN permanent delete fix (migration 20261126090000, not applied)
+
+**Problem.** The Purchase & GRN card showed "0 eligible · 2 blocked" with a disabled button and no reasons:
+- a category with nothing eligible could not be ticked, so its preview, which held the reasons, could not be opened;
+- a blocked order kept only its first reason, shown with a row id ("Used by goods receipt lines · 14086c6c");
+- the card's Refresh button and the refresh after a delete did nothing. `useAsync(fetchDepartmentOverview, [refresh])` passed a module function, so the loader never changed.
+
+**Rules (one planner for preview and execution).**
+
+Eligible:
+- draft orders never opened (approved);
+- cancelled orders without stock movements;
+- auto-saved GRN drafts that were never posted.
+
+Each eligible order is deleted in one transaction with its lines, history, supplier references, notifications and unposted GRN drafts.
+
+Kept, with every reason and the document numbers:
+- a goods receipt, posted or posted and reversed;
+- a stock movement;
+- purchase cost history;
+- a draft that was opened before and amended back to draft (cancel it first);
+- an attachment;
+- a pending approval.
+
+The generic foreign-key, reservation and approval checks still run after these.
+
+A GRN is posted when it is saved (status POSTED or REVERSED only), so no GRN is ever deleted.
+
+**Selection.**
+- `department_data_preview_records` and `department_data_execute_records` take the selected record keys.
+- The selection is applied before every check, so a selected record that depends on an unselected one is blocked.
+- The plan hash covers the selection; the same request id returns the stored result.
+- The audit entry lists the deleted records by number.
+
+**Screen.**
+- Under the card: "Nothing can be deleted permanently: N records are kept…" with **See why**.
+- The dialog lists every record (document, type, status, eligible or blocked, reason, related documents).
+- Eligible records can be ticked; blocked ones cannot.
+- With nothing eligible, the dialog shows an explanation instead of a confirmation.
+
+**Read-only check of the hosted data.** `supabase/audit/purchase_delete_blockers.sql` lists each draft or cancelled order with the reasons it is kept. It works before the migration is applied.
+
+**Tests.**
+- `npm run test:db:purchase-delete`
+- `tests/db/purchase-delete-rollback-check.mjs`
+- `tests/unit/department-data.test.ts`
+- the smoke steps "Department data 2–3"

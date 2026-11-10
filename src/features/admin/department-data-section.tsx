@@ -13,9 +13,10 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
-  confirmationPhrase, DEPARTMENTS, departmentLabel, executeBlocker, groupByOperation, OPERATIONS, tableLabel,
+  confirmationPhrase, DEPARTMENTS, departmentLabel, executeBlocker, groupByOperation, nothingDeletableReason, OPERATIONS, tableLabel,
   type CategorySummary, type DepartmentKey, type Operation, type PreviewResult,
 } from '@/features/admin/department-data-model'
+import { DepartmentRecordsTable } from '@/features/admin/department-records-table'
 import { useAsync } from '@/hooks/use-async'
 import { describeDataError } from '@/lib/errors'
 import { formatDateTime, formatNumber } from '@/lib/format'
@@ -33,7 +34,9 @@ const STATUS_TONE = { COMPLETED: 'success', BLOCKED: 'warning', FAILED: 'danger'
  */
 export function DepartmentDataSection({ companyId }: { companyId: string }) {
   const [refresh, setRefresh] = useState(0)
-  const overview = useAsync(fetchDepartmentOverview, [refresh])
+  // A new loader each time `refresh` changes: useAsync re-runs only when the loader changes, and a bare
+  // module function is the same object every render (the counts never reloaded after a delete).
+  const overview = useAsync(() => fetchDepartmentOverview(), [refresh])
   const [selected, setSelected] = useState<Record<string, boolean>>({})
   const [dialog, setDialog] = useState<{ department: DepartmentKey; operation: Operation; categories: string[] } | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -73,7 +76,8 @@ export function DepartmentDataSection({ companyId }: { companyId: string }) {
                         <p className="mb-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">{OPERATIONS[g.operation].label}</p>
                         <ul className="space-y-1.5">
                           {g.categories.map((c) => <CategoryRow key={c.code} c={c} checked={Boolean(selected[c.code])}
-                            onChange={(v) => setSelected((s) => ({ ...s, [c.code]: v }))} />)}
+                            onChange={(v) => setSelected((s) => ({ ...s, [c.code]: v }))}
+                            onExplain={() => setDialog({ department: d.key, operation: c.operation, categories: [c.code] })} />)}
                         </ul>
                       </div>
                     ))}
@@ -90,6 +94,8 @@ export function DepartmentDataSection({ companyId }: { companyId: string }) {
                       )
                     })}
                   </div>
+                  <NothingDeletableHint categories={byDept.get(d.key) ?? []}
+                    onExplain={(codes) => setDialog({ department: d.key, operation: 'DELETE', categories: codes })} />
                 </div>
               ))}
             </div>
@@ -103,7 +109,7 @@ export function DepartmentDataSection({ companyId }: { companyId: string }) {
   )
 }
 
-function CategoryRow({ c, checked, onChange }: { c: CategorySummary; checked: boolean; onChange: (v: boolean) => void }) {
+function CategoryRow({ c, checked, onChange, onExplain }: { c: CategorySummary; checked: boolean; onChange: (v: boolean) => void; onExplain: () => void }) {
   const id = `dd-${c.code}`
   return (
     <li className="flex items-start gap-2 text-sm" data-category={c.code}>
@@ -112,9 +118,27 @@ function CategoryRow({ c, checked, onChange }: { c: CategorySummary; checked: bo
         <Label htmlFor={id} className="font-normal">{c.label}</Label>
         <p className="text-xs text-muted-foreground">
           <span className="tabular-nums">{formatNumber(c.records)}</span> eligible{c.blocked > 0 && <> · <span className="text-amber-700 tabular-nums">{formatNumber(c.blocked)} blocked</span></>}
+          {c.blocked > 0 && (
+            <> · <button type="button" className="text-foreground underline underline-offset-2 hover:no-underline" onClick={onExplain} data-testid={`dept-why-${c.code}`}>
+              {c.records === 0 ? 'See why' : 'Review records'}
+            </button></>
+          )}
         </p>
       </div>
     </li>
+  )
+}
+
+/** Shown under the buttons when every permanent-delete candidate of a department is blocked. */
+function NothingDeletableHint({ categories, onExplain }: { categories: CategorySummary[]; onExplain: (codes: string[]) => void }) {
+  const reason = nothingDeletableReason(categories)
+  if (!reason) return null
+  const codes = categories.filter((c) => c.operation === 'DELETE' && c.blocked > 0).map((c) => c.code)
+  return (
+    <p className="mt-2 flex items-start gap-1.5 text-xs text-amber-800 dark:text-amber-300" data-testid="dept-nothing-hint">
+      <ShieldAlert className="mt-px size-3.5 shrink-0" aria-hidden />
+      <span>{reason} <button type="button" className="font-medium underline underline-offset-2 hover:no-underline" onClick={() => onExplain(codes)}>See why</button></span>
+    </p>
   )
 }
 
@@ -122,18 +146,39 @@ function OperationDialog({ department, operation, categories, companyId, onClose
   department: DepartmentKey; operation: Operation; categories: string[]; companyId: string; onClose: (changed: boolean) => void
 }) {
   const { user } = useAuth()
-  const [requestId] = useState(() => crypto.randomUUID())
+  const [requestId, setRequestId] = useState(() => crypto.randomUUID())
   const [attempt, setAttempt] = useState(0)
+  // Full preview: every candidate and every blocked record (the list the user selects from).
   const preview = useAsync(() => previewDepartmentData(department, operation, categories), [department, operation, categories.join(','), attempt])
-  const p = preview.data ?? null
+  const full = preview.data ?? null
+  const records = useMemo(() => full?.records ?? [], [full])
+  // Eligible records the user unticked; everything else is selected.
+  const [unticked, setUnticked] = useState<ReadonlySet<string>>(new Set())
+  const selectedKeys = useMemo(() => records.filter((r) => !unticked.has(r.key)).map((r) => r.key), [records, unticked])
+  const narrowedSelection = Boolean(full?.records) && unticked.size > 0
+  // A narrowed selection gets its own preview from the database (same rules; its own plan hash).
+  const narrowed = useAsync(
+    () => narrowedSelection && selectedKeys.length > 0 ? previewDepartmentData(department, operation, categories, selectedKeys) : Promise.resolve(null),
+    [narrowedSelection, selectedKeys.join(','), attempt],
+  )
+  const p: PreviewResult | null = narrowedSelection ? (narrowed.loading ? null : narrowed.data ?? null) : full
   const [phrase, setPhrase] = useState('')
   const [password, setPassword] = useState('')
   const [backupId, setBackupId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<ExecuteResult | null>(null)
-  const backup = backupId ? { id: backupId } : p?.backup ?? null
-  const blocker = executeBlocker({ preview: p, phrase, backupId: backup?.id ?? null, password, currentUserId: user?.id ?? null })
+  const backup = backupId ? { id: backupId } : full?.backup ?? null
+  const blocker = narrowed.error ? describeDataError(narrowed.error)
+    : executeBlocker({ preview: p, phrase, backupId: backup?.id ?? null, password, currentUserId: user?.id ?? null, selected: full?.records ? selectedKeys.length : undefined })
+  const nothingEligible = Boolean(full) && full!.total === 0
+
+  const toggle = (key: string, on: boolean) => setUnticked((s) => {
+    const n = new Set(s)
+    if (on) n.delete(key)
+    else n.add(key)
+    return n
+  })
 
   const execute = async () => {
     if (!p || blocker) return
@@ -142,7 +187,8 @@ function OperationDialog({ department, operation, categories, companyId, onClose
     try {
       if (p.requires_password) await confirmPassword(user?.email ?? '', password)
       setPassword('')
-      const r = await executeDepartmentData({ department, operation, categories, planHash: p.plan_hash, confirmation: phrase, backupId: backup?.id ?? null, requestId })
+      const r = await executeDepartmentData({ department, operation, categories, planHash: p.plan_hash, confirmation: phrase, backupId: backup?.id ?? null, requestId,
+        keys: narrowedSelection ? selectedKeys : null })
       setResult(r)
     } catch (e) {
       setError((e as { code?: string }).code === 'WRONG_PASSWORD' ? 'The password is incorrect.' : describeDataError(e))
@@ -154,26 +200,42 @@ function OperationDialog({ department, operation, categories, companyId, onClose
   const done = result && 'id' in result
   return (
     <Dialog open onOpenChange={(o) => { if (!o && !busy) onClose(Boolean(done)) }}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl" data-testid="dept-dialog">
+      <DialogContent className="max-h-[90vh] overflow-x-hidden overflow-y-auto sm:max-w-5xl" data-testid="dept-dialog">
         <DialogHeader>
           <DialogTitle>{OPERATIONS[operation].action}: {departmentLabel(department)}</DialogTitle>
           <DialogDescription>{OPERATIONS[operation].explain}</DialogDescription>
         </DialogHeader>
 
-        {result ? <ResultPanel result={result} onPreviewAgain={() => { setResult(null); setPhrase(''); setAttempt((n) => n + 1) }} />
-          : preview.loading && !p ? <LoadingState label="Preparing the preview…" />
-          : preview.error || !p ? <ErrorState message={describeDataError(preview.error)} onRetry={preview.reload} />
+        {result ? <ResultPanel result={result} onPreviewAgain={() => { setResult(null); setPhrase(''); setRequestId(crypto.randomUUID()); setUnticked(new Set()); setAttempt((n) => n + 1) }} />
+          : preview.loading && !full ? <LoadingState label="Preparing the preview…" />
+          : preview.error || !full ? <ErrorState message={describeDataError(preview.error)} onRetry={preview.reload} />
           : (
             <div className="space-y-4">
-              <PreviewPanel p={p} />
-              {p.total > 0 && (
+              {nothingEligible && (
+                <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100" role="status" data-testid="dept-nothing">
+                  <ShieldAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+                  <span>
+                    Nothing can be {operation === 'DELETE' ? 'deleted permanently' : 'changed'}.
+                    {full.blocked_total > 0
+                      ? ` ${full.blocked_total === 1 ? 'The record below is' : `All ${full.blocked_total} records below are`} kept because other records depend on ${full.blocked_total === 1 ? 'it' : 'them'}: the reason and the related documents are listed for each. These protections are deliberate (posted stock, payables and history are never deleted).`
+                      : ' There are no records in the chosen categories.'}
+                  </span>
+                </div>
+              )}
+              <PreviewPanel p={p ?? full} showBlocked={!full.records} loading={narrowedSelection && narrowed.loading} />
+              {full.records && (full.records.length > 0 || full.blocked.length > 0) && (
+                <DepartmentRecordsTable records={full.records} blocked={full.blocked} selected={(k) => !unticked.has(k)} onToggle={toggle}
+                  onToggleAll={(on) => setUnticked(on ? new Set() : new Set(records.map((r) => r.key)))} disabled={busy}
+                  truncated={(full.records_total ?? 0) > full.records.length} />
+              )}
+              {!nothingEligible && (
                 <div className="space-y-3 rounded-lg border p-3" data-testid="dept-confirm">
-                  {p.requires_backup && <BackupStep companyId={companyId} backup={p.backup} chosen={backupId} onRecorded={setBackupId} userId={user?.id ?? null} />}
+                  {full.requires_backup && <BackupStep companyId={companyId} backup={full.backup} chosen={backupId} onRecorded={setBackupId} userId={user?.id ?? null} />}
                   <div className="space-y-1">
                     <Label htmlFor="dept-phrase">Type <span className="font-mono font-semibold">{confirmationPhrase(operation, department)}</span> to confirm</Label>
                     <Input id="dept-phrase" autoComplete="off" value={phrase} onChange={(e) => setPhrase(e.target.value)} disabled={busy} />
                   </div>
-                  {p.requires_password && (
+                  {full.requires_password && (
                     <div className="space-y-1">
                       <Label htmlFor="dept-password">Your password</Label>
                       <Input id="dept-password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} disabled={busy} />
@@ -183,15 +245,17 @@ function OperationDialog({ department, operation, categories, companyId, onClose
                 </div>
               )}
               {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
+              {!nothingEligible && blocker && phrase && <p className="text-xs text-muted-foreground" data-testid="dept-execute-hint">{blocker}</p>}
             </div>
           )}
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onClose(Boolean(done))} disabled={busy}>{result ? 'Close' : 'Cancel'}</Button>
-          {!result && p && p.total > 0 && (
+          <Button variant="outline" onClick={() => onClose(Boolean(done))} disabled={busy}>{result ? 'Close' : nothingEligible ? 'Close' : 'Cancel'}</Button>
+          {!result && full && !nothingEligible && (
             <Button variant={operation === 'DELETE' ? 'destructive' : 'default'} onClick={() => void execute()} disabled={busy || Boolean(blocker)} title={blocker ?? undefined}
               data-testid="dept-execute">
-              {busy ? <Loader2 className="animate-spin" /> : null} {OPERATIONS[operation].action} {formatNumber(p.total)} row{p.total === 1 ? '' : 's'}
+              {busy || (narrowedSelection && narrowed.loading) ? <Loader2 className="animate-spin" /> : null} {OPERATIONS[operation].action}
+              {p ? ` ${formatNumber(p.records_total ?? p.total)} ${p.records_total !== undefined ? `record${p.records_total === 1 ? '' : 's'}` : `row${p.total === 1 ? '' : 's'}`}` : ''}
             </Button>
           )}
         </DialogFooter>
@@ -200,13 +264,14 @@ function OperationDialog({ department, operation, categories, companyId, onClose
   )
 }
 
-function PreviewPanel({ p }: { p: PreviewResult }) {
+function PreviewPanel({ p, showBlocked, loading }: { p: PreviewResult; showBlocked: boolean; loading?: boolean }) {
   const tables = Object.entries(p.tables).sort((a, b) => b[1] - a[1])
   return (
-    <div className="space-y-3" data-testid="dept-preview">
-      <div className="grid gap-2 sm:grid-cols-3">
+    <div className={`space-y-3 ${loading ? 'opacity-60' : ''}`} data-testid="dept-preview" aria-busy={loading || undefined}>
+      <div className={`grid gap-2 ${p.records_total !== undefined ? 'grid-cols-2 lg:grid-cols-4' : 'sm:grid-cols-3'}`}>
+        {p.records_total !== undefined && <Figure label="Eligible records" value={formatNumber(p.records_total)} testId="dept-fig-eligible" />}
         <Figure label="Rows to change" value={formatNumber(p.total)} />
-        <Figure label="Blocked records" value={formatNumber(p.blocked_total)} tone={p.blocked_total ? 'warning' : undefined} />
+        <Figure label="Blocked records" value={formatNumber(p.blocked_total)} tone={p.blocked_total ? 'warning' : undefined} testId="dept-fig-blocked" />
         <Figure label="Departments affected" value={[...new Set(p.affected_departments)].map(departmentLabel).join(', ') || '—'} />
       </div>
       <div className="grid gap-3 lg:grid-cols-2">
@@ -225,7 +290,7 @@ function PreviewPanel({ p }: { p: PreviewResult }) {
           )}
         </div>
       </div>
-      {p.blocked.length > 0 && (
+      {showBlocked && p.blocked.length > 0 && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950" data-testid="dept-blocked">
           <p className="mb-2 flex items-center gap-2 font-medium"><ShieldAlert className="size-4" /> Kept because other records depend on them</p>
           <ul className="space-y-1.5">{p.blocked.slice(0, 50).map((b) => (
@@ -243,9 +308,9 @@ function PreviewPanel({ p }: { p: PreviewResult }) {
   )
 }
 
-function Figure({ label, value, tone }: { label: string; value: string; tone?: 'warning' }) {
+function Figure({ label, value, tone, testId }: { label: string; value: string; tone?: 'warning'; testId?: string }) {
   return (
-    <div className={`rounded-lg border p-2.5 ${tone === 'warning' ? 'border-amber-200 bg-amber-50' : ''}`}>
+    <div className={`min-w-0 rounded-lg border p-2.5 break-words ${tone === 'warning' ? 'border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30' : ''}`} data-testid={testId}>
       <p className="text-xs text-muted-foreground">{label}</p>
       <p className="font-semibold tabular-nums">{value}</p>
     </div>

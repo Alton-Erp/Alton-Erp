@@ -22,7 +22,9 @@ const files = (await readdir(migDir)).filter((x) => x.endsWith('.sql')).sort()
 async function database(upTo) {
   const db = new PGlite()
   await db.exec(await read(path.join(root, 'supabase', 'tests', 'local_supabase_shim.sql')))
-  for (const f of files.filter((x) => !upTo || x < upTo)) await db.exec(await read(path.join(migDir, f)))
+  // Migrations that build on this one (20261126 purchase permanent delete) are rolled back before it,
+  // so they are not part of this check.
+  for (const f of files.filter((x) => (!upTo || x < upTo) && x < '20261126')) await db.exec(await read(path.join(migDir, f)))
   return db
 }
 const FUNCTIONS = ['prevent_history_mutation', 'guard_bom_write', 'guard_bom_item_write', 'guard_product_version', 'guard_invoice_change',

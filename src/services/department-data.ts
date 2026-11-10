@@ -32,19 +32,31 @@ export interface DepartmentOverview {
 /** Every department with its categories and current counts (Super Admin only; enforced by the database). */
 export const fetchDepartmentOverview = () => rpc<DepartmentOverview>('department_data_overview', {})
 
-/** What an operation would change; nothing is changed. */
-export const previewDepartmentData = (department: DepartmentKey, operation: Operation, categories: string[]) =>
-  rpc<PreviewResult>('department_data_preview', { p_department: department, p_operation: operation, p_categories: categories })
+/**
+ * What an operation would change; nothing is changed. With `keys`, only those records (migration
+ * 20261126090000); without, every candidate through the original function.
+ */
+export const previewDepartmentData = (department: DepartmentKey, operation: Operation, categories: string[], keys: string[] | null = null) =>
+  keys
+    ? rpc<PreviewResult>('department_data_preview_records', { p_department: department, p_operation: operation, p_categories: categories, p_keys: keys })
+    : rpc<PreviewResult>('department_data_preview', { p_department: department, p_operation: operation, p_categories: categories })
 
 export type ExecuteResult = DepartmentRun & { replayed?: boolean } | { status: 'DENIED' | 'IN_PROGRESS'; error: string }
 
-/** Runs the operation in one database transaction. The plan hash comes from the preview: a changed plan stops the run. */
+/**
+ * Runs the operation in one database transaction. The plan hash comes from the preview of the same
+ * selection: a changed plan stops the run. `keys` = the selected records (null = every candidate).
+ */
 export const executeDepartmentData = (input: {
   department: DepartmentKey; operation: Operation; categories: string[]; planHash: string; confirmation: string; backupId: string | null; requestId: string
-}) => rpc<ExecuteResult>('department_data_execute', {
-  p_department: input.department, p_operation: input.operation, p_categories: input.categories, p_plan_hash: input.planHash,
-  p_confirmation: input.confirmation, p_backup_id: input.backupId, p_request_id: input.requestId,
-})
+  keys?: string[] | null
+}) => {
+  const args = {
+    p_department: input.department, p_operation: input.operation, p_categories: input.categories, p_plan_hash: input.planHash,
+    p_confirmation: input.confirmation, p_backup_id: input.backupId, p_request_id: input.requestId,
+  }
+  return input.keys ? rpc<ExecuteResult>('department_data_execute_records', { ...args, p_keys: input.keys }) : rpc<ExecuteResult>('department_data_execute', args)
+}
 
 export const fetchDepartmentHistory = (limit = 50) => rpc<DepartmentRun[]>('department_data_history', { p_limit: limit })
 
