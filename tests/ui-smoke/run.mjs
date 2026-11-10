@@ -637,7 +637,7 @@ const ERP_DEFAULTS = {
   'general.date_format': 'DD MMM YYYY', 'numbering.po_prefix': 'PO', 'numbering.grn_prefix': 'GRN', 'numbering.production_prefix': 'PRD', 'numbering.sales_order_prefix': 'SO',
   'product.auto_sku': true, 'product.sku_prefixes': { FINISHED_GOOD: 'FG', RAW_MATERIAL: 'RM', COMPONENT: 'CMP', SUBASSEMBLY: 'SUB', OUTSOURCED_COMPONENT: 'OSC', PACKAGING_MATERIAL: 'PKG', CONSUMABLE: 'CON', OTHER: 'ITM' },
   'product.units': ['PCS', 'NOS', 'SET', 'KG', 'LTR'], 'product.default_gst_rate': 18, 'product.hsn_codes': [{ code: '6910', description: 'Ceramic sanitary ware', gst_rate: 18 }],
-  'inventory.adjustment_reasons': ['Damaged', 'Count correction'], 'purchase.default_payment_terms': 'DAYS_30', 'purchase.default_delivery_terms': null,
+  'inventory.opening_cost_override': false, 'inventory.adjustment_reasons': ['Damaged', 'Count correction'], 'purchase.default_payment_terms': 'DAYS_30', 'purchase.default_delivery_terms': null,
   'production.default_wastage_percent': 0, 'production.consumption_prefill': 'STANDARD', 'sales.default_payment_terms': null, 'sales.default_delivery_instructions': null,
   'sales.default_warehouse_id': null, 'import.date_order': 'DMY', 'product.import_match_key': 'SKU',
   'product.purchase_cost_auto_update': true, 'product.purchase_cost_increase_alerts': true, 'product.purchase_cost_decrease_alerts': true,
@@ -1512,8 +1512,21 @@ const api = http.createServer((req, res) => {
         }
         case 'inventory_post_receipt':
           return send(res, 200, { transaction_id: 't9', transaction_number: 'TXN-000009' })
+        // The older functions are not callable by users (migration 20261130090000).
         case 'inventory_submit_opening_stock':
+        case 'inventory_post_opening_stock':
+          return send(res, 403, { code: '42501', message: `permission denied for function ${fn}` })
+        case 'inventory_submit_opening_stock_at_cost':
+        case 'inventory_post_opening_stock_at_cost':
           return send(res, 200, { ok: true, opening_batch_id: 'ob9', document_number: 'OS-000009', line_count: body.p_lines.length })
+        // Product Master Cost for opening stock (migration 20261129090000): MOCK-WC-1 ₹850 (second-most-recent GRN),
+        // MOCK-CLAY ₹42.50 (standard cost), MOCK-GLZ none.
+        case 'opening_stock_product_costs': {
+          const OPENING_COSTS = { p1: [850, 'PURCHASE'], p2: [1200, 'STANDARD'], p3: [42.5, 'STANDARD'] }
+          return send(res, 200, { override_allowed: Boolean(ERP_SETTINGS.settings['inventory.opening_cost_override']) && Boolean(currentUser?.permissions.includes('settings.manage')), costs: (body.p_product_ids ?? []).map((id) => products.find((p) => p.id === id)).filter(Boolean).map((p) => ({
+            product_id: p.id, sku: p.sku, product_name: p.product_name, cost: OPENING_COSTS[p.id]?.[0] ?? null, source: OPENING_COSTS[p.id]?.[1] ?? null,
+            valid: Boolean(OPENING_COSTS[p.id]) })) })
+        }
         case 'inventory_create_adjustment':
           return send(res, 200, { adjustment_id: 'a9', adjustment_number: 'ADJ-000009', status: body.p_submit ? 'PENDING_APPROVAL' : 'DRAFT' })
         case 'inventory_refresh_alerts':
@@ -3114,7 +3127,7 @@ await step('opening stock: no source field; add, review, edit and remove lines; 
     // 4. No "Actual source" dropdown; the fields are in the requested order.
     const labels = await evaluate(`[...document.querySelectorAll('[role=dialog] label')].map((l) => l.innerText.trim())`)
     assert(!(await evaluate(`!!document.querySelector('#os-src')`)) && !labels.some((l) => /source/i.test(l)) && !(await evaluate(`/actual source/i.test(document.querySelector('[role=dialog]').innerText)`)), 'source field still shown: ' + JSON.stringify(labels))
-    const want = ['Product', 'Warehouse / location', 'Quantity', 'Unit cost (₹, optional)', 'Effective date', 'Reference (optional, e.g. count sheet no.)']
+    const want = ['Product', 'Warehouse / location', 'Quantity', 'Unit cost (₹, Product Master Cost)', 'Opening stock value', 'Effective date', 'Reference (optional, e.g. count sheet no.)']
     assert(JSON.stringify(labels) === JSON.stringify(want), JSON.stringify(labels))
     assert(await evaluate(`${reviewBtn}.disabled && ${reviewBtn}.innerText.includes('Review 0 line(s)')`), 'Review must be disabled with no lines')
     await screenshot('170-opening-entry-no-source')
@@ -3131,7 +3144,11 @@ await step('opening stock: no source field; add, review, edit and remove lines; 
 
     // 5. One line is added.
     await fill('#os-qty', '7')
-    await fill('#os-cost', '450')
+    // 1. The Product Master Cost is fetched for the product and shown read-only; value = quantity × cost.
+    await waitFor(`document.querySelector('#os-cost')?.value === '850' && document.querySelector('#os-cost').readOnly`, 'Product Master Cost filled, read-only')
+    assert(rpcCalls('opening_stock_product_costs').some((c) => JSON.stringify(c.body.p_product_ids) === '["p1"]'), 'cost not fetched from the database')
+    await waitFor(`document.querySelector('#os-value')?.value === '₹5,950.00'`, 'opening value 7 × ₹850')
+    assert(!(await evaluate(`!!document.querySelector('[data-testid=os-cost-override]')`)), 'override offered without permission')
     await fill('#os-ref', 'CS-17')
     await waitFor(`${reviewBtn}.innerText.includes('Review 1 line(s)')`, 'count includes the completed line being typed')
     await click('[role=dialog] button', 'Add line')
@@ -3142,6 +3159,15 @@ await step('opening stock: no source field; add, review, edit and remove lines; 
     await fill('#os-qty', '1')
     await click('[role=dialog] button', 'Add line')
     await waitFor(`document.querySelector('[data-testid=opening-entry-error]')?.innerText.includes('already in the list')`, 'duplicate in the list refused')
+    // 5. A product without a Product Master Cost cannot be added.
+    await click('[role=dialog] button[aria-label="Change product"]')
+    await waitFor(`document.querySelector('#os-product')?.tagName === 'INPUT'`, 'product cleared')
+    await pickProduct('GLZ', 'MOCK-GLZ')
+    await waitFor(`!!document.querySelector('[data-testid=os-cost-missing]')`, 'missing cost shown')
+    await fill('#os-batch', 'B-1')
+    await click('[role=dialog] button', 'Add line')
+    await waitFor(`document.querySelector('[data-testid=opening-entry-error]')?.innerText.includes('Product Master Cost of MOCK-GLZ is missing')`, 'missing cost refused')
+    await fill('#os-batch', '')
 
     // 6, 7. A second product typed but not added: Review takes it and opens the review screen.
     await click('[role=dialog] button[aria-label="Change product"]')
@@ -3152,6 +3178,9 @@ await step('opening stock: no source field; add, review, edit and remove lines; 
     await waitFor(`${reviewBtn}.innerText.includes('Review 2 line(s)')`, 'two lines counted')
     await click('[data-testid=opening-review]')
     await waitFor(`!!document.querySelector('[data-testid=opening-confirm]') && ${lineCount} === 2`, 'review screen with both lines')
+    const costs = await evaluate(`[...document.querySelectorAll('[data-testid=opening-line-cost]')].map((c) => c.innerText.trim())`)
+    const values = await evaluate(`[...document.querySelectorAll('[data-testid=opening-line-value]')].map((c) => c.innerText.trim())`)
+    assert(JSON.stringify(costs) === '["₹850.00","₹42.50"]' && JSON.stringify(values) === '["₹5,950.00","₹106.25"]', JSON.stringify([costs, values]))
     assert(!(await evaluate(`/source|in-house|outsourced/i.test(document.querySelector('[data-testid=opening-lines]').innerText)`)), 'source shown on the review screen')
     await screenshot('171-opening-review')
 
@@ -3159,7 +3188,7 @@ await step('opening stock: no source field; add, review, edit and remove lines; 
     await click('[aria-label="Remove line 2"]')
     await waitFor(`${lineCount} === 1 && !!document.querySelector('[data-testid=opening-confirm]')`, 'line removed on review')
     await click('[aria-label="Edit line 1"]')
-    await waitFor(`document.querySelector('#os-qty')?.value === '7' && document.querySelector('#os-cost').value === '450' && document.querySelector('#os-ref').value === 'CS-17' && ${lineCount} === 0`, 'line back in the form for editing')
+    await waitFor(`document.querySelector('#os-qty')?.value === '7' && document.querySelector('#os-cost').value === '850' && document.querySelector('#os-ref').value === 'CS-17' && ${lineCount} === 0`, 'line back in the form for editing')
     await fill('#os-qty', '8')
     await click('[role=dialog] button', 'Add line')
     await pickProduct('CLAY', 'MOCK-CLAY')
@@ -3184,16 +3213,17 @@ await step('opening stock: no source field; add, review, edit and remove lines; 
     await waitFor(`!!document.querySelector('[data-testid=opening-confirm]') && ${lineCount} === 1 && document.querySelector('[data-testid=opening-line]').innerText.includes('MOCK-WC-1')`, 'draft restored after refresh')
 
     // 10. Confirming sends the right quantities once, with the source derived from the product, never UNKNOWN.
-    const before = rpcCalls('inventory_submit_opening_stock').length
+    const before = rpcCalls('inventory_submit_opening_stock_at_cost').length
     await evaluate(`(() => { const b = document.querySelector('[data-testid=opening-confirm]'); b.click(); b.click() })()`)
     await waitFor(bodyHas('OS-000009 submitted'), 'submitted')
     await sleep(300)
-    const calls = rpcCalls('inventory_submit_opening_stock').slice(before)
+    const calls = rpcCalls('inventory_submit_opening_stock_at_cost').slice(before)
+    assert(rpcCalls('inventory_submit_opening_stock').length === 0, 'the old submission without server-side pricing was used')
     assert(calls.length === 1, `double click sent ${calls.length} submissions`)
     const b = calls[0].body
     assert(b.p_source === 'MANUAL' && b.p_lines.length === 1 && /^[0-9a-f-]{36}$/.test(b.p_idempotency_key), JSON.stringify(b))
     const l = b.p_lines[0]
-    assert(l.product_id === 'p1' && l.quantity === 8 && l.source_type === 'IN_HOUSE' && l.unit_cost === 450 && l.location_id === 'l1' && l.reference === 'CS-17' && l.effective_date === TODAY, JSON.stringify(l))
+    assert(l.product_id === 'p1' && l.quantity === 8 && l.source_type === 'IN_HOUSE' && l.unit_cost === null && !('cost_override' in l) && l.location_id === 'l1' && l.reference === 'CS-17' && l.effective_date === TODAY, JSON.stringify(l))
     assert(!requests.some((r) => r.path.includes('review_opening')), 'auto-approved')
     // 12. Entering opening stock posts nothing else: no other stock workflow was called.
     assert(!requests.slice(-60).some((r) => /goods_receipt|production|transfer|adjustment/.test(r.path) && r.method !== 'GET'), 'another stock workflow was called')
@@ -3221,6 +3251,7 @@ await step('opening stock import: no Source mapping; an old Source column is ign
   // 1, 3. A file without a Source column maps with nothing missing, and the mapping screen has no Source field.
   await upload(csvNoSource)
   const labels = await evaluate(mappingLabels)
+  assert(!labels.some((l) => /cost/i.test(l)), 'a cost field is offered in the mapping: ' + JSON.stringify(labels))
   assert(!labels.includes('Source') && !(await evaluate(`!!document.querySelector('#om-source')`)), 'Source still in the mapping: ' + JSON.stringify(labels))
   assert(JSON.stringify(await evaluate(`[...document.querySelectorAll('label[for^=om-]')].filter((l) => l.innerText.includes('*')).map((l) => l.innerText.replace('*', '').trim())`)) === '["SKU","Warehouse","Quantity"]', 'required fields')
   assert(!(await evaluate(bodyHas('Map the required fields'))), 'a required field is missing for a file without Source')
@@ -3233,19 +3264,70 @@ await step('opening stock import: no Source mapping; an old Source column is ign
   await upload(csvPath)
   assert(await evaluate(`document.querySelector('[data-testid=source-ignored]')?.innerText.includes('"Source" is not used')`), 'ignored-column note')
   assert(!(await evaluate(`[...document.querySelectorAll('[id^=om-] span')].some((s) => s.innerText.trim() === 'Source')`)), 'Source column mapped to a field')
-  const before = rpcCalls('inventory_submit_opening_stock').length
+  const before = rpcCalls('inventory_submit_opening_stock_at_cost').length
+  // 3. The Unit Cost column (₹450) is ignored: the cost is the Product Master Cost (₹850).
+  assert(await evaluate(`document.querySelector('[data-testid=cost-ignored]')?.innerText.includes('"Unit Cost" is ignored')`), 'ignored cost column note')
+  assert(!(await evaluate(`!!document.querySelector('#om-unit_cost')`)), 'a unit cost field is still mapped')
   await click('button', 'Validate rows')
   await waitFor(bodyHas('Row results'), 'review')
   for (const text of ['SKU "NOPE-1" was not found', 'Duplicate of row 2']) assert(await evaluate(bodyHas(text)), `missing "${text}"`)
   assert(!(await evaluate(bodyHas('is not recognised'))), 'the Source value was still validated')
-  assert(rpcCalls('inventory_submit_opening_stock').length === before, 'validation wrote data')
+  assert(rpcCalls('inventory_submit_opening_stock_at_cost').length === before, 'validation wrote data')
+  const heads = await evaluate(`[...document.querySelectorAll('th')].map((th) => th.innerText.trim().toLowerCase())`)
+  for (const h of ['product code', 'product name', 'opening quantity', 'product master cost', 'opening stock value', 'validation status']) assert(heads.includes(h), `preview column ${h}: ${heads}`)
+  assert(await evaluate(`[...document.querySelectorAll('tbody tr')].some((r) => r.innerText.includes('MOCK-WC-1') && r.querySelector('[data-testid=oi-cost]')?.innerText === '₹850.00'
+    && r.querySelector('[data-testid=oi-value]')?.innerText === '₹2,550.00' && r.innerText.includes('Mock Closet 1'))`), 'preview cost / value')
+  assert(rpcCalls('opening_stock_product_costs').length > 0, 'costs not fetched from the database')
   await screenshot('14-opening-import-review')
   await click('button', 'Stage 1 accepted row(s) for approval')
   await waitFor(`document.querySelector('[role=alertdialog]')`, 'confirm')
   await click('[role=alertdialog] button', 'Stage for approval')
   await waitFor(bodyHas('OS-000009 staged'), 'staged')
-  const b = rpcCalls('inventory_submit_opening_stock').at(-1).body
-  assert(b.p_source === 'IMPORT' && b.p_lines.length === 1 && b.p_lines[0].line_no === 2 && b.p_lines[0].location_id === 'l2' && b.p_lines[0].source_type === 'IN_HOUSE', JSON.stringify(b))
+  const b = rpcCalls('inventory_submit_opening_stock_at_cost').at(-1).body
+  assert(b.p_source === 'IMPORT' && b.p_lines.length === 1 && b.p_lines[0].line_no === 2 && b.p_lines[0].location_id === 'l2' && b.p_lines[0].source_type === 'IN_HOUSE'
+    && b.p_lines[0].unit_cost === null, JSON.stringify(b))
+})
+
+await step('Opening stock cost override: OFF by default; a settings manager switches it on in ERP Settings; the override is then offered, editable and sent flagged', async () => {
+  try {
+    await goto('/admin/erp-settings?tab=inventory')
+    await waitFor(`!!document.querySelector('[data-testid=opening-cost-settings] [data-testid=es-opening-override]')`, 'override setting')
+    assert(await evaluate(`document.querySelector('[data-testid=es-opening-override]').getAttribute('data-state') === 'unchecked' && !document.querySelector('[data-testid=es-opening-override]').disabled`), 'default OFF / editable for a settings manager')
+    assert(await evaluate(bodyHas('Every override is recorded in the audit log')), 'audit note')
+    await screenshot('195-opening-cost-override-setting')
+    await click('[data-testid=es-opening-override]')
+    await click('button', 'Save settings')
+    await waitFor(bodyHas('Settings saved and recorded in the audit log.'), 'saved')
+    assert(rpcCalls('erp_settings_save').at(-1).body.p_settings['inventory.opening_cost_override'] === true, JSON.stringify(rpcCalls('erp_settings_save').at(-1).body))
+    // The manual entry now offers the override for this user.
+    await goto('/inventory/opening-stock')
+    await waitFor(bodyHas('OS-000002'), 'opening list')
+    await click('button', 'Enter opening stock')
+    await waitFor(`!!document.querySelector('#os-product')`, 'entry dialog')
+    await fill('#os-product', 'CLAY')
+    await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('MOCK-CLAY'))`, 'clay option')
+    await click('[role=option]', 'MOCK-CLAY')
+    await waitFor(`document.querySelector('#os-cost')?.value === '42.5' && !!document.querySelector('[data-testid=os-cost-override]')`, 'override offered')
+    assert(await evaluate(`document.querySelector('#os-cost').readOnly`), 'cost editable before choosing the override')
+    await click('[data-testid=os-cost-override] input')
+    await waitFor(`!document.querySelector('#os-cost').readOnly`, 'cost editable with the override')
+    await fill('#os-cost', '45')
+    await fill('#os-qty', '2')
+    await waitFor(`document.querySelector('#os-value')?.value === '₹90.00'`, 'value with the override cost')
+    await click('[role=dialog] button', 'Add line')
+    await waitFor(`document.querySelector('[data-testid=opening-line-cost]')?.innerText.includes('override')`, 'override marked on the line')
+    await click('[data-testid=opening-review]')
+    await waitFor(`!!document.querySelector('[data-testid=opening-confirm]')`, 'review')
+    const before = rpcCalls('inventory_submit_opening_stock_at_cost').length
+    await click('[data-testid=opening-confirm]')
+    await waitFor(`${rpcCalls('inventory_submit_opening_stock_at_cost').length} > ${before} || ${bodyHas('submitted')}`, 'submitted')
+    for (let t = Date.now(); rpcCalls('inventory_submit_opening_stock_at_cost').length === before && Date.now() - t < 3000;) await sleep(100)
+    const l = rpcCalls('inventory_submit_opening_stock_at_cost').at(-1).body.p_lines[0]
+    assert(l.cost_override === true && l.unit_cost === 45 && l.product_id === 'p3', JSON.stringify(l))
+    assert(rpcCalls('inventory_submit_opening_stock').length === 0 && rpcCalls('inventory_post_opening_stock').length === 0, 'an older opening stock function was called')
+  } finally {
+    ERP_SETTINGS.settings['inventory.opening_cost_override'] = false
+  }
 })
 
 await step('alerts: evaluated on open and acknowledgeable', async () => {

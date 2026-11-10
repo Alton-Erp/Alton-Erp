@@ -89,7 +89,7 @@ const r2 = await buy(X, 460)
 m = await master(X)
 ok('3. second receipt (₹460): Cost ₹440 (the first receipt); Last Purchase Cost ₹460; Cost Change +₹20', m.cost === 440 && m.source === 'PURCHASE' && m.receipt === r1.receipt_number
   && m.last === 460 && m.change === 20 && m.pct === 4.55, m)
-const r3 = await buy(X, 470, 5, supB)
+await buy(X, 470, 5, supB)
 m = await master(X)
 ok('4/5. third receipt from another supplier and PO (₹470): Cost ₹460, Last ₹470', m.cost === 460 && m.receipt === r2.receipt_number && m.last === 470 && m.change === 10, m)
 await buy(X, 455)

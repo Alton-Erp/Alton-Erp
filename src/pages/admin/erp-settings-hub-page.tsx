@@ -13,6 +13,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { usePermissions } from '@/auth/use-permissions'
 import { useErpPreferences } from '@/features/management/erp-preferences'
 import { REPORTS, reportSheet } from '@/features/management/report-defs'
 import { MATCH_KEYS } from '@/features/products/product-import'
@@ -92,6 +93,7 @@ function SettingsLoadError({ tab, error, onRetry }: { tab: Tab; error: unknown; 
 
 function SettingsForm({ tab, data, onSaved }: { tab: Tab; data: ErpSettings; onSaved: () => void }) {
   const { reload: reloadPrefs } = useErpPreferences()
+  const { has } = usePermissions()
   const [c, setC] = useState<CompanyDraft>({})
   const [s, setS] = useState<SettingsDraft>({})
   const [busy, setBusy] = useState(false)
@@ -279,6 +281,28 @@ function SettingsForm({ tab, data, onSaved }: { tab: Tab; data: ErpSettings; onS
       )
       case 'inventory': return (
         <div className="space-y-6">
+          {(() => {
+            // Opening stock cost override (migrations 20261129090000 / 20261130090000). Off by default; the database also
+            // refuses the change without settings.manage, and an override needs settings.manage when it is used.
+            const known = 'inventory.opening_cost_override' in data.settings
+            const canManage = has('settings.manage')
+            return (
+              <Card data-testid="opening-cost-settings"><CardHeader><div><CardTitle>Opening stock cost</CardTitle>
+                <CardDescription>Opening stock is valued at the Product Master Cost (second-most-recent valid GRN, else the Standard Manufacturing Cost),
+                  set by the server; the cost in an Excel file or typed on screen is never used.</CardDescription></div></CardHeader>
+                <CardContent className="space-y-2">
+                  <label className="flex items-start gap-2 text-sm">
+                    <Checkbox className="mt-0.5" data-testid="es-opening-override" disabled={!known || !canManage}
+                      checked={Boolean(sv('inventory.opening_cost_override') ?? false)} onCheckedChange={(v) => setSetting('inventory.opening_cost_override', v === true)} />
+                    <span>Allow a different opening stock cost (admin override)
+                      <span className="block text-xs text-muted-foreground">Only users who can manage settings may then enter another cost on an opening stock line.
+                        Every override is recorded in the audit log with the Product Master Cost it replaced. Off by default.</span></span>
+                  </label>
+                  {!known && <p className="text-xs text-amber-800">Available after database update 20261129090000 is applied.</p>}
+                  {known && !canManage && <p className="text-xs text-muted-foreground" data-testid="es-opening-override-locked">Only users who can manage settings can change this.</p>}
+                </CardContent></Card>
+            )
+          })()}
           <Card><CardHeader><div><CardTitle>Stock adjustment reasons</CardTitle><CardDescription>Offered as ready-made notes when you adjust stock.</CardDescription></div></CardHeader>
             <CardContent><Field label="Reasons" htmlFor="es-adj" hint="One per line"><Textarea id="es-adj" rows={6} value={sv('inventory.adjustment_reasons').join('\n')}
               onChange={(e) => setSetting('inventory.adjustment_reasons', e.target.value.split('\n').map((x) => x.trim()).filter(Boolean))} /></Field></CardContent></Card>

@@ -10,6 +10,8 @@ import {
   autoMapOpening,
   detectOpeningHeader,
   existingOpeningIndex,
+  ignoredCostColumns,
+  openingValue,
   missingOpeningFields,
   openingBalanceKey,
   openingStockSource,
@@ -34,6 +36,9 @@ const ctx: OpeningContext = {
   ],
   defaultEffectiveDate: '2026-10-01',
   today: '2026-10-10',
+  // Product Master Costs from the database (deliberately different from any cost in the files below).
+  costs: new Map([['p1', { cost: 300, valid: true }], ['p5', { cost: 15, valid: true }], ['p2', { cost: 12.5, valid: true }],
+    ['p3', { cost: 9, valid: true }], ['p4', { cost: 200, valid: true }], ['p6', { cost: 50, valid: true }]]),
 }
 
 describe('parsing helpers', () => {
@@ -86,7 +91,8 @@ describe('opening-stock import', () => {
     assert.ok(!OPENING_FIELDS.some((f) => (f.key as string) === 'source' || f.label === 'Source'), 'Source is still an import field')
     assert.deepEqual(OPENING_FIELDS.filter((f) => f.required).map((f) => f.label), ['SKU', 'Warehouse', 'Quantity'])
     assert.deepEqual(OPENING_FIELDS.filter((f) => !f.required).map((f) => f.label),
-      ['Location', 'Unit', 'Batch', 'Manufacturing Date', 'Expiry Date', 'Unit Cost', 'Effective Date', 'Reference', 'Notes'])
+      ['Location', 'Unit', 'Batch', 'Manufacturing Date', 'Expiry Date', 'Effective Date', 'Reference', 'Notes'])
+    assert.ok(!OPENING_FIELDS.some((f) => /cost/i.test(f.label)), 'the file never supplies the unit cost')
     assert.deepEqual(missingOpeningFields(autoMapOpening(['SKU', 'Qty'])), ['Warehouse'])
     assert.deepEqual(missingOpeningFields(autoMapOpening(['SKU', 'Warehouse', 'Qty'])), [])
   })
@@ -122,13 +128,13 @@ describe('opening-stock import', () => {
     assert.equal(r4.status, 'valid')
     assert.deepEqual(
       { loc: r4.payload!.location_id, src: r4.payload!.source_type, qty: r4.payload!.quantity, cost: r4.payload!.unit_cost, eff: r4.payload!.effective_date },
-      { loc: 'l1', src: 'OUTSOURCED', qty: 100, cost: 450, eff: '2026-10-01' },
-      'the source comes from the product master, not the "In House" cell',
+      { loc: 'l1', src: 'OUTSOURCED', qty: 100, cost: 300, eff: '2026-10-01' },
+      'the source and the cost come from the product master, not the "In House" or ₹450 cells',
     )
     assert.ok(r4.warnings.some((w) => w.includes('using MAIN/GENERAL')))
     assert.ok(byRow.get(5)!.errors.some((e) => e.includes('Duplicate of row 4')), 'a different Source cell no longer makes a second opening balance')
     assert.equal(byRow.get(6)!.status, 'valid', 'an unrecognised Source cell is ignored')
-    assert.ok(byRow.get(6)!.warnings.some((w) => w.includes('No unit cost')))
+    assert.equal(byRow.get(6)!.payload!.unit_cost, 300, 'a blank cost cell also gets the Product Master Cost')
     assert.equal(byRow.get(7)!.status, 'valid')
     assert.equal(byRow.get(7)!.payload!.expiry_date, '2026-12-15')
     assert.equal(byRow.get(7)!.payload!.effective_date, '2026-10-05')
@@ -157,6 +163,37 @@ describe('opening-stock import', () => {
     const results = validateOpeningRows(data, autoMapOpening(headers), { ...ctx, existing }, first)
     assert.ok(results[0].errors.some((e) => e.includes('already exists (OS-000004)')))
     assert.equal(results[1].status, 'valid')
+  })
+
+  it('2/3. unit cost = Product Master Cost; a cost in the file is ignored; value = quantity × cost', async () => {
+    const { headers, data, first } = await parsed([['SKU', 'Warehouse', 'Quantity', 'Unit Cost', 'Opening Value'], ['WC-1', 'MAIN', '7', '999', '6993'], ['BASIN-1', 'MAIN', '3', '', '']])
+    assert.deepEqual(ignoredCostColumns(headers), ['Unit Cost', 'Opening Value'])
+    const m = autoMapOpening(headers)
+    assert.ok(!Object.values(m).includes(3) && !Object.values(m).includes(4), 'a cost / value column was mapped')
+    const results = validateOpeningRows(data, m, ctx, first)
+    assert.deepEqual(results.map((r) => [r.status, r.cost, r.value, r.payload?.unit_cost]), [['valid', 300, 2100, 300], ['valid', 200, 600, 200]])
+    assert.equal(openingValue(2.5, 12.345), 30.86)
+  })
+
+  it('5. a product without a Product Master Cost (missing or zero) is flagged, never imported at zero', async () => {
+    const costs = new Map(ctx.costs)
+    costs.set('p1', { cost: null, valid: false })
+    costs.set('p4', { cost: 0, valid: false })
+    costs.delete('p5')
+    const { headers, data, first } = await parsed([['SKU', 'Warehouse', 'Quantity'], ['WC-1', 'MAIN', '5'], ['BASIN-1', 'MAIN', '5'], ['WC-2', 'MAIN', '5']])
+    const results = validateOpeningRows(data, autoMapOpening(headers), { ...ctx, costs }, first)
+    assert.deepEqual(results.map((r) => r.status), ['error', 'error', 'error'])
+    assert.match(results[0].errors.join(), /Product Master Cost of WC-1 is missing/)
+    assert.match(results[1].errors.join(), /Product Master Cost of BASIN-1 is zero/)
+    assert.match(results[2].errors.join(), /Product Master Cost of WC-2 is missing/)
+    assert.ok(results.every((r) => r.payload === null))
+  })
+
+  it('4. an unknown product code is rejected with the reason', async () => {
+    const { headers, data, first } = await parsed([['SKU', 'Warehouse', 'Quantity'], ['NOPE-9', 'MAIN', '5']])
+    const [r] = validateOpeningRows(data, autoMapOpening(headers), ctx, first)
+    assert.equal(r.status, 'error')
+    assert.match(r.errors.join(), /SKU "NOPE-9" was not found in the product master/)
   })
 
   it('derives the stored source from the product master, never UNKNOWN', () => {

@@ -1,5 +1,5 @@
 import { Check, ChevronDown, ChevronRight, FileSpreadsheet, Loader2, PackagePlus, Pencil, Plus, Trash2, X } from 'lucide-react'
-import { Fragment, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { useAuth } from '@/auth/use-auth'
@@ -18,7 +18,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { DocumentStatusBadge } from '@/features/inventory/inventory-badges'
 import { formatQty } from '@/features/inventory/inventory-model'
-import { existingOpeningIndex, openingBalanceKey, openingStockSource } from '@/features/inventory/opening-import'
+import { existingOpeningIndex, openingBalanceKey, openingStockSource, openingValue } from '@/features/inventory/opening-import'
+import { formatCost } from '@/features/products/product-list-format'
 import { parseUnitQty, qtyInputMode, quantityRule } from '@/features/inventory/whole-units'
 import { LocationSelect, ProductPicker } from '@/features/inventory/pickers'
 import { useStorage } from '@/features/inventory/use-storage'
@@ -32,10 +33,11 @@ import {
   fetchInventoryPolicy,
   fetchOpeningBatches,
   fetchOpeningContext,
+  fetchOpeningCosts,
   fetchOpeningLines,
   reviewOpeningStock,
-  postOpeningStock,
-  submitOpeningStock,
+  postOpeningStockAtCost,
+  submitOpeningStockAtCost,
   type OpeningLinePayload,
   type ProductOption,
 } from '@/services/inventory'
@@ -199,7 +201,10 @@ interface DraftLine {
   batch: string
   mfg: string
   expiry: string
+  /** Unit cost: the Product Master Cost (or an override, when allowed). */
   cost: string
+  /** True when a permitted user entered a different cost. */
+  override?: boolean
   effective: string
   reference: string
 }
@@ -216,6 +221,11 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
   const [mfg, setMfg] = useState('')
   const [expiry, setExpiry] = useState('')
   const [cost, setCost] = useState('')
+  // Product Master Cost of the selected product (fetched from the database) and the optional override.
+  const [master, setMaster] = useState<{ productId: string; cost: number | null; valid: boolean } | null>(null)
+  const [overrideAllowed, setOverrideAllowed] = useState(false)
+  const [override, setOverride] = useState(false)
+  const [costError, setCostError] = useState<string | null>(null)
   const [effective, setEffective] = useState(today ?? '')
   const [reference, setReference] = useState('')
   const [notes, setNotes] = useState('')
@@ -250,6 +260,27 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
     },
   })
 
+  // Fetch the Product Master Cost whenever the product changes; it fills the (read-only) cost field.
+  const productId = product?.product_id ?? null
+  useEffect(() => {
+    if (!productId) return
+    let cancelled = false
+    setCostError(null)
+    fetchOpeningCosts([productId]).then(({ overrideAllowed: allowed, costs }) => {
+      if (cancelled) return
+      const c = costs.get(productId)
+      setOverrideAllowed(allowed)
+      setMaster({ productId, cost: c?.cost ?? null, valid: Boolean(c?.valid) })
+      setOverride((o) => o && allowed)
+      setCost((current) => (override && allowed ? current : c?.cost === null || c?.cost === undefined ? '' : String(c.cost)))
+    }, (e: unknown) => { if (!cancelled) setCostError(`The Product Master Cost could not be loaded: ${describeDataError(e)}`) })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [productId])
+  const masterReady = Boolean(product && master && master.productId === product.product_id)
+  const shownCost = override ? cost : masterReady && master!.cost !== null ? String(master!.cost) : ''
+  const lineValue = openingValue(parseUnitQty(qty, product?.base_unit) || null, shownCost === '' ? null : Number(shownCost.replace(/,/g, '')))
+
   // The line being typed counts as started once a product, quantity, cost or batch is entered
   // (effective date and reference carry over between lines, so they do not count).
   const pendingStarted = Boolean(product || qty.trim() || cost.trim() || batch.trim())
@@ -259,10 +290,14 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
     const q = parseUnitQty(qty, product?.base_unit)
     const cleanCost = cost.trim().replace(/,/g, '')
     if (!product) return { error: 'Select a product.' }
+    if (!masterReady) return { error: costError ?? 'Loading the Product Master Cost of this product. Try again in a moment.' }
     if (!locationId) return { error: 'Select a warehouse / location.' }
     if (!qty.trim()) return { error: 'Enter the quantity.' }
     if (!q) return { error: `Enter a quantity greater than zero (${quantityRule(product.base_unit)}).` }
-    if (cleanCost && !/^\d+(\.\d{1,4})?$/.test(cleanCost)) return { error: 'Unit cost must be a number of zero or more (up to 4 decimals), or left blank.' }
+    if (override && !(/^\d+(\.\d{1,4})?$/.test(cleanCost) && Number(cleanCost) > 0)) return { error: 'Enter an override cost greater than zero (up to 4 decimals).' }
+    if (!override && (!master!.valid || master!.cost === null)) {
+      return { error: `The Product Master Cost of ${product.sku} is ${master!.cost === 0 ? 'zero' : 'missing'}. Set the Standard Manufacturing Cost on the Product Master first.` }
+    }
     if (product.track_batches && !batch.trim()) return { error: 'This product is batch-tracked: enter the batch number.' }
     if (product.track_expiry && !expiry) return { error: 'This product tracks expiry: enter the expiry date.' }
     if (!effective) return { error: 'Enter the effective date.' }
@@ -271,7 +306,7 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
     if (lines.some((l) => openingBalanceKey(l.product.product_id, l.locationId, l.batch) === k)) {
       return { error: 'That product, location and batch is already in the list. Edit that line instead.' }
     }
-    return { line: { product, locationId, quantity: q, batch: batch.trim(), mfg, expiry, cost: cleanCost, effective, reference: reference.trim() } }
+    return { line: { product, locationId, quantity: q, batch: batch.trim(), mfg, expiry, cost: override ? cleanCost : String(master!.cost), override, effective, reference: reference.trim() } }
   }
   const pending = pendingStarted ? checkPending() : null
   const reviewCount = lines.length + (pending && 'line' in pending ? 1 : 0)
@@ -283,6 +318,8 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
     setMfg('')
     setExpiry('')
     setCost('')
+    setOverride(false)
+    setMaster(null)
   }
 
   const addLine = () => {
@@ -303,6 +340,7 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
     setMfg(l.mfg)
     setExpiry(l.expiry)
     setCost(l.cost)
+    setOverride(Boolean(l.override))
     setEffective(l.effective)
     setReference(l.reference)
     setLines(lines.filter((_, j) => j !== i))
@@ -323,17 +361,26 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
 
   /** Lines whose product/location/batch already has an opening balance, and products that can no longer be used. */
   const findProblems = async (all: DraftLine[]) => {
-    const ctx = await fetchOpeningContext(all.map((l) => l.product.product_id))
+    const ids = all.map((l) => l.product.product_id)
+    const [ctx, priced] = await Promise.all([fetchOpeningContext(ids), fetchOpeningCosts(ids)])
     const existing = existingOpeningIndex(ctx.existing)
     const problems: Record<number, string> = {}
-    all.forEach((l, i) => {
+    // Costs are read again: the Product Master Cost may have changed since the line was added.
+    const refreshed = all.map((l) => {
+      if (l.override && priced.overrideAllowed) return l
+      const c = priced.costs.get(l.product.product_id)
+      return { ...l, override: false, cost: c?.cost === null || c?.cost === undefined ? '' : String(c.cost) }
+    })
+    refreshed.forEach((l, i) => {
       const meta = ctx.products.get(l.product.product_id)
       const recorded = existing.get(openingBalanceKey(l.product.product_id, l.locationId, l.batch))
+      const c = priced.costs.get(l.product.product_id)
       if (!meta) problems[i] = 'This product was not found.'
       else if (meta.status !== 'ACTIVE') problems[i] = `Product ${meta.sku} is inactive.`
       else if (recorded) problems[i] = `Opening stock for this product, location and batch already exists (${recorded}).`
+      else if (!l.override && !c?.valid) problems[i] = `The Product Master Cost of ${meta.sku} is ${c?.cost === 0 ? 'zero' : 'missing'}. Set the Standard Manufacturing Cost on the Product Master first.`
     })
-    return { problems, products: ctx.products }
+    return { problems, products: ctx.products, lines: refreshed }
   }
 
   // Review also takes the line still being typed, so nothing entered is lost or silently ignored.
@@ -353,7 +400,8 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
     working.current = true
     setBusy('checking')
     try {
-      const { problems } = await findProblems(all)
+      const { problems, lines: refreshed } = await findProblems(all)
+      setLines(refreshed)
       setLineErrors(problems)
       const count = Object.keys(problems).length
       if (count) setError(`${count} line(s) cannot be recorded. Edit or remove the marked line(s), then review again.`)
@@ -374,7 +422,8 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
     setServerErrors([])
     try {
       // Checked again here: a restored draft can open straight on the review step.
-      const { problems, products } = await findProblems(lines)
+      const { problems, products, lines: refreshed } = await findProblems(lines)
+      setLines(refreshed)
       const count = Object.keys(problems).length
       if (count) {
         setLineErrors(problems)
@@ -382,7 +431,7 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
         setStep('edit')
         return
       }
-      const payload: OpeningLinePayload[] = lines.map((l, i) => ({
+      const payload: OpeningLinePayload[] = refreshed.map((l, i) => ({
         line_no: i + 1,
         product_id: l.product.product_id,
         location_id: l.locationId,
@@ -393,14 +442,16 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
         batch_number: l.batch || null,
         manufacturing_date: l.mfg || null,
         expiry_date: l.expiry || null,
-        unit_cost: l.cost === '' ? null : Number(l.cost),
+        // The server sets the Product Master Cost; only a permitted override sends its own cost.
+        unit_cost: l.override ? Number(l.cost) : null,
+        ...(l.override ? { cost_override: true } : {}),
         effective_date: l.effective,
         reference: l.reference || null,
         notes: null,
       }))
       const r = canPost
-        ? await postOpeningStock(payload, 'MANUAL', null, notes.trim() || null, key)
-        : await submitOpeningStock(payload, 'MANUAL', null, notes.trim() || null, key)
+        ? await postOpeningStockAtCost(payload, 'MANUAL', null, notes.trim() || null, key)
+        : await submitOpeningStockAtCost(payload, 'MANUAL', null, notes.trim() || null, key)
       if (!r.ok) {
         setServerErrors(r.errors)
         setLineErrors(Object.fromEntries(r.errors.map((e) => [e.line_no - 1, e.message])))
@@ -441,7 +492,23 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
             <div className="space-y-1 sm:col-span-3"><Label htmlFor="os-product">Product</Label><ProductPicker id="os-product" value={product} onChange={setProduct} autoFocus /></div>
             <div className="space-y-1 sm:col-span-3"><Label htmlFor="os-loc">Warehouse / location</Label><LocationSelect id="os-loc" value={locationId} onChange={setLocationId} options={storage.activeLocations} /></div>
             <div className="space-y-1"><Label htmlFor="os-qty">Quantity{product ? ` (${product.base_unit})` : ''}</Label><Input id="os-qty" inputMode={qtyInputMode(product?.base_unit)} value={qty} onChange={(e) => setQty(e.target.value)} /></div>
-            <div className="space-y-1"><Label htmlFor="os-cost">Unit cost (₹, optional)</Label><Input id="os-cost" inputMode="decimal" value={cost} onChange={(e) => setCost(e.target.value)} /></div>
+            <div className="space-y-1">
+              <Label htmlFor="os-cost">Unit cost (₹, Product Master Cost)</Label>
+              <Input id="os-cost" inputMode="decimal" readOnly={!override} aria-readonly={!override} className={override ? undefined : 'bg-surface-muted'}
+                placeholder={product && !masterReady ? 'Loading…' : product && masterReady && master!.cost === null ? 'Missing' : ''}
+                value={shownCost} onChange={(e) => setCost(e.target.value)} />
+              {product && masterReady && !master!.valid && !override && (
+                <p className="text-xs text-red-700" data-testid="os-cost-missing">No Product Master Cost: set the Standard Manufacturing Cost on the Product Master.</p>
+              )}
+              {costError && <p className="text-xs text-red-700">{costError}</p>}
+              {overrideAllowed && product && (
+                <label className="flex items-center gap-1.5 text-xs" data-testid="os-cost-override">
+                  <input type="checkbox" checked={override} onChange={(e) => { setOverride(e.target.checked); if (!e.target.checked) setCost('') }} /> Override cost (audited)
+                </label>
+              )}
+            </div>
+            <div className="space-y-1"><Label htmlFor="os-value">Opening stock value</Label>
+              <Input id="os-value" readOnly aria-readonly className="bg-surface-muted tabular-nums" value={lineValue === null ? '' : formatCost(lineValue)} /></div>
             <div className="space-y-1"><Label htmlFor="os-eff">Effective date</Label><Input id="os-eff" type="date" max={today} value={effective} onChange={(e) => setEffective(e.target.value)} /></div>
             {product?.track_batches && (
               <>
@@ -457,7 +524,7 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
         {lines.length > 0 && (
           <div className="max-h-72 overflow-auto rounded-lg border">
             <table className="w-full text-sm" data-testid="opening-lines">
-              <thead className="bg-surface-muted text-xs text-muted-foreground"><tr><th className="p-2 text-left">#</th><th className="p-2 text-left">Product</th><th className="p-2 text-left">Location</th><th className="p-2 text-left">Batch</th><th className="p-2 text-right">Qty</th><th className="p-2 text-right">Cost</th><th className="p-2">Date</th><th className="p-2 text-left">Reference</th><th /></tr></thead>
+              <thead className="bg-surface-muted text-xs text-muted-foreground"><tr><th className="p-2 text-left">#</th><th className="p-2 text-left">Product</th><th className="p-2 text-left">Location</th><th className="p-2 text-left">Batch</th><th className="p-2 text-right">Qty</th><th className="p-2 text-right">Cost</th><th className="p-2 text-right">Value</th><th className="p-2">Date</th><th className="p-2 text-left">Reference</th><th /></tr></thead>
               <tbody>
                 {lines.map((l, i) => (
                   <Fragment key={`${l.product.product_id}|${l.locationId}|${l.batch}`}>
@@ -467,7 +534,8 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
                       <td className="p-2">{storage.locationLabel(l.locationId)}</td>
                       <td className="p-2">{l.batch || '—'}</td>
                       <td className="p-2 text-right tabular-nums whitespace-nowrap">{formatQty(l.quantity, l.product.base_unit)}</td>
-                      <td className="p-2 text-right">{l.cost === '' ? 'Unknown' : formatCurrency(Number(l.cost))}</td>
+                      <td className="p-2 text-right" data-testid="opening-line-cost">{l.cost === '' ? 'Missing' : formatCost(Number(l.cost))}{l.override && <span className="block text-[11px] text-amber-800">override</span>}</td>
+                      <td className="p-2 text-right tabular-nums" data-testid="opening-line-value">{l.cost === '' ? '—' : formatCost(openingValue(l.quantity, Number(l.cost)))}</td>
                       <td className="p-2 whitespace-nowrap">{l.effective}</td>
                       <td className="p-2">{l.reference || '—'}</td>
                       <td className="p-2">
@@ -477,7 +545,7 @@ function ManualEntryDialog({ storage, today, canPost, onClose, onDone }: { stora
                         </span>
                       </td>
                     </tr>
-                    {lineErrors[i] && <tr><td colSpan={9} className="px-2 pb-2 text-xs text-red-700" data-testid="opening-line-error">Line {i + 1}: {lineErrors[i]}</td></tr>}
+                    {lineErrors[i] && <tr><td colSpan={10} className="px-2 pb-2 text-xs text-red-700" data-testid="opening-line-error">Line {i + 1}: {lineErrors[i]}</td></tr>}
                   </Fragment>
                 ))}
               </tbody>

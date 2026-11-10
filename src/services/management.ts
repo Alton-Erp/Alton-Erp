@@ -174,6 +174,8 @@ export interface ErpSettingsValues {
   'product.purchase_cost_alert_percent': number
   'product.purchase_cost_zero_policy': 'IGNORE' | 'APPLY' | 'INITIAL_ONLY'
   'product.purchase_cost_override_permission': 'purchase_exception.approve' | 'purchase_order.approve' | 'products.update' | 'settings.manage'
+  /** Opening stock: allow settings managers to enter a cost other than the Product Master Cost (migration 20261129090000). Default off. */
+  'inventory.opening_cost_override': boolean
   'inventory.adjustment_reasons': string[]
   'purchase.default_payment_terms': 'IMMEDIATE' | 'DAYS_7' | 'DAYS_15' | 'DAYS_30' | 'DAYS_45'
   'purchase.default_delivery_terms': string | null

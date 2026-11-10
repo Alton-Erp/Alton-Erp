@@ -125,6 +125,9 @@ insert into public.products (id, company_id, sku, product_name, product_type, de
   (rls_test.id('p_bat'), rls_test.id('company_a'), 'INV-BAT', 'Batch sealant',    'RAW_MATERIAL',  'OUTSOURCED', 'BOX', null, true,  true),
   (rls_test.id('p_kg'),  rls_test.id('company_a'), 'INV-KG',  'Glaze powder',     'RAW_MATERIAL',  'HYBRID',     'KG',  null, false, false),
   (rls_test.id('p_b'),   rls_test.id('company_b'), 'INV-PCS', 'Company B product','FINISHED_GOOD', 'IN_HOUSE',   'PCS', null, false, false);
+-- Opening stock is priced at the Product Master Cost (migration 20261129090000): the products get the cost the lines used before.
+update public.products set standard_cost = case id when rls_test.id('p_pcs') then 50 when rls_test.id('p_bat') then 10 else 8 end,
+  change_reason = 'test: Product Master Cost for opening stock' where id in (rls_test.id('p_pcs'), rls_test.id('p_bat'), rls_test.id('p_kg'));
 
 insert into public.warehouses (id, company_id, warehouse_code, warehouse_name, is_default) values
   (rls_test.id('w1'), rls_test.id('company_a'), 'W1', 'Test main store', true),
@@ -170,14 +173,19 @@ select rls_test.set('opening_lines', jsonb_build_array(
 set local role authenticated;
 select rls_test.claims('sales');
 select rls_test.expect_call_error('opening: Sales Manager cannot submit opening stock',
-  format($q$ select public.inventory_submit_opening_stock(%L::jsonb, 'MANUAL', null, null, gen_random_uuid()) $q$, rls_test.get('opening_lines')), 'not allowed');
+  format($q$ select public.inventory_submit_opening_stock_at_cost(%L::jsonb, 'MANUAL', null, null, gen_random_uuid()) $q$, rls_test.get('opening_lines')), 'not allowed');
 select rls_test.claims('viewer');
 select rls_test.expect_call_error('opening: Management Viewer cannot submit opening stock',
-  format($q$ select public.inventory_submit_opening_stock(%L::jsonb, 'MANUAL', null, null, gen_random_uuid()) $q$, rls_test.get('opening_lines')), 'not allowed');
+  format($q$ select public.inventory_submit_opening_stock_at_cost(%L::jsonb, 'MANUAL', null, null, gen_random_uuid()) $q$, rls_test.get('opening_lines')), 'not allowed');
 
 select rls_test.claims('im');
+-- Direct calls to the functions without Product Master pricing are refused (migration 20261130090000).
+select rls_test.expect_call_error('opening: the legacy submit function cannot be called directly (no bypass of Product Master pricing)',
+  format($q$ select public.inventory_submit_opening_stock(%L::jsonb, 'MANUAL', null, null, gen_random_uuid()) $q$, rls_test.get('opening_lines')), 'permission denied');
+select rls_test.expect_call_error('opening: the legacy one-step function cannot be called directly either',
+  format($q$ select public.inventory_post_opening_stock(%L::jsonb, 'MANUAL', null, null, gen_random_uuid()) $q$, rls_test.get('opening_lines')), 'permission denied');
 -- A batch with an invalid row stages NOTHING.
-select rls_test.set('bad_import', rls_test.call(format($q$ select public.inventory_submit_opening_stock(%L::jsonb, 'IMPORT', 'test.xlsx', null, gen_random_uuid()) $q$,
+select rls_test.set('bad_import', rls_test.call(format($q$ select public.inventory_submit_opening_stock_at_cost(%L::jsonb, 'IMPORT', 'test.xlsx', null, gen_random_uuid()) $q$,
   jsonb_build_array(
     jsonb_build_object('line_no', 2, 'product_id', rls_test.id('p_kg'), 'location_id', rls_test.id('g1'), 'source_type', 'OUTSOURCED', 'quantity', 5, 'effective_date', rls_test.today()),
     jsonb_build_object('line_no', 3, 'product_id', rls_test.id('p_kg'), 'location_id', rls_test.id('g1'), 'source_type', 'IN_HOUSE', 'quantity', -1, 'effective_date', rls_test.today()),
@@ -197,15 +205,18 @@ select rls_test.ok('opening import: error rows identify quantity, future date, b
   rls_test.get('bad_import')::text);
 
 select rls_test.expect_call_ok('opening: Inventory Manager submits opening stock for approval', 'open1',
-  format($q$ select public.inventory_submit_opening_stock(%L::jsonb, 'MANUAL', null, 'Initial count', 'e7e5f000-0000-4000-8000-000000000001') $q$, rls_test.get('opening_lines')));
+  format($q$ select public.inventory_submit_opening_stock_at_cost(%L::jsonb, 'MANUAL', null, 'Initial count', 'e7e5f000-0000-4000-8000-000000000001') $q$, rls_test.get('opening_lines')));
 select rls_test.ok('opening: submission is staged (pending), not posted', (rls_test.get('open1') ->> 'ok') = 'true'
   and rls_test.on_hand(rls_test.id('p_pcs')) = 0 and rls_test.ledger_count(rls_test.id('p_pcs')) = 0);
-select rls_test.set('open1_dup', rls_test.call(format($q$ select public.inventory_submit_opening_stock(%L::jsonb, 'MANUAL', null, null, 'e7e5f000-0000-4000-8000-000000000001') $q$,
+select rls_test.ok('opening: staged lines carry the Product Master Cost, not the costs sent (50 / 50 / 10 / 8; line 2 sent 60)',
+  (select string_agg(unit_cost::numeric::text, ',' order by line_no) from public.inventory_opening_lines
+   where opening_batch_id = (rls_test.get('open1') ->> 'opening_batch_id')::uuid) = '50.0000,50.0000,10.0000,8.0000');
+select rls_test.set('open1_dup', rls_test.call(format($q$ select public.inventory_submit_opening_stock_at_cost(%L::jsonb, 'MANUAL', null, null, 'e7e5f000-0000-4000-8000-000000000001') $q$,
   rls_test.get('opening_lines'))));
 select rls_test.ok('opening: retry with the same request id returns the same document (no duplicate)',
   (rls_test.get('open1_dup') ->> 'duplicate') = 'true'
   and rls_test.get('open1_dup') ->> 'document_number' = rls_test.get('open1') ->> 'document_number');
-select rls_test.set('open1_again', rls_test.call(format($q$ select public.inventory_submit_opening_stock(%L::jsonb, 'MANUAL', null, null, gen_random_uuid()) $q$,
+select rls_test.set('open1_again', rls_test.call(format($q$ select public.inventory_submit_opening_stock_at_cost(%L::jsonb, 'MANUAL', null, null, gen_random_uuid()) $q$,
   rls_test.get('opening_lines'))));
 select rls_test.ok('opening: re-submitting the same opening balances is rejected as duplicate',
   (rls_test.get('open1_again') ->> 'ok') = 'false' and rls_test.get('open1_again')::text ilike '%already exists%', rls_test.get('open1_again')::text);
@@ -576,7 +587,7 @@ select rls_test.expect_call_error('cross-company: cannot reverse a company A tra
   format($q$ select public.inventory_reverse_transaction(%L, 'Attack', gen_random_uuid()) $q$, rls_test.get('i1') ->> 'transaction_id'), 'not found');
 select rls_test.expect_call_error('cross-company: cannot approve a company A adjustment',
   format($q$ select public.inventory_review_adjustment(%L, 'APPROVE', null, gen_random_uuid()) $q$, rls_test.get('a1') ->> 'adjustment_id'), 'not found');
-select rls_test.set('b_open', rls_test.call(format($q$ select public.inventory_submit_opening_stock(%L::jsonb, 'MANUAL', null, null, gen_random_uuid()) $q$,
+select rls_test.set('b_open', rls_test.call(format($q$ select public.inventory_submit_opening_stock_at_cost(%L::jsonb, 'MANUAL', null, null, gen_random_uuid()) $q$,
   jsonb_build_array(jsonb_build_object('line_no', 1, 'product_id', rls_test.id('p_pcs'), 'location_id', rls_test.id('gb'), 'source_type', 'IN_HOUSE', 'quantity', 1, 'effective_date', rls_test.today())))));
 select rls_test.ok('cross-company: opening stock for a company A product is rejected',
   (rls_test.get('b_open') ->> 'ok') = 'false' and rls_test.get('b_open')::text ilike '%Product not found%', rls_test.get('b_open')::text);

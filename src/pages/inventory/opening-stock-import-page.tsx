@@ -15,6 +15,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { formatCost } from '@/features/products/product-list-format'
 import { UNITS } from '@/features/products/product-model'
 import {
   OPENING_FIELDS,
@@ -22,6 +23,7 @@ import {
   detectOpeningHeader,
   missingOpeningFields,
   existingOpeningIndex,
+  ignoredCostColumns,
   validateOpeningRows,
   type OpeningMapping,
   type OpeningProduct,
@@ -35,7 +37,7 @@ import { describeDataError } from '@/lib/errors'
 import { formatNumber, toIsoDate } from '@/lib/format'
 import { requireSupabase } from '@/lib/supabase'
 import { recordImportJob } from '@/services/admin'
-import { fetchInventoryPolicy, fetchOpeningContext, postOpeningStock, submitOpeningStock } from '@/services/inventory'
+import { fetchInventoryPolicy, fetchOpeningContext, fetchOpeningCosts, postOpeningStockAtCost, submitOpeningStockAtCost } from '@/services/inventory'
 
 type Step = 'upload' | 'map' | 'review' | 'done'
 type Row = OpeningRowResult & { serverError?: string }
@@ -48,7 +50,7 @@ async function loadProducts(skus: string[]) {
     if (error) throw error
     const productIds = (ids ?? []).filter((r) => r.kind === 'sku').map((r) => r.product_id)
     if (productIds.length === 0) continue
-    const { data, error: e2 } = await db.from('products').select('id, sku, base_unit, track_batches, track_expiry, status, default_source_type, product_type').in('id', productIds)
+    const { data, error: e2 } = await db.from('products').select('id, sku, product_name, base_unit, track_batches, track_expiry, status, default_source_type, product_type').in('id', productIds)
     if (e2) throw e2
     for (const p of data ?? []) map.set(p.sku.toLowerCase(), p)
   }
@@ -86,6 +88,8 @@ export default function OpeningStockImportPage() {
   const missing = mapping ? missingOpeningFields(mapping) : []
   // Older templates had a Source column; it is no longer used and is never mapped.
   const ignoredSource = headers.filter((h) => /^(stock |actual )?source( type)?$/i.test(String(h ?? '').trim()))
+  // A cost column in the file is never read: every row gets the Product Master Cost from the database.
+  const ignoredCost = ignoredCostColumns(headers)
   const valid = results.filter((r) => r.status === 'valid')
   const invalid = results.filter((r) => r.status === 'error')
 
@@ -142,7 +146,10 @@ export default function OpeningStockImportPage() {
       const skus = [...new Set(data.map((r) => String(r[skuCol] ?? '').trim().toLowerCase()).filter(Boolean))]
       const products = await loadProducts(skus)
       // Opening balances already pending or posted: a second one for the same product, location and batch is rejected here, not only by the server.
-      const { existing } = await fetchOpeningContext([...products.values()].map((p) => p.id))
+      const ids = [...products.values()].map((p) => p.id)
+      const { existing } = await fetchOpeningContext(ids)
+      // Product Master Cost of every matched product, from the database (never from the file).
+      const { costs } = await fetchOpeningCosts(ids)
       const locations = storage.locations.map((l) => ({
         id: l.id,
         warehouseCode: storage.warehouseById.get(l.warehouse_id)?.warehouse_code ?? '',
@@ -150,7 +157,8 @@ export default function OpeningStockImportPage() {
         active: l.status === 'ACTIVE' && storage.warehouseById.get(l.warehouse_id)?.status === 'ACTIVE',
         isDefault: l.is_default,
       }))
-      setResults(validateOpeningRows(data, mapping, { products, locations, defaultEffectiveDate: defaultDate || today, today, existing: existingOpeningIndex(existing) }, headerIndex + 2))
+      setResults(validateOpeningRows(data, mapping, { products, locations, defaultEffectiveDate: defaultDate || today, today, existing: existingOpeningIndex(existing),
+        costs: new Map([...costs.values()].map((c) => [c.product_id, { cost: c.cost, valid: c.valid }])) }, headerIndex + 2))
       setStep('review')
     } catch (e) {
       setError(describeDataError(e))
@@ -163,10 +171,11 @@ export default function OpeningStockImportPage() {
     setBusy('submitting')
     setError(null)
     try {
-      const lines = valid.map((v) => v.payload!)
+      // The server sets each line's cost from the Product Master again; no cost is sent.
+      const lines = valid.map((v) => ({ ...v.payload!, unit_cost: null }))
       const r = canPost
-        ? await postOpeningStock(lines, 'IMPORT', file?.name ?? null, null, key)
-        : await submitOpeningStock(lines, 'IMPORT', file?.name ?? null, null, key)
+        ? await postOpeningStockAtCost(lines, 'IMPORT', file?.name ?? null, null, key)
+        : await submitOpeningStockAtCost(lines, 'IMPORT', file?.name ?? null, null, key)
       // Import history (Bulk Operations). Recording is best-effort; the opening stock itself is already handled.
       const byLineErr = new Map(r.ok ? [] : r.errors.map((e) => [e.line_no, e.message]))
       const rejected = results.filter((x) => x.status === 'error' || byLineErr.has(x.rowNumber))
@@ -199,7 +208,8 @@ export default function OpeningStockImportPage() {
   const downloadErrors = async () => {
     const { downloadSheets } = await import('@/features/products/spreadsheet')
     await downloadSheets(
-      [{ name: 'Rejected rows', rows: [['Row', 'SKU', 'Errors', 'Warnings'], ...results.filter((r) => r.status === 'error' || r.serverError).map((r) => [r.rowNumber, r.sku, [...r.errors, ...(r.serverError ? [r.serverError] : [])].join(' | '), r.warnings.join(' | ')])] }],
+      [{ name: 'Rejected rows', rows: [['Row', 'Product Code', 'Product Name', 'Product Master Cost', 'Errors', 'Warnings'], ...results.filter((r) => r.status === 'error' || r.serverError)
+        .map((r) => [r.rowNumber, r.sku, r.productName ?? '', r.cost ?? '', [...r.errors, ...(r.serverError ? [r.serverError] : [])].join(' | '), r.warnings.join(' | ')])] }],
       `opening-stock-errors-${toIsoDate(new Date())}`,
       'xlsx',
     )
@@ -221,7 +231,7 @@ export default function OpeningStockImportPage() {
             ['Unit', `Optional check; must equal the product unit (${UNITS.map((u) => u.code).join(', ')})`],
             ['Batch', 'Required for batch-tracked products, blank otherwise'],
             ['Manufacturing Date / Expiry Date', 'YYYY-MM-DD or DD-MM-YYYY; expiry required when the product tracks expiry'],
-            ['Unit Cost', 'Optional; leave blank if unknown (never assumed to be zero)'],
+            ['(no cost column)', 'Not needed. The unit cost is the Product Master Cost of each product, fetched when you validate; a cost or value column in the file is ignored. A product without a cost is rejected (never imported at zero).'],
             ['Effective Date', 'Optional; defaults to the date chosen during import; cannot be in the future'],
             ['Reference / Notes', 'Optional, e.g. the count sheet number'],
             ['(no Source column)', 'Not needed. A Source column in an older file is ignored.'],
@@ -236,9 +246,14 @@ export default function OpeningStockImportPage() {
   const shown = useMemo(() => results.filter((r) => (filter === 'all' ? true : filter === 'valid' ? r.status === 'valid' && !r.serverError : r.status === 'error' || Boolean(r.serverError))), [results, filter])
   const columns: DataTableColumn<Row>[] = [
     { id: 'row', header: 'Row', cell: (r) => r.rowNumber, sortValue: (r) => r.rowNumber },
-    { id: 'sku', header: 'SKU', cell: (r) => <span className="font-medium">{r.sku || '—'}</span>, searchValue: (r) => r.sku, sortValue: (r) => r.sku },
-    { id: 'qty', header: 'Quantity', align: 'right', cell: (r) => (r.payload ? `${r.payload.quantity} ${r.payload.unit}` : '—') },
-    { id: 'result', header: 'Result', cell: (r) => (r.serverError || r.status === 'error' ? <StatusBadge label="Rejected" tone="danger" /> : r.warnings.length ? <StatusBadge label="Accepted · warning" tone="warning" /> : <StatusBadge label="Accepted" tone="success" />) },
+    { id: 'sku', header: 'Product Code', cell: (r) => <span className="font-medium">{r.sku || '—'}</span>, searchValue: (r) => r.sku, sortValue: (r) => r.sku },
+    { id: 'name', header: 'Product Name', cell: (r) => r.productName ?? '—', searchValue: (r) => r.productName ?? '' },
+    { id: 'qty', header: 'Opening Quantity', align: 'right', cell: (r) => (r.quantity === undefined ? '—' : `${formatNumber(r.quantity)}${r.payload ? ` ${r.payload.unit}` : ''}`) },
+    { id: 'cost', header: 'Product Master Cost', align: 'right', cell: (r) => <span data-testid="oi-cost">{r.cost === null || r.cost === undefined ? 'Missing' : formatCost(r.cost)}</span>,
+      sortValue: (r) => r.cost ?? -1 },
+    { id: 'value', header: 'Opening Stock Value', align: 'right', cell: (r) => <span data-testid="oi-value">{r.value === null || r.value === undefined ? '—' : formatCost(r.value)}</span>,
+      sortValue: (r) => r.value ?? -1 },
+    { id: 'result', header: 'Validation Status', cell: (r) => (r.serverError || r.status === 'error' ? <StatusBadge label="Rejected" tone="danger" /> : r.warnings.length ? <StatusBadge label="Accepted · warning" tone="warning" /> : <StatusBadge label="Accepted" tone="success" />) },
     {
       id: 'msg',
       header: 'Messages',
@@ -315,6 +330,7 @@ export default function OpeningStockImportPage() {
                 </div>
               ))}
             </CardContent>
+            {ignoredCost.length > 0 && <p data-testid="cost-ignored" className="mx-5 mb-3 text-sm text-muted-foreground">Column "{ignoredCost.join('", "')}" is ignored: the unit cost is the Product Master Cost of each product, fetched from the database.</p>}
             {ignoredSource.length > 0 && <p data-testid="source-ignored" className="mx-5 mb-3 text-sm text-muted-foreground">Column "{ignoredSource[0]}" is not used for opening stock and will be ignored.</p>}
             {missing.length > 0 && <p className="mx-5 mb-5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">Map the required fields: {missing.join(', ')}.</p>}
           </Card>
@@ -347,8 +363,9 @@ export default function OpeningStockImportPage() {
               </CardContent>
             </Card>
           )}
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <KpiCard label="Rows read" value={formatNumber(results.length)} icon={FileSpreadsheet} />
+            <KpiCard label="Opening stock value (accepted)" value={formatCost(valid.reduce((sum, r) => sum + (r.value ?? 0), 0))} icon={CheckCircle2} />
             <KpiCard label="Accepted" value={formatNumber(valid.length)} icon={CheckCircle2} accent="available" />
             <KpiCard label="Rejected" value={formatNumber(invalid.length + results.filter((r) => r.serverError).length)} icon={Info} accent="shortage" />
           </div>

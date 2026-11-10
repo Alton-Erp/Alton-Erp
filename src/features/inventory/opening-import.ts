@@ -6,6 +6,11 @@
 // one per line, so it is derived from the product master (openingStockSource),
 // the same way production records IN_HOUSE and purchase receipts OUTSOURCED.
 // A Source column in an older spreadsheet is simply not mapped.
+//
+// Unit cost (migration 20261129090000): never read from the file. Every row gets the Product
+// Master Cost of its product, fetched from the database (opening_stock_product_costs); the
+// server sets it again when the lines are submitted. A row whose product has no cost (missing
+// or zero) is rejected rather than imported at zero.
 
 import { parseSheetDate, type StockSourceCode } from './inventory-model.ts'
 
@@ -18,13 +23,18 @@ export const OPENING_FIELDS = [
   { key: 'batch', label: 'Batch', required: false, synonyms: ['batch', 'batch number', 'batch no', 'lot', 'lot number'] },
   { key: 'mfg_date', label: 'Manufacturing Date', required: false, synonyms: ['manufacturing date', 'mfg date', 'mfg'] },
   { key: 'expiry_date', label: 'Expiry Date', required: false, synonyms: ['expiry date', 'expiry', 'exp date', 'best before'] },
-  { key: 'unit_cost', label: 'Unit Cost', required: false, synonyms: ['unit cost', 'cost', 'rate', 'cost price'] },
   { key: 'effective_date', label: 'Effective Date', required: false, synonyms: ['effective date', 'date', 'as on', 'as of'] },
   { key: 'reference', label: 'Reference', required: false, synonyms: ['reference', 'ref'] },
   { key: 'notes', label: 'Notes', required: false, synonyms: ['notes', 'remarks', 'comment'] },
 ] as const
 
 export type OpeningFieldKey = (typeof OPENING_FIELDS)[number]['key']
+
+/** Cost / value columns of a file: shown as ignored (the cost always comes from the Product Master). */
+export function ignoredCostColumns(headers: string[]): string[] {
+  const names = ['unit cost', 'cost', 'rate', 'cost price', 'unit rate', 'price', 'value', 'opening value', 'amount', 'total value']
+  return headers.filter((h) => names.includes(String(h ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s*(rs|inr)$/, '').trim()))
+}
 export type OpeningMapping = Record<OpeningFieldKey, number | null>
 
 export interface OpeningProduct {
@@ -34,6 +44,7 @@ export interface OpeningProduct {
   track_batches: boolean
   track_expiry: boolean
   status: string
+  product_name?: string
   /** Product master sourcing strategy (IN_HOUSE / OUTSOURCED / HYBRID). */
   default_source_type?: string | null
   product_type?: string | null
@@ -91,6 +102,8 @@ export interface OpeningContext {
   today: string
   /** Opening balances already pending or posted (existingOpeningIndex). */
   existing?: Map<string, string>
+  /** Product Master Cost by product id (from the database). A product without an entry has no cost. */
+  costs?: Map<string, { cost: number | null; valid: boolean }>
 }
 
 export interface OpeningPayload {
@@ -116,7 +129,17 @@ export interface OpeningRowResult {
   errors: string[]
   warnings: string[]
   payload: OpeningPayload | null
+  productName?: string
+  quantity?: number
+  /** Product Master Cost (null = missing). */
+  cost?: number | null
+  /** Quantity × Product Master Cost. */
+  value?: number | null
 }
+
+/** Opening stock value = quantity × Product Master Cost (rupees, 2 decimals). */
+export const openingValue = (quantity: number | null | undefined, cost: number | null | undefined): number | null =>
+  quantity === null || quantity === undefined || cost === null || cost === undefined ? null : Math.round(quantity * cost * 100) / 100
 
 const norm = (h: string) => h.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
 
@@ -210,9 +233,12 @@ export function validateOpeningRows(rows: string[][], mapping: OpeningMapping, c
     if (mfg && exp && mfg > exp) errors.push('Manufacturing date is after the expiry date.')
     if (exp && exp < ctx.today) warnings.push('Batch is already expired.')
 
-    const cost = decimal(cell(row, 'unit_cost'), 4)
-    if (cost === null) errors.push('Unit cost must be a number ≥ 0 (up to 4 decimals).')
-    if (cost === undefined) warnings.push('No unit cost: valuation will show this stock as "cost unknown".')
+    // The Product Master Cost; never a cost from the file.
+    const master = product ? ctx.costs?.get(product.id) : undefined
+    const cost = master?.cost ?? null
+    if (product && (!master || !master.valid || cost === null || cost <= 0)) {
+      errors.push(`The Product Master Cost of ${product.sku} is ${cost === 0 ? 'zero' : 'missing'}. Set the Standard Manufacturing Cost on the Product Master, then validate again.`)
+    }
 
     const effRaw = cell(row, 'effective_date')
     const eff = effRaw ? parseSheetDate(effRaw) : ctx.defaultEffectiveDate
@@ -234,6 +260,10 @@ export function validateOpeningRows(rows: string[][], mapping: OpeningMapping, c
       status: errors.length ? 'error' : 'valid',
       errors,
       warnings,
+      productName: product?.product_name,
+      quantity: typeof qty === 'number' ? qty : undefined,
+      cost: product ? cost : undefined,
+      value: typeof qty === 'number' ? openingValue(qty, cost) : null,
       payload: errors.length
         ? null
         : {
@@ -246,7 +276,7 @@ export function validateOpeningRows(rows: string[][], mapping: OpeningMapping, c
             batch_number: batch || null,
             manufacturing_date: mfg ?? null,
             expiry_date: exp ?? null,
-            unit_cost: cost ?? null,
+            unit_cost: cost,
             effective_date: eff as string,
             reference: cell(row, 'reference') || null,
             notes: cell(row, 'notes') || null,

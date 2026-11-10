@@ -229,12 +229,12 @@ select rls_test.claims('adm');
 select rls_test.expect_call_ok('E2E 2: category created', 'cat', format($q$ insert into public.product_categories (company_id, name, code) values (%L, 'Sanitary ware (TEST)', 'SANT')
   returning jsonb_build_object('id', id) $q$, rls_test.id('company_a')));
 select rls_test.expect_call_ok('E2E 2: finished product RD-BASIN created (PCS, HSN 6910, GST 18%)', 'basin',
-  format($q$ insert into public.products (company_id, sku, product_name, category_id, product_type, default_source_type, base_unit, hsn_code, gst_rate, selling_price, is_manufacturable)
-    values (%L, 'RD-BASIN', 'Wash basin (TEST)', %L, 'FINISHED_GOOD', 'IN_HOUSE', 'PCS', '6910', 18, 1000, true) returning jsonb_build_object('id', id) $q$,
+  format($q$ insert into public.products (company_id, sku, product_name, category_id, product_type, default_source_type, base_unit, hsn_code, gst_rate, selling_price, is_manufacturable, standard_cost)
+    values (%L, 'RD-BASIN', 'Wash basin (TEST)', %L, 'FINISHED_GOOD', 'IN_HOUSE', 'PCS', '6910', 18, 1000, true, 400) returning jsonb_build_object('id', id) $q$,
     rls_test.id('company_a'), rls_test.gid('cat', 'id')));
 select rls_test.expect_call_ok('E2E 2: raw material RD-CLAY created (KG)', 'clay',
-  format($q$ insert into public.products (company_id, sku, product_name, product_type, default_source_type, base_unit, hsn_code, gst_rate)
-    values (%L, 'RD-CLAY', 'Ceramic body (TEST)', 'RAW_MATERIAL', 'IN_HOUSE', 'KG', '2508', 5) returning jsonb_build_object('id', id) $q$, rls_test.id('company_a')));
+  format($q$ insert into public.products (company_id, sku, product_name, product_type, default_source_type, base_unit, hsn_code, gst_rate, standard_cost)
+    values (%L, 'RD-CLAY', 'Ceramic body (TEST)', 'RAW_MATERIAL', 'IN_HOUSE', 'KG', '2508', 5, 10) returning jsonb_build_object('id', id) $q$, rls_test.id('company_a')));
 select rls_test.expect_call_error('E2E 2: a duplicate SKU in the same company is refused',
   format($q$ insert into public.products (company_id, sku, product_name, product_type, default_source_type, base_unit) values (%L, 'rd-basin', 'Dup', 'FINISHED_GOOD', 'IN_HOUSE', 'PCS')
     returning jsonb_build_object('id', id) $q$, rls_test.id('company_a')));
@@ -257,7 +257,7 @@ select rls_test.ok('E2E 3: the GENERAL storage location exists and is eligible (
 -- Step 4: opening stock through submit -> approve (segregation of duties)
 select rls_test.claims('im');
 select rls_test.expect_call_ok('E2E 4: opening stock submitted (clay 500 KG, basin 20 PCS)', 'open',
-  format($q$ select public.inventory_submit_opening_stock(%L::jsonb, 'MANUAL', null, 'Readiness test', gen_random_uuid()) $q$, jsonb_build_array(
+  format($q$ select public.inventory_submit_opening_stock_at_cost(%L::jsonb, 'MANUAL', null, 'Readiness test', gen_random_uuid()) $q$, jsonb_build_array(
     jsonb_build_object('line_no', 1, 'product_id', rls_test.id('clay'), 'location_id', rls_test.id('g1'), 'source_type', 'IN_HOUSE', 'quantity', 500, 'effective_date', rls_test.today(), 'unit_cost', 10),
     jsonb_build_object('line_no', 2, 'product_id', rls_test.id('pa'), 'location_id', rls_test.id('g1'), 'source_type', 'IN_HOUSE', 'quantity', 20, 'effective_date', rls_test.today(), 'unit_cost', 400))));
 select rls_test.ok('E2E 4: nothing is posted before approval', rls_test.on_hand(rls_test.id('clay')) = 0 and rls_test.tx_count(rls_test.id('company_a')) = 0);

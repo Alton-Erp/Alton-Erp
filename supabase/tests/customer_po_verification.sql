@@ -153,7 +153,12 @@ select rls_test.call(format($q$ select public.inventory_post_receipt(%L, %L, 5, 
   rls_test.id('pb'), rls_test.id('g1'), rls_test.today() - 1));
 select rls_test.call(format($q$ select public.inventory_post_receipt(%L, %L, 2, 'IN_HOUSE', p_idempotency_key => gen_random_uuid()) $q$, rls_test.id('pc'), rls_test.id('g1')));
 select rls_test.call(format($q$ select public.inventory_post_receipt(%L, %L, 20, 'OUTSOURCED', p_idempotency_key => gen_random_uuid()) $q$, rls_test.id('pk'), rls_test.id('g1')));
-select rls_test.set('unknown_open', rls_test.call(format($q$ select public.inventory_submit_opening_stock(%L::jsonb, 'MANUAL', null, null, gen_random_uuid()) $q$,
+-- Opening stock is priced at the Product Master Cost (migration 20261129090000): the products get a cost.
+reset role;
+update public.products set standard_cost = 100, change_reason = 'test: Product Master Cost for opening stock' where id = rls_test.id('pa');
+set local role authenticated;
+select rls_test.claims('im');
+select rls_test.set('unknown_open', rls_test.call(format($q$ select public.inventory_submit_opening_stock_at_cost(%L::jsonb, 'MANUAL', null, null, gen_random_uuid()) $q$,
   jsonb_build_array(jsonb_build_object('line_no', 1, 'product_id', rls_test.id('pa'), 'location_id', rls_test.id('g1'), 'source_type', 'UNKNOWN', 'quantity', 3, 'effective_date', rls_test.today())))));
 select rls_test.claims('adm');
 select rls_test.call(format($q$ select public.inventory_review_opening_stock(%L, 'APPROVE', null, gen_random_uuid()) $q$, rls_test.gid('unknown_open', 'opening_batch_id')));

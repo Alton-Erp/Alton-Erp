@@ -102,6 +102,9 @@ insert into public.products (id, company_id, sku, product_name, product_type, de
   (rls_test.id('fg'),   rls_test.id('company_a'), 'SOP-WC',   'Wall-hung WC',  'FINISHED_GOOD', 'IN_HOUSE',   'PCS', false, false, 'ACTIVE', '6910', 18),
   (rls_test.id('clay'), rls_test.id('company_a'), 'SOP-CLAY', 'Ball clay',     'RAW_MATERIAL',  'OUTSOURCED', 'KG',  false, false, 'ACTIVE', '2508', 5),
   (rls_test.id('kit'),  rls_test.id('company_a'), 'SOP-KIT',  'Fitting kit',   'COMPONENT',     'OUTSOURCED', 'PCS', false, false, 'ACTIVE', '7318', 18);
+-- Opening stock is priced at the Product Master Cost (migration 20261129090000): the products get the cost the lines used before.
+update public.products set standard_cost = case id when rls_test.id('kit') then 40 else 500 end, change_reason = 'test: Product Master Cost for opening stock'
+  where id in (rls_test.id('kit'), rls_test.id('fg'));
 insert into public.warehouses (id, company_id, warehouse_code, warehouse_name, is_default, address) values
   (rls_test.id('w1'), rls_test.id('company_a'), 'W1', 'Main', true, 'Gate 2, MIDC'),
   (rls_test.id('wb'), rls_test.id('company_b'), 'W1', 'B main', true, null);
@@ -122,6 +125,8 @@ select rls_test.ok('grants: anon cannot call any one-step action; authenticated 
   and not has_function_privilege('anon', 'public.outsourcing_order_release(uuid, text)', 'EXECUTE')
   and not has_function_privilege('anon', 'public.inventory_post_adjustment(text, uuid, uuid, text, uuid, text, text, numeric, numeric, text, numeric, text, text, date, uuid)', 'EXECUTE')
   and not has_function_privilege('anon', 'public.inventory_post_opening_stock(jsonb, text, text, text, uuid)', 'EXECUTE')
+  and not has_function_privilege('authenticated', 'public.inventory_post_opening_stock(jsonb, text, text, text, uuid)', 'EXECUTE')
+  and has_function_privilege('authenticated', 'public.inventory_post_opening_stock_at_cost(jsonb, text, text, text, uuid)', 'EXECUTE')
   and not has_function_privilege('anon', 'public.inventory_post_count(uuid, text)', 'EXECUTE')
   and has_function_privilege('authenticated', 'public.purchase_order_open(uuid, timestamptz)', 'EXECUTE'));
 select rls_test.ok('grants: one-step actions add no privileges (SECURITY INVOKER)',
@@ -136,17 +141,19 @@ select rls_test.ok('grants: one-step actions add no privileges (SECURITY INVOKER
 set local role authenticated;
 select rls_test.claims('op');
 select rls_test.expect_call_ok('opening: the operator posts opening stock in one step', 'open1',
-  format($q$ select public.inventory_post_opening_stock(%L::jsonb, 'MANUAL', null, 'Go-live', 'e7e5c100-0000-4000-8000-00000000ab01') $q$,
+  format($q$ select public.inventory_post_opening_stock_at_cost(%L::jsonb, 'MANUAL', null, 'Go-live', 'e7e5c100-0000-4000-8000-00000000ab01') $q$,
     jsonb_build_array(jsonb_build_object('line_no', 1, 'product_id', rls_test.id('kit'), 'location_id', rls_test.id('g1'),
       'source_type', 'OUTSOURCED', 'quantity', 50, 'unit_cost', 40, 'effective_date', rls_test.today()))));
 reset role;
 select rls_test.ok('opening: status POSTED and 50 kits on hand', rls_test.get('open1') ->> 'status' = 'POSTED'
   and rls_test.on_hand(rls_test.id('kit')) = 50, rls_test.get('open1')::text);
+select rls_test.ok('opening: posted at the Product Master Cost (40)',
+  (select unit_cost from public.inventory_transactions where product_id = rls_test.id('kit') and transaction_type = 'OPENING_STOCK') = 40);
 select rls_test.set('ledger_after_open', to_jsonb(rls_test.ledger_count(rls_test.id('company_a'))));
 set local role authenticated;
 select rls_test.claims('op');
 select rls_test.expect_call_ok('opening: a retry with the same request id is accepted', 'open1_retry',
-  format($q$ select public.inventory_post_opening_stock(%L::jsonb, 'MANUAL', null, 'Go-live', 'e7e5c100-0000-4000-8000-00000000ab01') $q$,
+  format($q$ select public.inventory_post_opening_stock_at_cost(%L::jsonb, 'MANUAL', null, 'Go-live', 'e7e5c100-0000-4000-8000-00000000ab01') $q$,
     jsonb_build_array(jsonb_build_object('line_no', 1, 'product_id', rls_test.id('kit'), 'location_id', rls_test.id('g1'),
       'source_type', 'OUTSOURCED', 'quantity', 50, 'unit_cost', 40, 'effective_date', rls_test.today()))));
 reset role;
@@ -156,7 +163,7 @@ select rls_test.ok('opening: ...and posts nothing twice (still 50, same ledger c
   and rls_test.get('open1_retry') ->> 'opening_batch_id' = rls_test.get('open1') ->> 'opening_batch_id', rls_test.get('open1_retry')::text);
 set local role authenticated;
 select rls_test.claims('op');
-select rls_test.set('open_bad', rls_test.call(format($q$ select public.inventory_post_opening_stock(%L::jsonb, 'MANUAL', null, null, gen_random_uuid()) $q$,
+select rls_test.set('open_bad', rls_test.call(format($q$ select public.inventory_post_opening_stock_at_cost(%L::jsonb, 'MANUAL', null, null, gen_random_uuid()) $q$,
     jsonb_build_array(jsonb_build_object('line_no', 1, 'product_id', rls_test.id('fg'), 'location_id', rls_test.id('g1'),
       'source_type', 'IN_HOUSE', 'quantity', -3, 'effective_date', rls_test.today())))));
 reset role;

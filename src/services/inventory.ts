@@ -583,37 +583,65 @@ export interface OpeningLinePayload {
   batch_number?: string | null
   manufacturing_date?: string | null
   expiry_date?: string | null
+  /**
+   * Ignored by the *_at_cost functions: the server sets the Product Master Cost. Read only together with
+   * cost_override = true, which the server accepts only when the override is enabled for the user.
+   */
   unit_cost?: number | null
+  cost_override?: boolean
   effective_date: string
   reference?: string | null
   notes?: string | null
 }
 
+/** Product Master Cost of a product for opening stock (public.opening_stock_product_costs, migration 20261129090000). */
+export interface OpeningProductCost {
+  product_id: string
+  sku: string
+  product_name: string
+  /** Product Master Cost (second-most-recent valid GRN, else the Standard Manufacturing Cost); null = missing. */
+  cost: number | null
+  source: 'PURCHASE' | 'STANDARD' | null
+  /** False when the cost is missing or zero: the line cannot be posted. */
+  valid: boolean
+}
+
+/** Product Master Costs for opening stock, fetched from the database, and whether this user may override them. */
+export async function fetchOpeningCosts(productIds: string[]): Promise<{ overrideAllowed: boolean; costs: Map<string, OpeningProductCost> }> {
+  const costs = new Map<string, OpeningProductCost>()
+  let overrideAllowed = false
+  const unique = [...new Set(productIds)]
+  for (let i = 0; i < unique.length || i === 0; i += 5000) {
+    const r = await rpc<{ override_allowed: boolean; costs: OpeningProductCost[] }>('opening_stock_product_costs', { p_product_ids: unique.slice(i, i + 5000) })
+    overrideAllowed = r.override_allowed
+    for (const c of r.costs) costs.set(c.product_id, { ...c, cost: c.cost === null ? null : Number(c.cost) })
+    if (unique.length === 0) break
+  }
+  return { overrideAllowed, costs }
+}
+
+/**
+ * Opening stock at the Product Master Cost: the server prices every line again at submission and calls the
+ * existing submit / post functions (migration 20261129090000). Costs sent by the screen are ignored.
+ */
+export const postOpeningStockAtCost = (lines: OpeningLinePayload[], source: 'MANUAL' | 'IMPORT', fileName: string | null, notes: string | null, key: string) =>
+  rpc<OpeningSubmitResult & { status?: string }>('inventory_post_opening_stock_at_cost', {
+    p_lines: lines as unknown as Json, p_source: source, p_file_name: fileName, p_notes: notes, p_idempotency_key: key,
+  })
+export const submitOpeningStockAtCost = (lines: OpeningLinePayload[], source: 'MANUAL' | 'IMPORT', fileName: string | null, notes: string | null, key: string) =>
+  rpc<OpeningSubmitResult>('inventory_submit_opening_stock_at_cost', {
+    p_lines: lines as unknown as Json, p_source: source, p_file_name: fileName, p_notes: notes, p_idempotency_key: key,
+  })
+
 export type OpeningSubmitResult =
   | { ok: true; opening_batch_id: string; document_number: string; line_count: number; duplicate?: boolean }
   | { ok: false; errors: { line_no: number; message: string }[]; valid_lines: number }
 
-export const submitOpeningStock = (lines: OpeningLinePayload[], source: 'MANUAL' | 'IMPORT', fileName: string | null, notes: string | null, key: string) =>
-  rpc<OpeningSubmitResult>('inventory_submit_opening_stock', {
-    p_lines: lines as unknown as Json,
-    p_source: source,
-    p_file_name: fileName,
-    p_notes: notes,
-    p_idempotency_key: key,
-  })
+// Opening stock is submitted only through submitOpeningStockAtCost / postOpeningStockAtCost: the older functions accept
+// any unit cost and are not callable by users (migration 20261130090000).
 
 export const reviewOpeningStock = (id: string, decision: 'APPROVE' | 'REJECT', note: string | null, key: string) =>
   rpc<{ status: string; lines_posted: number }>('inventory_review_opening_stock', { p_opening_batch_id: id, p_decision: decision, p_note: note, p_idempotency_key: key })
-
-/** V2 single-operator: submit + post opening stock in one step. Invalid lines come back as errors and nothing is posted. */
-export const postOpeningStock = (lines: OpeningLinePayload[], source: 'MANUAL' | 'IMPORT', fileName: string | null, notes: string | null, key: string) =>
-  rpc<OpeningSubmitResult & { status?: string }>('inventory_post_opening_stock', {
-    p_lines: lines as unknown as Json,
-    p_source: source,
-    p_file_name: fileName,
-    p_notes: notes,
-    p_idempotency_key: key,
-  })
 
 export const cancelOpeningStock = (id: string) => rpc('inventory_cancel_opening_stock', { p_opening_batch_id: id })
 
