@@ -249,9 +249,9 @@ export function ManualOrderDialog({ onClose, onCreated }: { onClose: () => void;
           <div className="space-y-1 sm:col-span-2"><Label htmlFor="mo-customer">Customer</Label>
             <div className="flex gap-2">
               <Select value={customer} onValueChange={setCustomer}><SelectTrigger id="mo-customer"><SelectValue placeholder={customers.loading ? 'Loading…' : 'Select a customer'} /></SelectTrigger>
-                <SelectContent className="max-h-72">{(customers.data ?? []).length === 0 && <div className="px-3 py-2 text-sm text-muted-foreground">No active customers yet. Use New customer.</div>}
+                <SelectContent className="max-h-72">{(customers.data ?? []).length === 0 && <div className="px-3 py-2 text-sm text-muted-foreground">No active customers yet. Use Add New Customer.</div>}
                   {(customers.data ?? []).map((c) => <SelectItem key={c.id} value={c.id}>{c.customer_code} — {c.customer_name}</SelectItem>)}</SelectContent></Select>
-              {has('customers.manage') && <Button type="button" variant="outline" onClick={() => setQuickAdd(true)}><UserPlus /> New customer</Button>}
+              {has('customers.manage') && <Button type="button" variant="outline" onClick={() => setQuickAdd(true)}><UserPlus /> Add New Customer</Button>}
             </div></div>
           <div className="space-y-1"><Label htmlFor="mo-po">Customer PO no. (optional)</Label><Input id="mo-po" maxLength={100} value={poNumber} onChange={(e) => setPoNumber(e.target.value)} /></div>
         </div>

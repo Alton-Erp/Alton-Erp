@@ -139,6 +139,8 @@ function EntryForm({ customers, companyGstin, header: so, lines: soLines, crumbs
       setLines((ls) => ls.map((l) => (l.key === key ? { ...l, unitPrice: l.unitPrice || str(row?.selling_price), gstRate: l.gstRate || str(row?.gst_rate) } : l)))
     } catch { /* price and GST stay blank; the server uses the Product Master */ }
   }
+  // Shown after a customer is added from this screen.
+  const [partyNote, setPartyNote] = useState<{ ok: boolean; text: string } | null>(null)
   const chooseCustomer = (id: string, list: CustomerRow[] = customerList) => {
     const c = list.find((x) => x.id === id)
     setCustomerId(id)
@@ -209,8 +211,10 @@ function EntryForm({ customers, companyGstin, header: so, lines: soLines, crumbs
                   <SelectTrigger id="so-customer" className="w-full"><SelectValue placeholder="Select a customer" /></SelectTrigger>
                   <SelectContent className="max-h-72">{customerList.map((c) => <SelectItem key={c.id} value={c.id}>{c.customer_code} — {c.customer_name}</SelectItem>)}</SelectContent>
                 </Select>
-                {has('customers.manage') && <Button type="button" variant="outline" onClick={() => setQuickCustomer(true)}><UserPlus /> New customer</Button>}
-              </div></div>
+                {has('customers.manage') && <Button type="button" variant="outline" onClick={() => setQuickCustomer(true)} data-testid="so-add-customer"><UserPlus /> Add New Customer</Button>}
+              </div>
+              {partyNote && <p role="status" data-testid="so-party-note" className={partyNote.ok ? 'text-sm text-green-800' : 'text-sm text-red-800'}>{partyNote.text}</p>}
+            </div>
             <div className="space-y-1"><Label htmlFor="so-date">Order date</Label><Input id="so-date" type="date" max={today} disabled={Boolean(so)} value={h.order_date} onChange={(e) => set('order_date')(e.target.value)} /></div>
             <div className="space-y-1"><Label htmlFor="so-gstin">Customer GSTIN</Label><Input id="so-gstin" maxLength={15} value={h.customer_gstin} onChange={(e) => set('customer_gstin')(e.target.value.toUpperCase())} placeholder="Not registered" /></div>
             <div className="space-y-1 sm:col-span-2"><Label htmlFor="so-bill">Billing address</Label><Textarea id="so-bill" rows={2} maxLength={1000} value={h.billing_address} onChange={(e) => set('billing_address')(e.target.value)} /></div>
@@ -314,7 +318,11 @@ function EntryForm({ customers, companyGstin, header: so, lines: soLines, crumbs
             const list = await fetchCustomers(false)
             setCustomerList(list)
             chooseCustomer(r.roleId, list)
-          } catch { reloadCustomers() }
+            setPartyNote({ ok: true, text: `${r.partyCode} — ${r.name} saved in the Ledger and selected; billing and shipping addresses filled from it.` })
+          } catch (e) {
+            setPartyNote({ ok: false, text: `${r.partyCode} was saved, but the customer list could not be refreshed: ${describeDataError(e)}` })
+            reloadCustomers()
+          }
         }} />
       )}
       {quickProduct && (

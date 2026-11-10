@@ -1932,10 +1932,18 @@ const api = http.createServer((req, res) => {
           if (/shree clay/i.test(name) && !body.p_confirm_duplicates) {
             return send(res, 200, { ok: false, duplicates: [{ party_id: 'pty-sup1', party_code: 'PTY-000002', party_name: 'Shree Clay', party_type: 'SUPPLIER', matched_on: ['name'], blocking: false }] })
           }
-          const isSup = body.p_party?.party_type !== 'CUSTOMER'
+          const type = body.p_party?.party_type
+          const isSup = type !== 'CUSTOMER'
+          const isCus = type === 'CUSTOMER' || type === 'BOTH'
           if (isSup && !tables.suppliers.some((s) => s.id === 'sup-new')) tables.suppliers.push(supplierRow('sup-new', 'SUP-000003', { legal_name: name, state_code: body.p_party?.state_code ?? null }))
-          return send(res, 200, { ok: true, party_id: 'pty-new', party_code: 'PTY-000009', party_type: body.p_party?.party_type,
-            customer_id: isSup ? null : 'cu-new', customer_code: isSup ? null : 'CUS-000009', supplier_id: isSup ? 'sup-new' : null, supplier_code: isSup ? 'SUP-000003' : null })
+          if (isCus && !tables.customers.some((c) => c.id === 'cu-new')) {
+            const pp = body.p_party ?? {}
+            tables.customers.push({ id: 'cu-new', company_id: COMPANY_ID, customer_code: 'CUS-000009', customer_name: name, contact_email: pp.email ?? null, status: 'ACTIVE', notes: null,
+              gstin: pp.gstin ?? null, billing_address: pp.billing_address ?? null, shipping_address: pp.shipping_address ?? null, billing_state_code: pp.state_code ?? null,
+              payment_terms_days: pp.credit_period_days ?? null, created_at: NOW, updated_at: NOW })
+          }
+          return send(res, 200, { ok: true, party_id: 'pty-new', party_code: 'PTY-000009', party_type: type,
+            customer_id: isCus ? 'cu-new' : null, customer_code: isCus ? 'CUS-000009' : null, supplier_id: isSup ? 'sup-new' : null, supplier_code: isSup ? 'SUP-000003' : null })
         }
         case 'purchase_supplier_options':
           return send(res, 200, tables.suppliers.filter((s) => s.status === 'ACTIVE').map((s) => ({ ...s, state_code: s.gstin ? s.gstin.slice(0, 2) : s.state_code })))
@@ -4773,9 +4781,26 @@ await step('ledger: own sidebar section; combined, customer and supplier ledgers
 await step('quick add: a new supplier from the purchase order screen, with a duplicate warning first', async () => {
   await goto('/purchase-orders/new')
   await waitFor(`!!document.querySelector('#po-supplier')`, 'po form')
-  await click('button', 'New supplier')
-  await waitFor(`!!document.querySelector('#qa-supplier-name')`, 'quick add dialog')
+  await click('[data-testid=po-add-supplier]', 'Add New Supplier')
+  await waitFor(`!!document.querySelector('#qa-supplier-name')`, 'add supplier dialog')
+  // The complete Ledger form (not a reduced one): every Ledger field is there.
+  for (const f of ['name', 'legal', 'gstin', 'pan', 'phone', 'email', 'contact', 'state', 'city', 'bill', 'ship', 'pin', 'country', 'days', 'terms', 'cat', 'ob', 'obt', 'obd', 'bank', 'acname', 'acno', 'ifsc', 'remarks']) {
+    assert(await evaluate(`!!document.querySelector('#qa-supplier-${f}')`), `field ${f} missing from the supplier form`)
+  }
+  // Party type: Supplier preselected; Customer & Supplier offered; Customer alone not (the PO needs a supplier).
+  assert(await evaluate(`document.querySelector('#qa-supplier-type-supplier')?.getAttribute('aria-checked') === 'true' && !!document.querySelector('#qa-supplier-type-both') && !document.querySelector('#qa-supplier-type-customer')`), 'party type')
+  assert(await evaluate(bodyHasAll('Recommendations', 'Bank details (optional)', 'Opening balance')), 'recommendations / sections')
+  // Save and Cancel stay visible while the form scrolls.
+  await evaluate(`document.querySelector('#party-form-dialog-form').scrollTop = 99999`)
+  assert(await evaluate(`(() => { const b = document.querySelector('[data-testid=party-form-save]').getBoundingClientRect(); return b.top >= 0 && b.bottom <= innerHeight })()`), 'save button scrolled out of view')
+  // Validation shown clearly: a bad GSTIN is refused before saving.
+  await fill('#qa-supplier-gstin', '27BAD')
+  await click('[data-testid=party-form-save]')
+  await waitFor(`!!document.querySelector('[data-testid=party-form-errors]') && ${bodyHas('GSTIN must be 15 characters')}`, 'GSTIN error')
+  assert(!rpcCalls('party_save').some((c) => c.body.p_party?.gstin === '27BAD'), 'an invalid GSTIN was sent')
+  await fill('#qa-supplier-gstin', '27AABCM1234A1Z5')
   await fill('#qa-supplier-name', 'Shree Clay Works')
+  await fill('#qa-supplier-ship', 'Plot 9, MIDC, Pune')
   await click('[role=dialog] button', 'Save supplier')
   await waitFor(bodyHas('This party may already exist'), 'duplicate warning')
   assert(!(rpcCalls('party_save').at(-1).body.p_confirm_duplicates), 'first save must not confirm duplicates')
@@ -4783,12 +4808,49 @@ await step('quick add: a new supplier from the purchase order screen, with a dup
   await waitFor(`!document.querySelector('#qa-supplier-name')`, 'dialog closed')
   const save = rpcCalls('party_save').at(-1).body
   assert(save.p_party_id === null && save.p_party.party_type === 'SUPPLIER' && save.p_party.party_name === 'Shree Clay Works' && save.p_confirm_duplicates === true, JSON.stringify(save))
+  // GST and state: state and PAN are taken from the GSTIN, as in the Ledger.
+  assert(save.p_party.gstin === '27AABCM1234A1Z5' && save.p_party.state_code === '27' && save.p_party.pan === 'AABCM1234A' && save.p_party.shipping_address === 'Plot 9, MIDC, Pune', JSON.stringify(save.p_party))
+  await waitFor(`document.querySelector('[data-testid=po-party-note]')?.innerText.includes('selected as the supplier')`, 'success note')
   await sleep(800)
   await screenshot('quick-add-supplier')
   const shown = await evaluate(`document.querySelector('#po-supplier').innerText`)
   tables.suppliers = tables.suppliers.filter((s) => s.id !== 'sup-new')
   assert(String(shown).includes('SUP-000003'), `new supplier not selected; supplier box shows "${shown}"; option requests: ${rpcCalls('purchase_supplier_options').length}`)
 })
+await step('Add New Customer from a sales order: the complete Ledger form; saved, selected and its addresses and GSTIN filled in without a reload; the order entered so far is kept', async () => {
+  const before = { customers: tables.customers.length }
+  const v = (sel) => `document.querySelector(${JSON.stringify(sel)})?.value`
+  try {
+    await goto('/sales/orders/new')
+    await waitFor(`!!document.querySelector('#so-customer') && !!document.querySelector('[data-testid=so-add-customer]')`, 'sales order form')
+    await fill('#so-ref', 'PO-ACME-77')
+    await click('[data-testid=so-add-customer]', 'Add New Customer')
+    await waitFor(`!!document.querySelector('#qa-customer-name')`, 'add customer dialog')
+    for (const f of ['legal', 'pan', 'ship', 'pin', 'country', 'terms', 'ob', 'obt', 'obd', 'bank', 'acname', 'acno', 'ifsc', 'remarks']) {
+      assert(await evaluate(`!!document.querySelector('#qa-customer-${f}')`), `field ${f} missing from the customer form`)
+    }
+    assert(await evaluate(`document.querySelector('#qa-customer-type-customer')?.getAttribute('aria-checked') === 'true' && !!document.querySelector('#qa-customer-type-both') && !document.querySelector('#qa-customer-type-supplier')`), 'party type')
+    assert(!(await evaluate(`!!document.querySelector('#qa-customer-cat')`)), 'supplier category shown for a customer')
+    await screenshot('197-add-customer-from-sales-order')
+    await fill('#qa-customer-name', 'Nova Bath Studio')
+    await fill('#qa-customer-gstin', '29AAGCN5555K1Z3')
+    await fill('#qa-customer-bill', '12 MG Road, Bengaluru')
+    await fill('#qa-customer-ship', 'Warehouse 4, Hosur Road, Bengaluru')
+    await fill('#qa-customer-days', '30')
+    await click('[data-testid=party-form-save]')
+    await waitFor(`!document.querySelector('#qa-customer-name')`, 'dialog closed')
+    const save = rpcCalls('party_save').at(-1).body
+    assert(save.p_party.party_type === 'CUSTOMER' && save.p_party.state_code === '29' && save.p_party.pan === 'AAGCN5555K', JSON.stringify(save.p_party))
+    await waitFor(`document.querySelector('#so-customer')?.innerText.includes('CUS-000009')`, 'new customer selected')
+    await waitFor(`${v('#so-bill')} === '12 MG Road, Bengaluru' && ${v('#so-ship')} === 'Warehouse 4, Hosur Road, Bengaluru' && ${v('#so-gstin')} === '29AAGCN5555K1Z3'`, 'addresses and GSTIN filled')
+    assert(await evaluate(`${v('#so-ref')} === 'PO-ACME-77'`), 'the order entered so far was lost')
+    assert(await evaluate(`document.querySelector('[data-testid=so-party-note]')?.innerText.includes('saved in the Ledger and selected')`), 'success note')
+    assert(tables.customers.length === before.customers + 1, 'customer not created once')
+  } finally {
+    tables.customers = tables.customers.filter((c) => c.id !== 'cu-new')
+  }
+})
+
 // V2 Stage 3: goods received notes (bulk PO upload is not offered)
 await step('GRN register: receipts against orders and unlinked receipts, with KPIs; no PO import button', async () => {
   await goto('/purchase-orders')

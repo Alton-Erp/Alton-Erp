@@ -379,7 +379,7 @@ function EntryForm({ settings, customers, orders, invoice, lines: invLines, soLi
                   <SelectTrigger id="inv-customer" className="w-full"><SelectValue placeholder={fromSo ? 'From the sales order' : 'Select a customer'} /></SelectTrigger>
                   <SelectContent className="max-h-72">{customerList.map((c) => <SelectItem key={c.id} value={c.id}>{c.customer_code} — {c.customer_name}</SelectItem>)}</SelectContent>
                 </Select>
-                {!fromSo && has('customers.manage') && <Button type="button" variant="outline" onClick={() => setQuickCustomer(true)}><UserPlus /> New customer</Button>}
+                {!fromSo && has('customers.manage') && <Button type="button" variant="outline" onClick={() => setQuickCustomer(true)}><UserPlus /> Add New Customer</Button>}
               </div></div>
             <div className="space-y-1"><Label htmlFor="inv-date">Invoice date</Label><Input id="inv-date" type="date" value={h.invoice_date} onChange={(e) => set('invoice_date')(e.target.value)} /></div>
             <div className="space-y-1"><Label htmlFor="inv-type">Document</Label>

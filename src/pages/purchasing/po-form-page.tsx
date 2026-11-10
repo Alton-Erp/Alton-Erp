@@ -170,6 +170,8 @@ function PoForm({ suppliers, po, copyFrom, lines: initialLines, companyGstin, pr
     : prefill?.lines.length ? prefill.lines : [blankLine('GOODS')]))
   const [errors, setErrors] = useState<Map<string, string>>(new Map())
   const [formError, setFormError] = useState<string | null>(null)
+  // Shown after a supplier is added from this screen.
+  const [partyNote, setPartyNote] = useState<string | null>(null)
   const [busy, setBusy] = useState<'save' | 'submit' | null>(null)
 
   const supplier = supplierList.find((s) => s.id === h.supplier_id) ?? null
@@ -323,10 +325,11 @@ function PoForm({ suppliers, po, copyFrom, lines: initialLines, companyGstin, pr
                     <SelectContent className="max-h-72">{supplierList.map((s) => <SelectItem key={s.id} value={s.id}>{s.supplier_code} — {s.display_name || s.legal_name}</SelectItem>)}</SelectContent>
                   </Select>
                   {!locked && has('suppliers.manage') && (
-                    <Button type="button" variant="outline" onClick={() => setQuickAdd(true)}><UserPlus /> New supplier</Button>
+                    <Button type="button" variant="outline" onClick={() => setQuickAdd(true)} data-testid="po-add-supplier"><UserPlus /> Add New Supplier</Button>
                   )}
                 </div>
               </Field>
+              {partyNote && <p role="status" data-testid="po-party-note" className="text-sm text-green-800 sm:col-span-2">{partyNote}</p>}
               {quickAdd && (
                 <QuickAddPartyDialog role="SUPPLIER" onClose={() => setQuickAdd(false)} onCreated={async (r) => {
                   setQuickAdd(false)
@@ -335,6 +338,7 @@ function PoForm({ suppliers, po, copyFrom, lines: initialLines, companyGstin, pr
                     setSupplierOptions(fresh)
                     chooseSupplier(r.roleId, fresh)
                     setFormError(null)
+                    setPartyNote(`${r.partyCode} — ${r.name} saved in the Ledger and selected as the supplier.`)
                   } catch (e) {
                     setFormError(`The supplier ${r.partyCode} was saved, but the list could not be refreshed: ${describeDataError(e)}`)
                   }

@@ -12,7 +12,7 @@ import { useGstStates } from '@/features/billing/use-gst-states'
 import { useRequestKey } from '@/hooks/use-request-key'
 import { describeDataError } from '@/lib/errors'
 import { cn } from '@/lib/utils'
-import { fetchParty, saveParty, type DuplicateParty, type SavePartyResult } from '@/services/ledger'
+import { fetchParty, saveParty, type DuplicateParty } from '@/services/ledger'
 import {
   BALANCE_TYPE_LABELS,
   EMPTY_PARTY,
@@ -39,15 +39,22 @@ export function Field({ id, label, error, hint, full, required, children }: {
   )
 }
 
-/** The editable party fields. `compact` shows only what quick-add needs. */
-export function PartyFields({ values, onChange, errors, compact = false, lockType = false, idPrefix = 'pt' }: {
+/**
+ * The editable party fields: the one form used by the Ledger page and by every "add customer / supplier"
+ * dialog (purchase orders, sales orders, invoices, imports). `allowedTypes` limits the party types offered
+ * (e.g. a purchase order offers Supplier and Customer & Supplier). `compact` is kept for callers that only need
+ * the essentials; no screen uses it for creating parties any more.
+ */
+export function PartyFields({ values, onChange, errors, compact = false, lockType = false, idPrefix = 'pt', allowedTypes }: {
   values: PartyFormValues
   onChange: (next: PartyFormValues) => void
   errors: Partial<Record<PartyField, string>>
   compact?: boolean
   lockType?: boolean
   idPrefix?: string
+  allowedTypes?: PartyType[]
 }) {
+  const types = PARTY_TYPES.filter((tp) => !allowedTypes || allowedTypes.includes(tp))
   const { states } = useGstStates()
   const set = (k: PartyField) => (e: { target: { value: string } }) => onChange({ ...values, [k]: e.target.value })
   const id = (k: string) => `${idPrefix}-${k}`
@@ -57,9 +64,10 @@ export function PartyFields({ values, onChange, errors, compact = false, lockTyp
       {!lockType && (
         <fieldset className="space-y-1.5 sm:col-span-2">
           <legend className="text-sm font-medium">Party type<span className="text-shortage">*</span></legend>
-          <div className="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Party type">
-            {PARTY_TYPES.map((tp) => (
+          <div className={cn('grid gap-2', types.length === 2 ? 'sm:grid-cols-2' : 'sm:grid-cols-3')} role="radiogroup" aria-label="Party type">
+            {types.map((tp) => (
               <button key={tp} type="button" role="radio" aria-checked={values.party_type === tp} onClick={() => onChange({ ...values, party_type: tp })}
+                id={`${idPrefix}-type-${tp.toLowerCase()}`}
                 className={cn('rounded-lg border px-3 py-2 text-left text-sm transition-colors', values.party_type === tp ? 'border-primary bg-accent font-medium ring-1 ring-primary' : 'hover:bg-muted')}>
                 {PARTY_TYPE_LABELS[tp]}
               </button>
@@ -208,16 +216,16 @@ export function DuplicatePanel({ duplicates, onUse, onSaveAnyway, busy }: {
   )
 }
 
-export interface QuickAddResult { partyId: string; partyCode: string; roleId: string; name: string }
+export interface QuickAddResult { partyId: string; partyCode: string; roleId: string; name: string; partyType: PartyType }
 
 /**
- * Quick add from a transaction screen (purchase order, sales order). Creates a
- * customer or supplier party with the essentials; everything else can be added
- * later in the Ledger. If the party already exists, the user can use it (its
- * missing role is added, making it Customer & Supplier) instead of creating a
- * duplicate.
+ * Add a customer or supplier from a transaction screen (purchase order, sales order, invoice, import): the
+ * complete Ledger "Add party" form in a dialog, with the same fields, validation, GSTIN / PAN / state rules,
+ * recommendations, duplicate check and save function (party_save). The party type starts as the role the
+ * screen needs; Customer & Supplier can be chosen too. If the party already exists, the user can use it (its
+ * missing role is added) instead of creating a duplicate. The screen behind stays as it was.
  */
-export function QuickAddPartyDialog({ role, onClose, onCreated, initialName = '' }: {
+export function PartyFormDialog({ role, onClose, onCreated, initialName = '' }: {
   role: 'CUSTOMER' | 'SUPPLIER'
   onClose: () => void
   onCreated: (r: QuickAddResult) => void
@@ -232,12 +240,7 @@ export function QuickAddPartyDialog({ role, onClose, onCreated, initialName = ''
   const validation = validateParty(values)
   const errors = submitted ? validation.errors : {}
   const label = role === 'CUSTOMER' ? 'customer' : 'supplier'
-
-  const finish = (r: Extract<SavePartyResult, { ok: true }>) => {
-    const roleId = role === 'CUSTOMER' ? r.customer_id : r.supplier_id
-    if (!roleId) throw new Error(`The party was saved but has no ${label} record.`)
-    onCreated({ partyId: r.party_id, partyCode: r.party_code, roleId, name: values.party_name.trim() })
-  }
+  const allowedTypes: PartyType[] = role === 'CUSTOMER' ? ['CUSTOMER', 'BOTH'] : ['SUPPLIER', 'BOTH']
 
   const save = async (confirm: boolean) => {
     setSubmitted(true)
@@ -249,11 +252,13 @@ export function QuickAddPartyDialog({ role, onClose, onCreated, initialName = ''
       if (!r.ok) {
         setDuplicates(r.duplicates)
         renew()
-      } else {
-        finish(r)
+        return
       }
+      const roleId = role === 'CUSTOMER' ? r.customer_id : r.supplier_id
+      if (!roleId) throw new Error(`The party ${r.party_code} was saved but has no ${label} record. Open it in the Ledger.`)
+      onCreated({ partyId: r.party_id, partyCode: r.party_code, roleId, name: values.party_name.trim(), partyType: values.party_type as PartyType })
     } catch (e) {
-      setError(describeDataError(e))
+      setError(e instanceof Error && !('code' in e) ? e.message : describeDataError(e))
       renew()
     } finally {
       setBusy(false)
@@ -269,7 +274,7 @@ export function QuickAddPartyDialog({ role, onClose, onCreated, initialName = ''
       const hasRole = role === 'CUSTOMER' ? p.party_type !== 'SUPPLIER' : p.party_type !== 'CUSTOMER'
       const roleActive = (role === 'CUSTOMER' ? p.customer_status : p.supplier_status) === 'ACTIVE'
       if (hasRole && roleActive) {
-        onCreated({ partyId: p.party_id, partyCode: p.party_code, roleId: (role === 'CUSTOMER' ? p.customer_id : p.supplier_id)!, name: p.party_name })
+        onCreated({ partyId: p.party_id, partyCode: p.party_code, roleId: (role === 'CUSTOMER' ? p.customer_id : p.supplier_id)!, name: p.party_name, partyType: p.party_type as PartyType })
         return
       }
       // Missing role: add it (party becomes Customer & Supplier). Inactive role: reactivate it.
@@ -278,7 +283,7 @@ export function QuickAddPartyDialog({ role, onClose, onCreated, initialName = ''
       if (!v.payload) throw new Error(`Open ${p.party_code} in the Ledger and complete its details first: ${Object.values(v.errors).join(' ')}`)
       const r = await saveParty(p.party_id, v.payload, true, null)
       if (!r.ok) throw new Error('The party could not be updated.')
-      onCreated({ partyId: r.party_id, partyCode: r.party_code, roleId: (role === 'CUSTOMER' ? r.customer_id : r.supplier_id)!, name: p.party_name })
+      onCreated({ partyId: r.party_id, partyCode: r.party_code, roleId: (role === 'CUSTOMER' ? r.customer_id : r.supplier_id)!, name: p.party_name, partyType: form.party_type as PartyType })
     } catch (e) {
       setError(e instanceof Error && !('code' in e) ? e.message : describeDataError(e))
     } finally {
@@ -288,24 +293,42 @@ export function QuickAddPartyDialog({ role, onClose, onCreated, initialName = ''
 
   return (
     <Dialog open onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2"><UserPlus className="size-5" /> New {label}</DialogTitle>
-          <DialogDescription>Only the name is required. Add GSTIN and state for correct GST; the rest can be completed later in the Ledger.</DialogDescription>
+      <DialogContent className="flex max-h-[92vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl" data-testid="party-form-dialog">
+        <DialogHeader className="border-b px-6 pt-6 pb-4">
+          <DialogTitle className="flex items-center gap-2"><UserPlus className="size-5" /> Add {label}</DialogTitle>
+          <DialogDescription>The same form as Ledger → Add party. Only the name and type are required; the {label} is selected here when you save.</DialogDescription>
         </DialogHeader>
-        {error && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</p>}
-        {duplicates && duplicates.length > 0 && (
-          <DuplicatePanel duplicates={duplicates} busy={busy} onUse={(d) => void chooseExisting(d)} onSaveAnyway={() => void save(true)} />
-        )}
-        <PartyFields values={values} onChange={(v) => { setValues(v); setDuplicates(null) }} errors={errors} compact lockType idPrefix={`qa-${role.toLowerCase()}`} />
-        {validation.warnings.length > 0 && (
-          <ul className="space-y-0.5 text-xs text-amber-800">{validation.warnings.map((w) => <li key={w}>{w}</li>)}</ul>
-        )}
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={busy}>Cancel</Button>
-          <Button onClick={() => void save(false)} disabled={busy}>{busy && <Loader2 className="animate-spin" />} Save {label}</Button>
+        <form noValidate id="party-form-dialog-form" className="min-h-0 flex-1 overflow-y-auto px-6 py-4" onSubmit={(e) => { e.preventDefault(); void save(false) }}>
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_260px]">
+            <div className="space-y-4">
+              {error && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</p>}
+              {duplicates && duplicates.length > 0 && (
+                <DuplicatePanel duplicates={duplicates} busy={busy} onUse={(d) => void chooseExisting(d)} onSaveAnyway={() => void save(true)} />
+              )}
+              <PartyFields values={values} onChange={(v) => { setValues(v); setDuplicates(null) }} errors={errors} allowedTypes={allowedTypes} idPrefix={`qa-${role.toLowerCase()}`} />
+            </div>
+            <aside className="space-y-3 lg:sticky lg:top-0 lg:self-start">
+              {submitted && !validation.payload && (
+                <p role="alert" data-testid="party-form-errors" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">Please correct the highlighted fields ({Object.keys(validation.errors).length}).</p>
+              )}
+              <div className="rounded-lg border p-3">
+                <p className="text-sm font-medium">Recommendations</p>
+                <p className="mb-2 text-xs text-muted-foreground">Suggestions only — they never block saving.</p>
+                {validation.warnings.length === 0 ? <p className="text-sm text-muted-foreground">No recommendations.</p> : (
+                  <ul className="space-y-1.5 text-sm">{validation.warnings.map((w) => <li key={w} className="flex gap-2"><span aria-hidden className="mt-1.5 size-1.5 shrink-0 rounded-full bg-pending" />{w}</li>)}</ul>
+                )}
+              </div>
+            </aside>
+          </div>
+        </form>
+        <DialogFooter className="border-t bg-background px-6 py-4">
+          <Button type="button" variant="outline" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button type="submit" form="party-form-dialog-form" disabled={busy} data-testid="party-form-save">{busy && <Loader2 className="animate-spin" />} Save {label}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   )
 }
+
+/** Earlier name of PartyFormDialog (every screen now shows the complete form). */
+export const QuickAddPartyDialog = PartyFormDialog
