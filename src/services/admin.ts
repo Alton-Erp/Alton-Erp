@@ -144,7 +144,7 @@ export async function fetchLabelProducts(term: string, onlyWithBarcode: boolean)
 // Documents
 // ---------------------------------------------------------------------------
 export type DocEntityType = 'PRODUCT' | 'BATCH' | 'WAREHOUSE' | 'PRODUCTION_ORDER' | 'OUTSOURCING_ORDER' | 'CUSTOMER_PO' | 'SALES_ORDER' | 'DISPATCH' | 'INVOICE'
-  | 'ADJUSTMENT_NOTE' | 'CUSTOMER' | 'COMPANY' | 'SUPPLIER_PO' | 'GOODS_RECEIPT'
+  | 'ADJUSTMENT_NOTE' | 'CUSTOMER' | 'COMPANY' | 'SUPPLIER_PO' | 'GOODS_RECEIPT' | 'STOCK_ADJUSTMENT'
 export interface DocumentRow {
   id: string; company_id: string; document_type: string; title: string; description: string | null; related_entity_type: DocEntityType
   related_entity_id: string; related_reference: string; status: 'ACTIVE' | 'ARCHIVED'; current_version: number; created_by: string | null

@@ -19,6 +19,7 @@ export const PAGE_COMPONENTS: Record<NavKey, LazyExoticComponent<ComponentType>>
   'inventory-reservations': lazy(() => import('@/pages/inventory/reservations-page')),
   'inventory-warehouses': lazy(() => import('@/pages/inventory/warehouses-page')),
   'inventory-alerts': lazy(() => import('@/pages/inventory/low-stock-alerts-page')),
+  'inventory-adjustments': lazy(() => import('@/pages/inventory/adjustments-page')),
   'purchase-dashboard': lazy(() => import('@/pages/purchasing/purchase-dashboard-page')),
   'purchase-orders': lazy(() => import('@/pages/purchase-orders-page')),
   'goods-receipts': lazy(() => import('@/pages/goods-receipts-page')),

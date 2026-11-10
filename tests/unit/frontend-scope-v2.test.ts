@@ -22,13 +22,14 @@ describe('V2 navigation scope', () => {
 
   it('each section has exactly the approved entries (sidebar refinement)', () => {
     const titles = (group: string) => NAV_ITEMS.filter((i) => i.group === group).map((i) => i.title)
-    assert.deepEqual(titles('inventory'), ['Inventory Overview', 'Stock Register', 'Stock Movements', 'Stock Reservations', 'Warehouses & Locations', 'Low Stock Alerts'])
+    // Stock Adjustments was restored at the owner's request (migration 20261201090000).
+    assert.deepEqual(titles('inventory'), ['Inventory Overview', 'Stock Register', 'Stock Movements', 'Stock Reservations', 'Warehouses & Locations', 'Low Stock Alerts', 'Stock Adjustments'])
     assert.deepEqual(titles('production'), ['Production Dashboard', 'Production Orders', 'Production Planning', 'Material Consumption', 'Finished Goods Receipts', 'Production Reports'])
     assert.deepEqual(titles('sales'), ['Sales Dashboard', 'Sales Orders', 'Partial Fulfilment', 'Order Cancellation'])
     assert.deepEqual(titles('billing'), ['Invoice Dashboard', 'Sales Invoices', 'Create Invoice', 'Invoice Register', 'Customer Payments', 'Payment Allocation',
       'Outstanding Receivables', 'Receivables Ageing', 'Credit Notes', 'Debit Notes', 'Customer Statements', 'GST Summary', 'Billing Reports', 'Invoice Settings'])
     assert.deepEqual(titles('ledger'), ['Ledger Dashboard', 'Customer & Supplier Ledger', 'Customer Ledger', 'Supplier Ledger'])
-    const removed = /^\/(inventory\/(adjustments|counts|batches|reports)|production\/(outsourcing|outsourced-receipts)|sales\/(picking|packing|dispatch|delivery|returns|reports|order-details))$/
+    const removed = /^\/(inventory\/(counts|batches|reports)|production\/(outsourcing|outsourced-receipts)|sales\/(picking|packing|dispatch|delivery|returns|reports|order-details))$/
     for (const item of NAV_ITEMS) assert.doesNotMatch(item.path, removed, `${item.key} was removed from the sidebar`)
   })
 
@@ -54,7 +55,7 @@ describe('V2 navigation scope', () => {
     }
     assert.doesNotMatch(routes, /pages\/(amazon|analytics|customer-po)\/|activity-centre-page|reconciliation-page|marketplace-orders-page|approvals-page/)
     // Removed in the sidebar refinement: no route opens these pages any more.
-    assert.doesNotMatch(routes, /adjustments-page|stock-counts-page|count-sheet-page|batch-tracking-page|inventory-reports-page|outsourcing-orders-page|outsourced-receipts-page|outsourcing-order-detail-page|picking-page|packing-page|dispatch-page|delivery-page|returns-page|fulfilment-reports-page|order-details-page/)
+    assert.doesNotMatch(routes, /stock-counts-page|count-sheet-page|batch-tracking-page|inventory-reports-page|outsourcing-orders-page|outsourced-receipts-page|outsourcing-order-detail-page|picking-page|packing-page|dispatch-page|delivery-page|returns-page|fulfilment-reports-page|order-details-page/)
   })
 
   it('the dashboard has no quick-action panel', async () => {
@@ -74,7 +75,7 @@ describe('Notification links from the database', () => {
       ['/customer-pos/fulfilment?po=1', null], ['/customer-pos/matching?po=1', null], ['/customer-pos/register', null],
       ['/customers', '/ledger/customers'], ['/suppliers/abc', '/ledger/suppliers'], ['/analytics/alerts', '/'],
       ['/admin/bulk-operations?job=1', '/admin/bulk-operations?job=1'], ['/billing/invoices/1', '/billing/invoices/1'], ['/billing/notes/1', '/billing/notes/1'],
-      ['/billing/payments?receipt=1', '/billing/payments?receipt=1'], ['/inventory/adjustments', null], ['/inventory/counts/1', null],
+      ['/billing/payments?receipt=1', '/billing/payments?receipt=1'], ['/inventory/adjustments', '/inventory/adjustments'], ['/inventory/adjustments?adjustment=a1', '/inventory/adjustments?adj=a1'], ['/inventory/counts/1', null],
       ['/inventory/opening-stock', '/inventory/opening-stock'], ['/inventory/stock/1', '/inventory/stock/1'], ['/production/boms/1', '/production/boms/1'],
       ['/production/orders/1', '/production/orders/1'], ['/production/outsourcing/1', null], ['/products', '/products'],
       ['/sales/order-details?so=1a2b', '/sales/orders/1a2b'], ['/sales/delivery?f=1', null], ['/sales/dispatch?f=1', null], ['/sales/returns?r=1', null],

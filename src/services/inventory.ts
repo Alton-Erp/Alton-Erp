@@ -1,6 +1,8 @@
 import { requireSupabase } from '@/lib/supabase'
 import type { Json } from '@/types/database'
+import type { AdjustmentFilters } from '@/features/inventory/adjustments-model'
 import type { ExistingOpening } from '@/features/inventory/opening-import'
+import { isMissingFunction } from '@/services/purchase-costs'
 import type {
   AdjustmentRow,
   AlertRow,
@@ -700,9 +702,18 @@ export async function fetchOpeningLines(batchId: string | null) {
 // ---------------------------------------------------------------------------
 // Adjustments
 // ---------------------------------------------------------------------------
-export async function fetchAdjustments(status: string | null) {
-  let query = db().from('inventory_adjustments').select('*').order('requested_at', { ascending: false }).limit(1000)
-  if (status) query = query.eq('status', status as ApprovalStatus)
+/** Stock adjustments, newest first; filtered on the server (status, requested date range, product, warehouse, reason, type). */
+export async function fetchAdjustments(filter: string | null | Partial<AdjustmentFilters>) {
+  const f: Partial<AdjustmentFilters> = typeof filter === 'string' || filter === null ? { status: (filter ?? null) as AdjustmentFilters['status'] } : filter
+  let query = db().from('inventory_adjustments').select('*').order('requested_at', { ascending: false }).limit(2000)
+  if (f.status) query = query.eq('status', f.status as ApprovalStatus)
+  if (f.from) query = query.gte('requested_at', f.from)
+  if (f.to) query = query.lt('requested_at', `${f.to}T23:59:59.999`)
+  if (f.productId) query = query.eq('product_id', f.productId)
+  if (f.warehouseId) query = query.eq('warehouse_id', f.warehouseId)
+  if (f.type) query = query.eq('adjustment_type', f.type)
+  // A configured reason, or a fixed category code (upper-case).
+  if (f.reason) query = /^[A-Z_]+$/.test(f.reason) ? query.eq('reason_code', f.reason) : (query as unknown as { eq: (c: string, v: string) => typeof query }).eq('reason_label', f.reason)
   const { data, error } = await query
   if (error) throw error
   return enrichWithStock((data ?? []) as AdjustmentRow[])
@@ -720,51 +731,44 @@ export interface AdjustmentInput {
   targetSourceType: string | null
   unitCost: number | null
   reasonCode: string
+  /** Reason chosen from ERP Settings → Inventory → Stock adjustment reasons (migration 20261201090000). */
+  reasonLabel?: string | null
   notes: string | null
   reference: string | null
   effectiveDate: string | null
   submit: boolean
 }
 
-export const createAdjustment = (i: AdjustmentInput, key: string) =>
-  rpc<{ adjustment_number: string; status: string }>('inventory_create_adjustment', {
-    p_adjustment_type: i.type,
-    p_product_id: i.productId,
-    p_location_id: i.locationId,
-    p_reason_code: i.reasonCode,
-    p_batch_id: i.batchId,
-    p_batch_number: i.batchNumber,
-    p_source_type: i.sourceType,
-    p_counted_quantity: i.countedQuantity,
-    p_correction_quantity: i.correctionQuantity,
-    p_target_source_type: i.targetSourceType,
-    p_unit_cost: i.unitCost,
-    p_notes: i.notes,
-    p_reference: i.reference,
-    p_effective_date: i.effectiveDate,
-    p_submit: i.submit,
-    p_idempotency_key: key,
-  })
+const adjustmentArgs = (i: Omit<AdjustmentInput, 'submit'>) => ({
+  p_adjustment_type: i.type, p_product_id: i.productId, p_location_id: i.locationId, p_reason_code: i.reasonCode, p_batch_id: i.batchId,
+  p_batch_number: i.batchNumber, p_source_type: i.sourceType, p_counted_quantity: i.countedQuantity, p_correction_quantity: i.correctionQuantity,
+  p_target_source_type: i.targetSourceType, p_unit_cost: i.unitCost, p_notes: i.notes, p_reference: i.reference, p_effective_date: i.effectiveDate,
+})
+/** Before migration 20261201090000 the reason is kept in the notes (the older functions have no reason field). */
+const withReasonInNotes = (i: Omit<AdjustmentInput, 'submit'>) => ({ ...i, notes: i.reasonLabel ? [`Reason: ${i.reasonLabel}`, i.notes].filter(Boolean).join(' — ') : i.notes })
+
+/** Records an adjustment as a draft or submitted for approval, with its configured reason. Stock does not change. */
+export async function createAdjustment(i: AdjustmentInput, key: string) {
+  try {
+    return await rpc<{ adjustment_id: string; adjustment_number: string; status: string }>('inventory_create_adjustment_v2',
+      { p_reason_label: i.reasonLabel ?? null, ...adjustmentArgs(i), p_submit: i.submit, p_idempotency_key: key })
+  } catch (e) {
+    if (!isMissingFunction(e)) throw e
+    return rpc<{ adjustment_id: string; adjustment_number: string; status: string }>('inventory_create_adjustment',
+      { ...adjustmentArgs(withReasonInNotes(i)), p_submit: i.submit, p_idempotency_key: key })
+  }
+}
 
 /** V2 single-operator: record + post an adjustment in one step. A retry with the same key never posts twice. */
-export const postAdjustment = (i: Omit<AdjustmentInput, 'submit'>, key: string) =>
-  rpc<{ adjustment_id: string; adjustment_number: string; status: string; transactions?: string[] }>('inventory_post_adjustment', {
-    p_adjustment_type: i.type,
-    p_product_id: i.productId,
-    p_location_id: i.locationId,
-    p_reason_code: i.reasonCode,
-    p_batch_id: i.batchId,
-    p_batch_number: i.batchNumber,
-    p_source_type: i.sourceType,
-    p_counted_quantity: i.countedQuantity,
-    p_correction_quantity: i.correctionQuantity,
-    p_target_source_type: i.targetSourceType,
-    p_unit_cost: i.unitCost,
-    p_notes: i.notes,
-    p_reference: i.reference,
-    p_effective_date: i.effectiveDate,
-    p_idempotency_key: key,
-  })
+export async function postAdjustment(i: Omit<AdjustmentInput, 'submit'>, key: string) {
+  type R = { adjustment_id: string; adjustment_number: string; status: string; transactions?: string[] }
+  try {
+    return await rpc<R>('inventory_post_adjustment_v2', { p_reason_label: i.reasonLabel ?? null, ...adjustmentArgs(i), p_idempotency_key: key })
+  } catch (e) {
+    if (!isMissingFunction(e)) throw e
+    return rpc<R>('inventory_post_adjustment', { ...adjustmentArgs(withReasonInNotes(i)), p_idempotency_key: key })
+  }
+}
 
 export const updateAdjustmentStatus = (id: string, action: 'SUBMIT' | 'CANCEL') =>
   rpc('inventory_update_adjustment_status', { p_adjustment_id: id, p_action: action })

@@ -58,6 +58,7 @@ export type NavKey =
   | 'inventory-reservations'
   | 'inventory-warehouses'
   | 'inventory-alerts'
+  | 'inventory-adjustments'
   // 4. Purchase & GRN
   | 'purchase-dashboard'
   | 'purchase-orders'
@@ -222,6 +223,15 @@ export const NAV_ITEMS: NavItem[] = [
     group: 'inventory',
     description: 'Low, out-of-stock and expiring inventory.',
     keywords: ['alert', 'low stock', 'expiry', 'reorder'],
+  },
+  {
+    key: 'inventory-adjustments',
+    title: 'Stock Adjustments',
+    path: '/inventory/adjustments',
+    icon: SlidersHorizontal,
+    group: 'inventory',
+    description: 'Physical stock reconciliation: count, difference, reason, approval and posting.',
+    keywords: ['adjustment', 'physical count', 'reconciliation', 'damage', 'loss', 'found', 'write-off'],
   },
 
   // 4. Purchase Orders & GRN
@@ -586,6 +596,7 @@ export const NAV_PERMISSIONS: Record<NavKey, PermissionCode | null> = {
   'inventory-reservations': 'inventory.read',
   'inventory-warehouses': 'inventory.read',
   'inventory-alerts': 'inventory.read',
+  'inventory-adjustments': 'inventory.read',
   'purchase-dashboard': 'purchases.read',
   'purchase-orders': 'purchases.read',
   'goods-receipts': 'purchases.read',

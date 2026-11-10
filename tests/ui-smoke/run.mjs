@@ -293,7 +293,7 @@ const tables = {
   inventory_adjustments: [{ id: 'a1', company_id: COMPANY_ID, adjustment_number: 'ADJ-000001', adjustment_type: 'QUANTITY', product_id: 'p1', batch_id: 'lot-IN_HOUSE', batch_number: null,
     warehouse_id: 'w1', location_id: 'l1', source_type: 'IN_HOUSE', target_source_type: null, system_quantity: 100, counted_quantity: 98, correction_quantity: null, difference: -2,
     unit_cost: null, reason_code: 'DAMAGE', notes: 'Broken', reference: null, effective_date: TODAY, status: 'PENDING_APPROVAL', requested_by: MANAGER_ID, requested_at: NOW,
-    submitted_at: NOW, reviewed_by: null, reviewed_at: null, review_note: null, posted_at: null, updated_at: NOW }],
+    submitted_at: NOW, reviewed_by: null, reviewed_at: null, review_note: null, posted_at: null, updated_at: NOW, reason_label: 'Damaged' }],
   inventory_counts: [],
   inventory_count_lines: [],
   inventory_alerts: [{ id: 'al1', company_id: COMPANY_ID, alert_key: 'LOW_STOCK:p1', alert_type: 'LOW_STOCK', severity: 'WARNING', product_id: 'p1', batch_id: null, warehouse_id: null,
@@ -1104,6 +1104,8 @@ function filterRows(rows, params) {
 
 const requests = []
 let insertCounter = 100
+/** Serve erp_preferences (stock adjustment reasons step only). */
+let SERVE_PREFERENCES = false
 /** Extra rows in the stock register (set by the product image step only). */
 let STOCK_POSITION_EXTRA = 0
 
@@ -1528,7 +1530,10 @@ const api = http.createServer((req, res) => {
             valid: Boolean(OPENING_COSTS[p.id]) })) })
         }
         case 'inventory_create_adjustment':
-          return send(res, 200, { adjustment_id: 'a9', adjustment_number: 'ADJ-000009', status: body.p_submit ? 'PENDING_APPROVAL' : 'DRAFT' })
+        case 'inventory_create_adjustment_v2':
+          return send(res, 200, { adjustment_id: 'a9', adjustment_number: 'ADJ-000009', status: body.p_submit ? 'PENDING_APPROVAL' : 'DRAFT', reason_label: body.p_reason_label ?? null })
+        case 'inventory_post_adjustment_v2':
+          return send(res, 200, { adjustment_id: 'a9', adjustment_number: 'ADJ-000009', status: 'POSTED', transactions: ['TXN-000099'] })
         case 'inventory_refresh_alerts':
           return send(res, 200, { opened: 0, resolved: 0, active: 1 })
         case 'inventory_expire_reservations':
@@ -1617,6 +1622,11 @@ const api = http.createServer((req, res) => {
           return send(res, 200, MODULE_DASHBOARDS[body.p_module] ?? null)
         case 'erp_settings_get':
           return send(res, 200, ERP_SETTINGS)
+        // Preferences (ERP settings values read by every screen). Served only where a step needs them; elsewhere the
+        // screens keep their built-in defaults, as before.
+        case 'erp_preferences':
+          if (!SERVE_PREFERENCES) return send(res, 404, { code: 'PGRST202', message: 'Could not find the function public.erp_preferences' })
+          return send(res, 200, ERP_SETTINGS.settings)
         case 'product_purchase_costs':
           return send(res, 200, (body.p_ids ?? []).filter((id) => id === 'p1').map(() => ({ product_id: 'p1', last_cost: PC_HISTORY.current.cost, last_date: TODAY,
             previous_cost: PC_HISTORY.current.previous_cost, difference: PC_HISTORY.current.difference, change_percent: PC_HISTORY.current.change_percent,
@@ -3330,6 +3340,51 @@ await step('Opening stock cost override: OFF by default; a settings manager swit
   }
 })
 
+await step('Stock Adjustments (restored): sidebar entry, totals and filters, detail with before / after, reason and attachments, segregation of duties, new adjustment form', async () => {
+  SERVE_PREFERENCES = true
+  try {
+  await goto('/inventory/adjustments')
+  await waitFor(`!!document.querySelector('[data-testid=adj-kpi-pending]') && ${bodyHas('ADJ-000001')}`, 'adjustments page')
+  // Sidebar: under Inventory Management, active.
+  assert(await evaluate(`[...document.querySelectorAll('aside a')].some((a) => a.getAttribute('href') === '/inventory/adjustments' && a.innerText.includes('Stock Adjustments') && (a.getAttribute('aria-current') === 'page' || a.className.includes('bg-')))`), 'sidebar entry not active')
+  // Totals of the list: one pending, nothing posted.
+  assert((await evaluate(`document.querySelector('[data-testid=adj-kpi-pending]').innerText`)).includes('1'), 'pending total')
+  assert((await evaluate(`document.querySelector('[data-testid=adj-kpi-completed]').innerText`)).includes('0'), 'completed total')
+  // The row: system stock 100, physical 98, adjustment −2, reason from ERP Settings.
+  const row = await evaluate(`[...document.querySelectorAll('tbody tr')].find((r) => r.innerText.includes('ADJ-000001'))?.innerText ?? ''`)
+  for (const t of ['MOCK-WC-1', '100', '98', '-2', 'Damaged']) assert(row.includes(t), `row lacks ${t}: ${row}`)
+  // Filters go to the database query.
+  await choose('#af-status', 'Pending approval')
+  for (let t = Date.now(); !requests.some((r) => r.path === '/rest/v1/inventory_adjustments' && r.query.includes('status=eq.PENDING_APPROVAL')) && Date.now() - t < 3000;) await sleep(100)
+  assert(requests.some((r) => r.path === '/rest/v1/inventory_adjustments' && r.query.includes('status=eq.PENDING_APPROVAL')), 'status filter not sent')
+  await choose('#af-reason', 'Damaged')
+  for (let t = Date.now(); !requests.some((r) => r.path === '/rest/v1/inventory_adjustments' && r.query.includes('reason_label=eq.Damaged')) && Date.now() - t < 3000;) await sleep(100)
+  assert(requests.some((r) => r.path === '/rest/v1/inventory_adjustments' && r.query.includes('reason_label=eq.Damaged')), 'reason filter not sent')
+  await screenshot('196-stock-adjustments')
+  // Detail: before / after, reason, attachments; own request with segregation of duties ON → no approve button.
+  await click('button[aria-label="Open ADJ-000001"]')
+  await waitFor(`!!document.querySelector('[data-testid=adj-detail]')`, 'detail')
+  assert((await evaluate(`document.querySelector('[data-testid=adj-before]').innerText`)).includes('100'), 'before quantity')
+  assert((await evaluate(`document.querySelector('[data-testid=adj-after]').innerText`)).includes('98'), 'after quantity')
+  assert(await evaluate(bodyHasAll('Supporting attachments', 'Damaged', 'Category: Damage / breakage')), 'reason / attachments')
+  assert(await evaluate(`!!document.querySelector('[data-testid=adj-sod]') && !document.querySelector('[data-testid=adj-approve]')`), 'own request can be approved with segregation of duties on')
+  assert(new URLSearchParams(await evaluate('location.search')).get('adj') === 'a1', 'detail not addressable')
+  await click('[role=dialog] button', 'Close')
+  await waitFor(`!document.querySelector('[data-testid=adj-detail]')`, 'detail closed')
+  // New adjustment form: warehouse first, system stock / physical count / adjustment, reasons from ERP Settings.
+  await click('button', 'Request adjustment')
+  await waitFor(`!!document.querySelector('#ad-wh') && !!document.querySelector('#ad-counted') && !!document.querySelector('#ad-diff')`, 'form')
+  await click('[role=dialog] button', 'Review')
+  await waitFor(bodyHas('Select the warehouse.'), 'warehouse required first')
+  await click('#ad-reason')
+  await waitFor(`[...document.querySelectorAll('[role=option]')].map((o) => o.innerText.trim()).join('|') === 'Damaged|Count correction'`, 'configured reasons')
+  await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' })
+  assert(!rpcCalls('inventory_create_adjustment_v2').length && !rpcCalls('inventory_review_adjustment').length, 'something was posted')
+  } finally {
+    SERVE_PREFERENCES = false
+  }
+})
+
 await step('alerts: evaluated on open and acknowledgeable', async () => {
   await goto('/inventory/alerts')
   await waitFor(bodyHas('Mock Closet 1'), 'alert row')
@@ -4456,7 +4511,7 @@ await step('navigation: every sidebar link opens a page (no 404, no crash)', asy
   assert(!(await evaluate(bodyHas('Not built'))), '"Not built" label shown')
   // Removed legacy modules are not reachable; merged pages redirect to their V2 page.
   for (const p of ['/analytics', '/amazon', '/customer-pos', '/marketplace-orders', '/activity', '/reconciliation', '/admin/approvals', '/admin/barcodes', '/admin/documents', '/admin/system-health', '/admin/user-activity',
-    '/inventory/adjustments', '/inventory/counts', '/inventory/batches', '/inventory/reports', '/production/outsourcing', '/production/outsourced-receipts',
+    '/inventory/counts', '/inventory/batches', '/inventory/reports', '/production/outsourcing', '/production/outsourced-receipts',
     '/sales/picking', '/sales/packing', '/sales/dispatch', '/sales/delivery', '/sales/returns', '/sales/reports', '/sales/order-details']) {
     await goto(p)
     await waitFor(bodyHas("We couldn't find that page"), `${p} removed`)

@@ -17,8 +17,8 @@ const REPLACEMENTS: [RegExp, string][] = [
 const REMOVED: RegExp[] = [
   /^\/admin\/(approvals|system-health|documents|barcodes|user-activity)(\/|\?|$)/,
   /^\/(amazon|customer-pos|marketplace-orders|activity|reconciliation|scan)(\/|\?|$)/,
-  // Removed from the menu in the sidebar refinement.
-  /^\/inventory\/(adjustments|counts|batches|reports)(\/|\?|$)/,
+  // Removed from the menu in the sidebar refinement (Stock Adjustments was restored later).
+  /^\/inventory\/(counts|batches|reports)(\/|\?|$)/,
   /^\/production\/(outsourcing|outsourced-receipts)(\/|\?|$)/,
   /^\/sales\/(picking|packing|dispatch|delivery|returns|reports)(\/|\?|$)/,
 ]
@@ -28,6 +28,9 @@ export function resolveNotificationLink(link: string | null | undefined): string
   const path = link.split(/[?#]/)[0]
   if (REMOVED.some((r) => r.test(link))) return null
   // The old warehouse view of an order now opens the sales order page.
+  // Older adjustment links (?adjustment=…) open the adjustment on the restored Stock Adjustments page.
+  const adj = /^\/inventory\/adjustments\?(?:.*&)?adjustment=([0-9a-z-]+)/i.exec(link)
+  if (adj) return `/inventory/adjustments?adj=${adj[1]}`
   const so = /^\/sales\/order-details\?(?:.*&)?so=([0-9a-f-]+)/i.exec(link)
   if (so) return `/sales/orders/${so[1]}`
   if (path === '/sales/order-details') return '/sales/orders'

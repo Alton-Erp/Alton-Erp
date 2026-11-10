@@ -29,7 +29,7 @@ import {
 const ENTITY_LABELS: Record<DocEntityType, string> = {
   PRODUCT: 'Product', BATCH: 'Batch / lot', WAREHOUSE: 'Warehouse', PRODUCTION_ORDER: 'Production order', OUTSOURCING_ORDER: 'Outsourcing order',
   CUSTOMER_PO: 'Customer purchase order', SALES_ORDER: 'Sales order', DISPATCH: 'Dispatch / consignment', INVOICE: 'Invoice', ADJUSTMENT_NOTE: 'Credit / debit note',
-  CUSTOMER: 'Customer', COMPANY: 'Company', SUPPLIER_PO: 'Supplier purchase order', GOODS_RECEIPT: 'Goods receipt (GRN)',
+  CUSTOMER: 'Customer', COMPANY: 'Company', SUPPLIER_PO: 'Supplier purchase order', GOODS_RECEIPT: 'Goods receipt (GRN)', STOCK_ADJUSTMENT: 'Stock adjustment',
 }
 const DOC_TYPES: Record<string, string> = {
   INVOICE_COPY: 'Invoice copy', PURCHASE_ORDER: 'Purchase order', DELIVERY_PROOF: 'Proof of delivery', QUALITY_REPORT: 'Quality report', CERTIFICATE: 'Certificate',

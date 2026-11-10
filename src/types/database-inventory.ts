@@ -210,6 +210,8 @@ export type AdjustmentRow = {
   difference: number | null
   unit_cost: number | null
   reason_code: string
+  /** Reason from ERP Settings (migration 20261201090000); null for older adjustments. */
+  reason_label?: string | null
   notes: string | null
   reference: string | null
   effective_date: string
