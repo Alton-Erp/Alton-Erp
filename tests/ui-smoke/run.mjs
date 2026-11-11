@@ -341,6 +341,8 @@ Object.assign(tables, {
   bom_list: [bomRow('bom1', 1, 'APPROVED', VIEWER_ID), bomRow('bom2', 2, 'PENDING_APPROVAL', MANAGER_ID)],
   bom_item_list: [bomItem('bi1', 'bom1', 1, 'p3', 'MOCK-CLAY', 'Mock ceramic body', 2.5, 0), bomItem('bi2', 'bom1', 2, 'p4', 'MOCK-GLZ', 'Mock glaze', 0.2, 10),
     bomItem('bi3', 'bom2', 1, 'p3', 'MOCK-CLAY', 'Mock ceramic body', 2.4, 0), bomItem('bi4', 'bom2', 2, 'p4', 'MOCK-GLZ', 'Mock glaze', 0.2, 10)],
+  bom_templates: [],
+  bom_template_items: [],
   // bom_list plus the finished product's planning fields (migration 20261114090000).
   bom_list_v2: [bomRow('bom1', 1, 'APPROVED', VIEWER_ID), bomRow('bom2', 2, 'PENDING_APPROVAL', MANAGER_ID)]
     .map((b) => ({ ...b, tax_rate: 18, lead_time_days: 12, group_head: 'Sanitaryware', minimum_cover_days: 15, ean: '4006381333931' })),
@@ -1585,6 +1587,26 @@ const api = http.createServer((req, res) => {
           ])
         case 'production_save_bom':
           return send(res, 200, { bom_id: 'bom1', bom_code: 'BOM-000001', version: 1 })
+        case 'bom_create_similar_products': {
+          const created = body.p_products.map((x, i) => ({ product_id: `np${i + 1}`, sku: x.product.sku || `FG-00009${i + 1}`, product_name: x.product.product_name,
+            bom_id: `nb${i + 1}`, bom_code: `BOM-00009${i + 1}`, version: 1, status: 'DRAFT', components: x.items.length }))
+          return send(res, 200, { created: created.length, products: created })
+        }
+        case 'bom_template_save': {
+          const id = body.p_template_id ?? 'tpl-new'
+          const t = body.p_template
+          tables.bom_templates = tables.bom_templates.filter((x) => x.id !== id).concat([{ id, company_id: COMPANY_ID, template_name: t.template_name, description: t.description ?? null,
+            category_id: t.category_id ?? null, output_quantity: t.output_quantity, output_unit: t.output_unit, status: 'ACTIVE', source_bom_id: t.source_bom_id ?? null,
+            source_bom_code: t.source_bom_id ? 'BOM-000001' : null, source_bom_version: t.source_bom_id ? 1 : null, created_by: MANAGER_ID, created_at: NOW, updated_at: NOW }])
+          tables.bom_template_items = tables.bom_template_items.filter((x) => x.template_id !== id)
+            .concat(body.p_items.map((it, i) => ({ id: `${id}-${i + 1}`, company_id: COMPANY_ID, template_id: id, line_no: i + 1, ...it, created_at: NOW })))
+          return send(res, 200, { template_id: id, template_name: t.template_name, components: body.p_items.length })
+        }
+        case 'bom_template_set_status': {
+          const t = tables.bom_templates.find((x) => x.id === body.p_template_id)
+          if (t) t.status = body.p_status
+          return send(res, 200, { template_id: body.p_template_id, status: body.p_status, changed: true })
+        }
         case 'production_bom_action':
           return send(res, 200, { status: 'PENDING_APPROVAL', closed_versions: [] })
         case 'production_save_order':
@@ -3627,6 +3649,114 @@ await step('BOM: new BOM validates and saves components through the RPC', async 
   assert(b.p_items.length === 2 && b.p_items[0].component_product_id === 'p3' && b.p_items[0].quantity_required === 2.5 && b.p_items[0].wastage_percentage === 5 && b.p_items[0].unit === 'KG'
     && b.p_items[1].component_product_id === 'p4' && b.p_items[1].quantity_required === 1.5, JSON.stringify(b.p_items))
   assert(b.p_items[0].source_type === null && b.p_items[0].preferred_supplier_id === null, 'blank source / supplier must be sent as null (server applies the product defaults)')
+})
+
+// BOM templates, clone, similar products and comparison (migration 20261203090000)
+await step('BOM tools 1: the BOM list offers Create New BOM, similar product, generate, compare and templates; a BOM offers clone, similar, template and compare', async () => {
+  await goto('/production/boms')
+  await waitFor(bodyHasAll('BOM-000001', 'Create New BOM', 'Create similar product', 'Generate multiple', 'Compare BOMs', 'BOM templates'), 'list actions')
+  await goto('/production/boms/bom1')
+  await waitFor(`!!document.querySelector('[data-testid=bom-reuse]')`, 'reuse card')
+  assert(await evaluate(`(() => { const t = document.querySelector('[data-testid=bom-reuse]').innerText; return ['Clone BOM', 'Create similar product', 'Generate multiple similar', 'Save as BOM template', 'Compare with other BOMs'].every((x) => t.includes(x)) })()`), 'reuse actions')
+  // Clone BOM: the editor opens as a new draft filled from BOM-000001 (the product is chosen by the user).
+  await click('[data-testid=bom-reuse] a', 'Clone BOM')
+  await waitFor(`location.search === '?clone=bom1' && !!document.querySelector('[data-testid=bom-clone-note]')`, 'clone mode')
+  await waitFor(`document.querySelector('#bom-change-reason')?.value === 'Cloned from BOM-000001 v1 (MOCK-WC-1)' && ${bodyHas('Mock ceramic body')}`, 'components copied')
+  assert(rpcCalls('production_save_bom').every((c) => c.body.p_bom_id !== 'bom1'), 'the source BOM was saved')
+})
+
+await step('BOM tools 2: create a similar product — copied fields and components, quantity changed, component removed, cost against the source, confirmation, one save as a draft', async () => {
+  const [clay, glaze] = [products.find((x) => x.id === 'p3'), products.find((x) => x.id === 'p4')]
+  const before = [clay.standard_cost, glaze.standard_cost]
+  clay.standard_cost = 40
+  glaze.standard_cost = 400
+  try {
+    await goto('/production/boms/similar?source=bom1')
+    await waitFor(`!!document.querySelector('#sp-name') && !!document.querySelector('[data-testid=sp-line-2]')`, 'similar product form with the copied components')
+    // Product Master fields copied from MOCK-WC-1, except the SKU (and name, barcode, EAN, image, Cost).
+    assert(await evaluate(`document.querySelector('#sp-sku').value === '' && document.querySelector('#sp-name').value === '' && document.querySelector('#sp-hsn').value === '6910' && document.querySelector('#sp-gst').value === '18'`), 'copied fields')
+    // Source: 2.5 KG clay × ₹40 = 100 + 0.2 KG glaze × 1.1 × ₹400 = 88 → ₹188.00 per unit.
+    await waitFor(`document.querySelector('[data-testid=similar-cost-unit]')?.innerText.includes('188.00')`, 'cost of the copy = source cost')
+    await click('[data-testid=similar-save]')
+    await waitFor(`document.querySelector('[data-testid=similar-error]')?.innerText.includes('Product name is required')`, 'name required')
+    await fill('#sp-name', 'Mock Closet Deluxe')
+    await fill('#sp-sku', 'MOCK-WC-DLX')
+    await fill('#sp-qty-1', '3')
+    await click('button[aria-label="Remove line 2"]')
+    await waitFor(`document.querySelector('[data-testid=similar-changes]')?.innerText.includes('removed MOCK-GLZ') && document.querySelector('[data-testid=similar-changes]')?.innerText.includes('changed for MOCK-CLAY')`, 'changes listed')
+    // 3 KG × ₹40 = ₹120.00 per unit: −₹68.00 (−36.17%) against the source.
+    await waitFor(`document.querySelector('[data-testid=similar-cost-unit]')?.innerText.includes('120.00') && document.querySelector('[data-testid=similar-cost-diff]')?.innerText.includes('68.00') && document.querySelector('[data-testid=similar-cost-diff]')?.innerText.includes('36.17%')`, 'cost difference')
+    await screenshot('201-similar-product')
+    const sent = rpcCalls('bom_create_similar_products').length
+    await click('[data-testid=similar-save]')
+    await waitFor(`!!document.querySelector('[data-testid=similar-confirm]')`, 'confirmation')
+    assert(rpcCalls('bom_create_similar_products').length === sent, 'saved before confirming')
+    await click('[data-testid=similar-confirm-save]')
+    await waitFor(`document.querySelector('[data-testid=similar-result]')?.innerText.includes('MOCK-WC-DLX')`, 'created')
+    const c = rpcCalls('bom_create_similar_products').at(-1).body
+    const prod = c.p_products[0]
+    assert(c.p_source.bom_id === 'bom1' && c.p_products.length === 1 && prod.product.product_name === 'Mock Closet Deluxe' && prod.product.sku === 'MOCK-WC-DLX'
+      && !('status' in prod.product) && !prod.product.barcode && prod.product.hsn_code === '6910' && prod.product.category_id === 'c2'
+      && prod.items.length === 1 && prod.items[0].component_product_id === 'p3' && prod.items[0].quantity_required === 3 && prod.bom.output_quantity === 1
+      && /^[0-9a-f-]{36}$/.test(c.p_idempotency_key), JSON.stringify(c))
+    assert(rpcCalls('production_bom_activate').every((x) => x.body.p_bom_id !== 'nb1'), 'the new BOM was activated without asking')
+    assert(await evaluate(bodyHasAll('saved as a draft', 'Activate BOM', 'Open BOM', 'Open product')), 'draft result and activation offered separately')
+  } finally {
+    clay.standard_cost = before[0]
+    glaze.standard_cost = before[1]
+  }
+})
+
+await step('BOM tools 3: generate multiple similar products — one base BOM, independent components per product, preview, duplicate SKU refused, all saved as drafts in one call', async () => {
+  await goto('/production/boms/generate?source=bom1')
+  await waitFor(`!!document.querySelector('#gen-name-1') && !!document.querySelector('#gen-name-2')`, 'two product rows')
+  await fill('#gen-name-1', 'Closet A')
+  await fill('#gen-sku-1', 'CL-A')
+  await fill('#gen-name-2', 'Closet B')
+  await fill('#gen-sku-2', 'cl-a')
+  await click('[data-testid=gen-save]')
+  await waitFor(`document.querySelector('[data-testid=gen-error]')?.innerText.includes('used for another new product')`, 'duplicate SKU refused')
+  await fill('#gen-sku-2', 'CL-B')
+  await click('[data-testid=gen-edit-2]')
+  await waitFor(`!!document.querySelector('#gen2-qty-1')`, 'components of product 2')
+  await fill('#gen2-qty-1', '5')
+  await waitFor(`document.querySelector('[data-testid=gen-summary-2]')?.innerText.includes('1 changed') && document.querySelector('[data-testid=gen-summary-1]')?.innerText.includes('same components')`, 'independent changes')
+  assert(await evaluate(`document.querySelector('[data-testid=gen-preview]').innerText.includes('MOCK-CLAY × 5 KG') && document.querySelector('[data-testid=gen-preview]').innerText.includes('MOCK-CLAY × 2.5 KG')`), 'preview')
+  await screenshot('202-generate-similar')
+  await click('[data-testid=gen-save]')
+  await waitFor(`!!document.querySelector('[data-testid=gen-confirm]')`, 'confirmation')
+  await click('[data-testid=gen-confirm-save]')
+  await waitFor(`document.querySelector('[data-testid=gen-result]')?.innerText.includes('2 products created')`, 'created')
+  const c = rpcCalls('bom_create_similar_products').at(-1).body
+  assert(c.p_source.bom_id === 'bom1' && c.p_products.length === 2 && c.p_products[0].product.sku === 'CL-A' && c.p_products[1].product.sku === 'CL-B'
+    && c.p_products[0].items[0].quantity_required === 2.5 && c.p_products[1].items[0].quantity_required === 5 && c.p_products[1].items.length === 2, JSON.stringify(c.p_products))
+  assert(!rpcCalls('production_bom_activate').some((x) => ['nb1', 'nb2'].includes(x.body.p_bom_id)), 'generated BOMs activated')
+})
+
+await step('BOM tools 4: compare BOMs — per finished unit, differences highlighted, totals', async () => {
+  await goto('/production/boms/compare?ids=bom1,bom2')
+  await waitFor(`!!document.querySelector('[data-testid=compare-result]') && !!document.querySelector('tr[data-component="MOCK-CLAY"]')`, 'comparison')
+  assert(await evaluate(`(() => { const cells = [...document.querySelectorAll('tr[data-component="MOCK-CLAY"] td[data-state]')]; return cells.length === 2 && cells[0].dataset.state === 'BASE' && cells[1].dataset.state === 'CHANGED' && cells[1].innerText.includes('2.4') })()`), 'changed quantity highlighted')
+  assert(await evaluate(`[...document.querySelectorAll('tr[data-component="MOCK-GLZ"] td[data-state]')].every((c) => ['BASE', 'SAME'].includes(c.dataset.state))`), 'same component not highlighted')
+  assert(await evaluate(`!!document.querySelector('[data-testid=compare-totals]')`), 'totals')
+  await click('#compare-diff')
+  await waitFor(`!document.querySelector('tr[data-component="MOCK-GLZ"]') && !!document.querySelector('tr[data-component="MOCK-CLAY"]')`, 'only differences')
+  await screenshot('203-compare-boms')
+})
+
+await step('BOM tools 5: save a BOM as a template, list it, create a product from it', async () => {
+  await goto('/production/bom-templates/new?bom=bom1')
+  await waitFor(`!!document.querySelector('[data-testid=tpl-from-bom]') && document.querySelector('#tpl-name')?.value === 'Mock Closet 1 template' && !!document.querySelector('[data-testid=tpl-line-2]')`, 'template filled from the BOM')
+  await fill('#tpl-name', 'Closet kit')
+  await click('[data-testid=tpl-save]')
+  await waitFor(`location.pathname === '/production/bom-templates/tpl-new' && ${bodyHas('Create product from template')}`, 'template saved')
+  const c = rpcCalls('bom_template_save').at(-1).body
+  assert(c.p_template_id === null && c.p_template.template_name === 'Closet kit' && c.p_template.source_bom_id === 'bom1' && c.p_items.length === 2 && c.p_items[1].wastage_percentage === 10, JSON.stringify(c))
+  await goto('/production/bom-templates')
+  await waitFor(bodyHasAll('Closet kit', 'BOM-000001 v1'), 'template list')
+  await click('a', 'Create product')
+  await waitFor(`location.search === '?template=tpl-new' && !!document.querySelector('#sp-name') && !!document.querySelector('[data-testid=sp-line-2]')`, 'similar product from the template')
+  assert(await evaluate(`document.querySelector('[data-testid=similar-from]').innerText.includes('Template Closet kit')`), 'source shown')
 })
 
 await step('BOM import: reachable from the BOM list; template and upload are offered, nothing is saved before confirming', async () => {
@@ -5813,6 +5943,9 @@ await step('read-only user sees production but no workflow or posting actions', 
   await goto('/production/boms')
   await waitFor(bodyHas('BOM-000001'), 'bom list')
   assert(!(await evaluate(bodyHas('New BOM'))), 'viewer can create BOMs')
+  assert(await evaluate(bodyHasAll('Compare BOMs', 'BOM templates')) && !(await evaluate(bodyHas('Create similar product'))) && !(await evaluate(bodyHas('Generate multiple'))), 'viewer BOM tools')
+  await goto('/production/boms/similar?source=bom1')
+  await waitFor(bodyHas("You don't have permission to view this page"), 'similar product denied')
   await goto('/production/planning')
   await waitFor(bodyHas("You don't have permission to view this page"), 'planning denied')
 })

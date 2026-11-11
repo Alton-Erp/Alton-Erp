@@ -24,6 +24,7 @@
     "test:db:opening-cost": "node tests/db/opening-master-cost-check.mjs",
     "test:db:stock-adjustment": "node tests/db/stock-adjustment-check.mjs",
     "test:db:grn-actual-cost": "node tests/db/grn-actual-cost-check.mjs",
+    "test:db:bom-tools": "node tests/db/bom-tools-check.mjs",
     "test:db:rollback": "node tests/db/whole-piece-rollback-check.mjs && node tests/db/erp-reset-rollback-check.mjs && node tests/db/erp-force-reset-rollback-check.mjs && node tests/db/product-purchase-rollback-check.mjs && node tests/db/stock-reliability-rollback-check.mjs && node tests/db/invoice-dispatch-rollback-check.mjs && node tests/db/force-reset-direct-rollback-check.mjs && node tests/db/bom-planning-ean-rollback-check.mjs && node tests/db/partial-invoicing-rollback-check.mjs && node tests/db/user-invitations-rollback-check.mjs && node tests/db/form-drafts-rollback-check.mjs && node tests/db/master-versioning-rollback-check.mjs && node tests/db/department-data-rollback-check.mjs && node tests/db/sku-free-format-rollback-check.mjs && node tests/db/purchase-delete-rollback-check.mjs",
     "test:unit": "node --test \"tests/unit/**/*.test.ts\"",
     "test:db:readonly": "node tests/db/readonly-rpc-check.mjs",

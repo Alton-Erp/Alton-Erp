@@ -33,7 +33,7 @@ import {
 } from '@/features/products/product-model'
 import { useErpPreferences } from '@/features/management/erp-preferences'
 import { ProductThumb } from '@/features/products/product-image'
-import { EMPTY_PRODUCT_FORM, validateProduct, type ProductField, type ProductFormValues } from '@/features/products/product-validation'
+import { EMPTY_PRODUCT_FORM, productToFormValues as toFormValues, validateProduct, type ProductField, type ProductFormValues } from '@/features/products/product-validation'
 import { useAsync } from '@/hooks/use-async'
 import { usePersistentFormDraft } from '@/hooks/use-persistent-form-draft'
 import { describeProductError } from '@/lib/errors'
@@ -53,51 +53,6 @@ import {
 } from '@/services/products'
 import { fetchSupplierOptions } from '@/services/suppliers'
 import type { ProductCategoryRow, ProductRow } from '@/types/database'
-
-const str = (v: number | string | null | undefined) => (v === null || v === undefined ? '' : String(v))
-
-function toFormValues(p: ProductRow): ProductFormValues {
-  return {
-    sku: p.sku,
-    product_name: p.product_name,
-    description: p.description ?? '',
-    category_id: p.category_id ?? '',
-    brand: p.brand ?? '',
-    model_number: p.model_number ?? '',
-    barcode: p.barcode ?? '',
-    ean: p.ean ?? '',
-    image_url: p.image_url ?? '',
-    group_head: p.group_head ?? '',
-    minimum_cover_days: str(p.minimum_cover_days),
-    supplier_model_number: p.supplier_model_number ?? '',
-    supplier_product_name: p.supplier_product_name ?? '',
-    status: p.status,
-    product_type: p.product_type,
-    default_source_type: p.default_source_type,
-    base_unit: p.base_unit,
-    track_batches: p.track_batches,
-    track_expiry: p.track_expiry,
-    inventory_tracked: p.inventory_tracked ?? true,
-    length_cm: str(p.length_cm),
-    width_cm: str(p.width_cm),
-    height_cm: str(p.height_cm),
-    hsn_code: p.hsn_code ?? '',
-    gst_rate: str(p.gst_rate),
-    mrp: str(p.mrp),
-    selling_price: str(p.selling_price),
-    standard_cost: str(p.standard_cost),
-    minimum_selling_price: str(p.minimum_selling_price),
-    reorder_level: str(p.reorder_level),
-    minimum_level: str(p.minimum_level),
-    lead_time_days: str(p.lead_time_days),
-    reorder_level_days: str(p.reorder_level_days),
-    preferred_supplier_id: p.preferred_supplier_id ?? '',
-    remarks: p.remarks ?? '',
-    is_manufacturable: p.is_manufacturable,
-    has_bom: p.has_bom,
-    production_notes: p.production_notes ?? '',
-  }
-}
 
 /** /products/new and /products/:productId/edit */
 export default function ProductFormPage() {

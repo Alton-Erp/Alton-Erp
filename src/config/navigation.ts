@@ -1,6 +1,7 @@
 import type { LucideIcon } from 'lucide-react'
 import {
   ArrowLeftRight,
+  LayoutTemplate,
   Ban,
   BellRing,
   BookUser,
@@ -51,6 +52,7 @@ export type NavKey =
   | 'products-dashboard'
   | 'products'
   | 'production-boms'
+  | 'production-bom-templates'
   // 3. Inventory Management
   | 'inventory'
   | 'inventory-register'
@@ -167,6 +169,15 @@ export const NAV_ITEMS: NavItem[] = [
     group: 'products',
     description: 'Raw materials, components and packaging needed per unit of a finished product, with versions.',
     keywords: ['bom', 'recipe', 'components', 'materials'],
+  },
+  {
+    key: 'production-bom-templates',
+    title: 'BOM Templates',
+    path: '/production/bom-templates',
+    icon: LayoutTemplate,
+    group: 'products',
+    description: 'Reusable component lists for creating new finished products; create similar products, clone and compare BOMs.',
+    keywords: ['bom', 'template', 'clone', 'similar product', 'copy', 'compare'],
   },
 
   // 3. Inventory Management
@@ -590,6 +601,7 @@ export const NAV_PERMISSIONS: Record<NavKey, PermissionCode | null> = {
   'products-dashboard': 'products.read',
   products: 'products.read',
   'production-boms': 'production_bom.read',
+  'production-bom-templates': 'production_bom.read',
   inventory: 'inventory.read',
   'inventory-register': 'inventory.read',
   'inventory-movements': 'inventory.read',

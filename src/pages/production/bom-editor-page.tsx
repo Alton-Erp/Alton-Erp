@@ -1,4 +1,4 @@
-import { ArrowLeft, CopyPlus, History, Loader2, Network, Pencil, Plus, Trash2 } from 'lucide-react'
+import { ArrowLeft, Copy, CopyPlus, GitCompareArrows, History, LayoutTemplate, Loader2, Network, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
@@ -92,6 +92,9 @@ export default function BomEditorPage() {
   const [searchParams] = useSearchParams()
   const presetProductId = bomId ? null : searchParams.get('product')
   const preset = useAsync(() => (presetProductId ? getProduct(presetProductId).catch(() => null) : Promise.resolve(null)), [presetProductId])
+  // "Clone BOM": a new draft BOM filled from another BOM, for the product chosen here (the source is never changed).
+  const cloneId = bomId ? null : searchParams.get('clone')
+  const clone = useAsync(() => (cloneId ? fetchBom(cloneId) : Promise.resolve(null)), [cloneId])
   const { key, renew } = useRequestKey()
 
   const [product, setProduct] = useState<ProductOption | null>(null)
@@ -187,6 +190,23 @@ export default function BomEditorPage() {
     })
   }, [loaded.data])
 
+  // Clone: fill the components, output, notes and instructions from the source BOM (the product is chosen by the user).
+  useEffect(() => {
+    const c = clone.data
+    if (!c) return
+    void Promise.resolve().then(() => {
+      setOutput(String(c.bom.output_quantity))
+      setNotes(c.bom.notes ?? '')
+      setChangeReason(`Cloned from ${c.bom.bom_code} v${c.bom.version} (${c.bom.sku})`)
+      setInstructions((c.bom as unknown as { process_instructions?: string | null }).process_instructions ?? '')
+      setLines(c.items.map((i) => ({
+        key: crypto.randomUUID(),
+        product: { product_id: i.component_product_id, sku: i.sku, product_name: i.product_name, base_unit: i.inventory_unit, track_batches: false, track_expiry: false },
+        quantity: String(i.quantity_required), wastage: String(i.wastage_percentage), notes: i.notes ?? '', source: i.source_type ?? '', supplierId: i.preferred_supplier_id ?? '',
+      })))
+    })
+  }, [clone.data])
+
   // "Create BOM" from a product page: start with that product selected.
   useEffect(() => {
     const p = preset.data
@@ -198,7 +218,7 @@ export default function BomEditorPage() {
   // Auto-saved working copy of the header and components (the planning fields are the product's own values and are saved with it).
   const draft = usePersistentFormDraft({
     formKey: 'bom.editor', recordId: bom?.id ?? null, baseVersion: bom?.updated_at ?? null,
-    scope: bom ? '' : presetProductId ? `product:${presetProductId}` : '',
+    scope: bom ? '' : cloneId ? `clone:${cloneId}` : presetProductId ? `product:${presetProductId}` : '',
     enabled: editable && (!bomId || (bom !== undefined && formLoaded === `${bom.id}:${bom.updated_at}`)),
     value: { product, from, to, output, notes, changeReason, instructions, lines: lines.map(({ key: _key, ...l }) => l) },
     onRestore: (d) => {
@@ -373,6 +393,13 @@ export default function BomEditorPage() {
       {error && <p role="alert" className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-800">{error}</p>}
       {bom && (bom.status === 'DRAFT' || bom.status === 'REJECTED') && <DraftVersionNotice kind="BOM" id={bom.id} onRefreshed={() => setRefresh((n) => n + 1)} />}
       {message &&<p role="status" className="mb-4 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-sm text-green-800">{message}</p>}
+      {!bom && clone.data && (
+        <p role="status" data-testid="bom-clone-note" className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm text-blue-900">
+          Cloned from {clone.data.bom.bom_code} v{clone.data.bom.version} ({clone.data.bom.sku}), which is not changed. Choose the product this BOM is for and adjust the components.
+          If that product already has a BOM, this is saved as its next version (draft); existing versions and production orders keep theirs.
+        </p>
+      )}
+      {!bom && clone.error && <p role="alert" className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-800">The BOM to clone could not be loaded: {describeDataError(clone.error)}</p>}
       {fractional.length > 0 && (
         <p role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-900">
           Needs correction: {fractional.join('; ')} {fractional.length === 1 ? 'is' : 'are'} not whole pieces.{' '}
@@ -661,6 +688,21 @@ export default function BomEditorPage() {
                     </li>
                   ))}
                 </ul>
+              </CardContent>
+            </Card>
+            <Card data-testid="bom-reuse">
+              <CardHeader><CardTitle>Reuse this BOM</CardTitle></CardHeader>
+              <CardContent className="space-y-2">
+                {has('production_bom.create') && (
+                  <>
+                    <Button variant="outline" className="w-full justify-start" asChild><Link to={`/production/boms/new?clone=${bom.id}`}><Copy /> Clone BOM</Link></Button>
+                    {has('products.create') && <Button variant="outline" className="w-full justify-start" asChild><Link to={`/production/boms/similar?source=${bom.id}`}><CopyPlus /> Create similar product</Link></Button>}
+                    {has('products.create') && <Button variant="outline" className="w-full justify-start" asChild><Link to={`/production/boms/generate?source=${bom.id}`}><CopyPlus /> Generate multiple similar</Link></Button>}
+                    <Button variant="outline" className="w-full justify-start" asChild><Link to={`/production/bom-templates/new?bom=${bom.id}`}><LayoutTemplate /> Save as BOM template</Link></Button>
+                  </>
+                )}
+                <Button variant="outline" className="w-full justify-start" asChild><Link to={`/production/boms/compare?ids=${bom.id}`}><GitCompareArrows /> Compare with other BOMs</Link></Button>
+                <p className="text-xs text-muted-foreground">Copies never change this BOM or its version.</p>
               </CardContent>
             </Card>
             <Card>
