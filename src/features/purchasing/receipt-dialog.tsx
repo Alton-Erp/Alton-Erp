@@ -10,13 +10,18 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { formatQty } from '@/features/inventory/inventory-model'
+import { money } from '@/features/billing/billing-model'
+import {
+  actualCostConfirmed, directionLabel, formatPrice, formatSignedPercent, formatSignedPrice, PRICE_REASONS, priceProblem, priceReasonText, priceVariance,
+  receiptPayable, splitPriceReason, taxLabel,
+} from '@/features/purchasing/grn-price'
 import { isWholeUnit } from '@/features/inventory/whole-units'
 import { useStorage } from '@/features/inventory/use-storage'
 import { usePersistentFormDraft } from '@/hooks/use-persistent-form-draft'
 import { useRequestKey } from '@/hooks/use-request-key'
 import { describeDataError } from '@/lib/errors'
 import { toIsoDate } from '@/lib/format'
-import { correctGoodsReceipt, postGoodsReceipt, type ReceiptLineInput } from '@/services/purchasing'
+import { checkActualCostSupport, correctGoodsReceipt, postGoodsReceipt, type ReceiptLineInput } from '@/services/purchasing'
 import type { GoodsReceiptLineListRow, GoodsReceiptListRow, PurchaseOrderLineListRow, PurchaseOrderListRow } from '@/types/database-purchasing'
 
 interface Row {
@@ -32,6 +37,10 @@ interface Row {
   serials: string
   reason: string
   overReason: string
+  /** Actual purchase unit cost (before discount, excl. GST); starts as the PO price. */
+  actual: string
+  priceReason: string
+  priceRemark: string
 }
 
 const QTY = /^\d+(\.\d{1,3})?$/
@@ -50,11 +59,13 @@ export interface ReceiptCorrection {
   lines: GoodsReceiptLineListRow[]
 }
 
-export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, correction }: {
+export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, onPostedWithWarning, correction }: {
   po: PurchaseOrderListRow
   lines: PurchaseOrderLineListRow[]
   onClose: () => void
   onPosted: (message: string) => void
+  /** A receipt was posted but the server did not confirm the actual prices (shown as an error, not a success). */
+  onPostedWithWarning?: (message: string) => void
   correction?: ReceiptCorrection
 }) {
   const { has } = usePermissions()
@@ -77,11 +88,14 @@ export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, corr
   const defaultLoc = storageLocations.find((o) => o.isDefault)?.id ?? storageLocations[0]?.id ?? ''
   const [rows, setRows] = useState<Row[]>(() => receivable.map((l) => {
     const g = correction?.lines.find((x) => x.purchase_order_line_id === l.id)
+    const price = g?.actual_unit_price ?? l.unit_price ?? 0
+    const why = splitPriceReason(g?.price_variance_reason)
     return {
       line: l, received: g ? String(Number(g.received_quantity)) : '', accepted: g ? String(Number(g.accepted_quantity)) : '',
       rejected: g ? String(Number(g.rejected_quantity)) : '0', acceptedLocation: g?.accepted_location_id ?? '', rejectedLocation: g?.rejected_location_id ?? 'record',
       batch: g?.batch_number ?? '', mfg: g?.manufacturing_date ?? '', expiry: g?.expiry_date ?? '', serials: g?.serial_numbers ?? '',
       reason: g?.rejection_reason ?? '', overReason: g?.over_receipt_reason ?? '',
+      actual: String(Number(price)), priceReason: why.reason, priceRemark: why.remark,
     }
   }))
   const [today] = useState(() => toIsoDate(new Date()))
@@ -93,6 +107,8 @@ export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, corr
   const [correctionReason, setCorrectionReason] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // Posted, but the server did not confirm that the changed prices were applied: nothing more may be posted here.
+  const [unconfirmed, setUnconfirmed] = useState<string | null>(null)
   // Auto-saved working copy (entered quantities only; PO quantities always come fresh from the server).
   const draft = usePersistentFormDraft({
     formKey: 'purchase.receipt', recordId: correction ? correction.receipt.id : po.id, scope: correction ? 'correction' : 'receipt',
@@ -137,6 +153,8 @@ export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, corr
       }
       if (Math.abs(acc + rej - rec) > 0.0005) problems.push(`${n}: accepted plus rejected must equal the quantity received.`)
       if (rej > 0 && !r.reason.trim()) problems.push(`${n}: enter the reason for the rejected / damaged quantity.`)
+      const priceIssue = priceProblem(r.line.unit_price, r.actual, r.priceReason, r.priceRemark, r.line, r.accepted || '0')
+      if (priceIssue) problems.push(`${n}: ${priceIssue}`)
       if (r.line.line_type === 'GOODS' && acc > 0 && !(r.acceptedLocation || defaultLoc)) problems.push(`${n}: choose the storage location.`)
       if (rec > Number(r.line.pending_quantity) + 0.0005) {
         if (!has('purchase_exception.approve')) problems.push(`${n}: only ${formatQty(r.line.pending_quantity, r.line.unit)} is pending. Receiving more needs an authorised exception.`)
@@ -144,14 +162,24 @@ export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, corr
       }
     }
     if (problems.length) { setError(problems.join(' ')); return }
+    const priceChanged = active.some((r) => priceVariance(r.line.unit_price, r.actual).changed)
     setBusy(true)
     try {
+      // A changed price needs a database that records it; an older one would post at the PO price.
+      if (priceChanged && !(await checkActualCostSupport())) {
+        setError('The database has not been updated for actual purchase costs yet (migration 20261202090000), so a changed price cannot be posted. Nothing was posted. Keep the PO price, or ask the administrator to apply the update.')
+        setBusy(false)
+        return
+      }
       const payload: ReceiptLineInput[] = active.map((r) => ({
         po_line_id: r.line.id, received_quantity: r.received.trim(), accepted_quantity: (r.accepted || '0').trim(), rejected_quantity: (r.rejected || '0').trim(),
         accepted_location_id: r.line.line_type === 'GOODS' && Number(r.accepted || 0) > 0 ? (r.acceptedLocation || defaultLoc) : null,
         rejected_location_id: r.line.line_type === 'GOODS' && Number(r.rejected || 0) > 0 && r.rejectedLocation !== 'record' ? r.rejectedLocation : null,
         batch_number: r.batch.trim() || null, manufacturing_date: r.mfg || null, expiry_date: r.expiry || null, serial_numbers: r.serials.trim() || null,
         rejection_reason: r.reason.trim() || null, over_receipt_reason: r.overReason.trim() || null,
+        // Unchanged price: sent as the PO price with no reason (the server keeps the order line's cost).
+        actual_unit_price: r.actual.trim() || null,
+        price_variance_reason: priceVariance(r.line.unit_price, r.actual).changed ? priceReasonText(r.priceReason, r.priceRemark) : null,
       }))
       const head = {
         receipt_date: header.receipt_date, supplier_document_number: header.supplier_document_number.trim() || null,
@@ -160,14 +188,16 @@ export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, corr
       }
       if (correction) {
         const res = await correctGoodsReceipt(correction.receipt.id, correctionReason.trim(), head, payload, request.key)
-        request.renew()
         void draft.markSubmitted()
+        if (priceChanged && !actualCostConfirmed(res)) { notConfirmed(res.receipt_number); return }
+        request.renew()
         onPosted(`${correction.receipt.receipt_number} reversed and corrected as ${res.receipt_number}. Stock now reflects the corrected quantities.`)
         return
       }
       const res = await postGoodsReceipt(po.id, head, payload, request.key)
-      request.renew()
       void draft.markSubmitted()
+      if (priceChanged && !actualCostConfirmed(res)) { notConfirmed(res.receipt_number); return }
+      request.renew()
       onPosted(`${res.receipt_number} posted${res.transaction_numbers.length ? `: stock transactions ${res.transaction_numbers.join(', ')}` : ' (no stock postings)'}.${res.duplicate ? ' (This receipt had already been posted.)' : ''}`)
     } catch (e) {
       setError(describeDataError(e))
@@ -175,8 +205,17 @@ export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, corr
     }
   }
 
+  // The request id is kept, so a retry can only return this same receipt (never post a second one).
+  const notConfirmed = (number: string) => {
+    const text = `${number} was posted, but the server did not confirm the actual purchase cost: it may have been recorded at the PO price, not the price you entered. Check ${number} and correct it if needed.`
+    setUnconfirmed(text)
+    setError(text)
+    setBusy(false)
+  }
+  const close = () => (unconfirmed ? (onPostedWithWarning ?? (() => onClose()))(unconfirmed) : onClose())
+
   return (
-    <Dialog open onOpenChange={(o) => !o && !busy && onClose()}>
+    <Dialog open onOpenChange={(o) => !o && !busy && close()}>
       <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-5xl">
         <DialogHeader>
           <DialogTitle>{correction ? `Correct ${correction.receipt.receipt_number} — ${po.po_number}` : `Record goods receipt — ${po.po_number}`}</DialogTitle>
@@ -228,6 +267,7 @@ export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, corr
                     </div>
                   )}
                 </div>
+                <PriceRow row={r} id={id} editable={goods} onChange={(p) => update(i, p)} />
                 {Number(r.rejected || 0) > 0 && (
                   <div className="mt-3 grid gap-3 sm:grid-cols-2">
                     <div className="space-y-1"><Label htmlFor={id('reason')}>Rejection reason</Label><Input id={id('reason')} maxLength={500} value={r.reason} onChange={(e) => update(i, { reason: e.target.value })} placeholder="e.g. cracked in transit" /></div>
@@ -264,13 +304,65 @@ export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, corr
             )
           })}
 
-          {error && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</p>}
+          {error && <p role="alert" data-testid="gr-error" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</p>}
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose} disabled={busy}>Cancel</Button>
-            <Button type="submit" disabled={busy || storage.loading}>{busy && <Loader2 className="animate-spin" />} {correction ? 'Reverse and post correction' : 'Post goods receipt'}</Button>
+            {unconfirmed ? <Button type="button" onClick={close}>Close</Button> : <>
+              <Button type="button" variant="outline" onClick={onClose} disabled={busy}>Cancel</Button>
+              <Button type="submit" disabled={busy || storage.loading}>{busy && <Loader2 className="animate-spin" />} {correction ? 'Reverse and post correction' : 'Post goods receipt'}</Button>
+            </>}
           </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/**
+ * PO price, editable actual purchase unit cost (goods lines), variance, accepted value and the supplier
+ * payable incl. GST, calculated exactly as the server stores it.
+ */
+function PriceRow({ row: r, id, editable, onChange }: { row: Row; id: (f: string) => string; editable: boolean; onChange: (p: Partial<Row>) => void }) {
+  const v = priceVariance(r.line.unit_price, r.actual)
+  const acc = (r.accepted || '0').trim()
+  const val = v.actual !== null && /^\d+(\.\d{1,3})?$/.test(acc) ? receiptPayable(r.line, v.actual === v.poPrice ? (r.line.unit_price ?? 0) : r.actual.trim(), acc) : null
+  const tone = v.direction === 'INCREASE' ? 'text-red-700' : v.direction === 'DECREASE' ? 'text-green-700' : 'text-muted-foreground'
+  const discount = Number(r.line.discount_percent ?? 0) > 0 ? `${Number(r.line.discount_percent)}%` : Number(r.line.discount_amount) > 0 ? money(r.line.discount_amount) : 'None'
+  return (
+    <div className="mt-3 rounded-md border bg-surface-muted/40 p-3" data-testid={`gr-price-${r.line.line_no}`}>
+      <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-7">
+        <div className="space-y-1"><p className="text-xs text-muted-foreground">PO unit price</p><p className="text-sm font-medium tabular-nums">{formatPrice(r.line.unit_price ?? 0)}</p></div>
+        <div className="space-y-1 lg:col-span-2">
+          <Label htmlFor={id('actual')}>Actual Purchase Unit Cost (₹)</Label>
+          <Input id={id('actual')} inputMode="decimal" value={r.actual} aria-invalid={Boolean(v.error)} disabled={!editable} onChange={(e) => onChange({ actual: e.target.value })} />
+          {!editable && <p className="text-xs text-muted-foreground">Services are received at the PO price.</p>}
+        </div>
+        <div className="space-y-1"><p className="text-xs text-muted-foreground">Price difference</p><p className={`text-sm font-medium tabular-nums ${tone}`} data-testid={`gr-price-diff-${r.line.line_no}`}>{formatSignedPrice(v.difference)}</p></div>
+        <div className="space-y-1"><p className="text-xs text-muted-foreground">Variance</p><p className={`text-sm font-medium tabular-nums ${tone}`}>{formatSignedPercent(v.percent)} <span className="block text-xs font-normal">{directionLabel(v.direction)}</span></p></div>
+        <div className="space-y-1"><p className="text-xs text-muted-foreground">Discount · GST</p><p className="text-sm tabular-nums" data-testid={`gr-price-tax-${r.line.line_no}`}>{discount} · {taxLabel(r.line)}</p></div>
+        <div className="space-y-1"><p className="text-xs text-muted-foreground">Accepted goods value</p><p className="text-sm font-medium tabular-nums" data-testid={`gr-price-value-${r.line.line_no}`}>{val ? money(val.taxable) : '—'}</p>
+          {val && <p className="text-xs text-muted-foreground" data-testid={`gr-price-payable-${r.line.line_no}`}>excl. GST · payable {money(val.payable)} incl. GST</p>}</div>
+      </div>
+      {(v.error ?? val?.error) && <p className="mt-2 text-xs text-red-700">{v.error ?? val?.error}</p>}
+      {v.changed && !v.error && (
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1">
+            <Label htmlFor={id('price-reason')}>Reason for the price change</Label>
+            <Select value={r.priceReason || undefined} onValueChange={(x) => onChange({ priceReason: x })}>
+              <SelectTrigger id={id('price-reason')} className="w-full"><SelectValue placeholder="Select a reason (required)" /></SelectTrigger>
+              <SelectContent>{PRICE_REASONS.map((x) => <SelectItem key={x} value={x}>{x}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={id('price-remark')}>{r.priceReason === 'Other' ? 'Describe the reason' : 'Remark (optional)'}</Label>
+            <Input id={id('price-remark')} maxLength={400} value={r.priceRemark} onChange={(e) => onChange({ priceRemark: e.target.value })} placeholder="e.g. supplier invoice INV-1042" />
+          </div>
+          {v.large && (
+            <p role="status" className="sm:col-span-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900" data-testid={`gr-price-warning-${r.line.line_no}`}>
+              Large price change ({formatSignedPercent(v.percent)}). Check it against the supplier invoice before posting. The PO price stays {formatPrice(v.poPrice)}; stock and the supplier payable use {formatPrice(v.actual)} less the order line's discount{val && !val.error ? ` (unit cost ${formatPrice(val.cost)}, payable ${money(val.payable)} incl. GST)` : ''}.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
   )
 }

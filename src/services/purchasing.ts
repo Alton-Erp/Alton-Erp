@@ -2,6 +2,7 @@ import { requireSupabase } from '@/lib/supabase'
 import type {
   GoodsReceiptLineListRow,
   GoodsReceiptListRow,
+  GoodsReceiptPriceVarianceRow,
   PurchaseOrderAmendmentRow,
   PurchaseOrderEventRow,
   PurchaseOrderLineListRow,
@@ -195,6 +196,35 @@ export interface ReceiptLineInput {
   serial_numbers: string | null
   rejection_reason: string | null
   over_receipt_reason: string | null
+  /** Actual purchase unit cost (before discount, excl. GST); blank or equal to the PO price keeps the PO price. */
+  actual_unit_price?: string | null
+  /** Required when the actual price differs from the PO price. */
+  price_variance_reason?: string | null
+}
+
+/**
+ * Whether the database records actual purchase costs (migration 20261202090000). Checked before a changed
+ * price is posted, so an older database never silently posts it at the PO price. true / false, or throws
+ * when the check itself could not run (network); only a confirmed answer is cached.
+ */
+let actualCostSupport: boolean | null = null
+export async function checkActualCostSupport(): Promise<boolean> {
+  if (actualCostSupport !== null) return actualCostSupport
+  const { error } = await db().from('goods_receipt_lines').select('po_unit_cost').limit(0)
+  if (!error) return (actualCostSupport = true)
+  // Column or relation unknown to the database: the migration is not applied.
+  if (['42703', 'PGRST204', 'PGRST205', '42P01'].includes(error.code ?? '') || /po_unit_cost/.test(error.message ?? '')) return (actualCostSupport = false)
+  throw error
+}
+
+/** PO price vs actual purchase price per GRN line (receipts on purchase orders), newest first. */
+export async function fetchPriceVariance(from: string | null, to: string | null): Promise<GoodsReceiptPriceVarianceRow[]> {
+  let q = db().from('goods_receipt_price_variance').select('*')
+  if (from) q = q.gte('receipt_date', from)
+  if (to) q = q.lte('receipt_date', to)
+  const { data, error } = await q.order('receipt_date', { ascending: false }).order('receipt_number', { ascending: false }).limit(5000)
+  if (error) throw error
+  return data ?? []
 }
 
 export const postGoodsReceipt = (
@@ -203,7 +233,7 @@ export const postGoodsReceipt = (
   lines: ReceiptLineInput[],
   requestKey: string,
 ) =>
-  rpc<{ receipt_id: string; receipt_number: string; po_status: string; transaction_numbers: string[]; duplicate?: boolean }>('purchase_receipt_post_refs', {
+  rpc<{ receipt_id: string; receipt_number: string; po_status: string; transaction_numbers: string[]; duplicate?: boolean; actual_cost_supported?: boolean }>('purchase_receipt_post_refs', {
     p_po_id: poId, p_header: header, p_lines: lines, p_idempotency_key: requestKey,
   })
 
@@ -249,7 +279,7 @@ export const postDirectGoodsReceipt = (header: DirectReceiptHeader, lines: Direc
  * The corrected receipt gets the supplier references in `header`, or keeps those of the original.
  */
 export const correctGoodsReceipt = (receiptId: string, reason: string, header: Record<string, unknown>, lines: unknown[], requestKey: string) =>
-  rpc<ReceiptResult & { corrects_receipt_number: string; reversal_numbers: string[] }>('goods_receipt_correct_refs', {
+  rpc<ReceiptResult & { corrects_receipt_number: string; reversal_numbers: string[]; actual_cost_supported?: boolean }>('goods_receipt_correct_refs', {
     p_receipt_id: receiptId, p_reason: reason, p_header: header, p_lines: lines, p_idempotency_key: requestKey,
   })
 

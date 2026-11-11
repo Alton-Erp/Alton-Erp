@@ -999,6 +999,12 @@ const spoLine = (id, po, no, over = {}) => ({
   taxable_value: 9000, gst_rate: 18, cgst_rate: 9, sgst_rate: 9, igst_rate: 0, cgst_amount: 810, sgst_amount: 810, igst_amount: 0, line_total: 10620,
   created_at: NOW, updated_at: NOW, received_quantity: 0, accepted_quantity: 0, rejected_quantity: 0, pending_quantity: 10, pending_value: 10620, ...over,
 })
+const pvRow = (id, receipt, number, over = {}) => ({
+  goods_receipt_line_id: id, company_id: COMPANY_ID, goods_receipt_id: receipt, receipt_number: number, receipt_date: TODAY, receipt_status: 'POSTED', supplier_id: 'sup1',
+  supplier_name: 'Shree Clay Works Pvt Ltd', purchase_order_id: 'po3', po_number: 'PO-000003', po_line_no: 1, product_id: 'p1', sku: 'MOCK-WC-1', description: 'Mock Closet 1',
+  line_type: 'GOODS', received_quantity: over.accepted_quantity ?? 1, rejected_quantity: 0, po_unit_cost: null, actual_unit_cost: null, payable_value: null,
+  price_variance_reason: null, price_recorded: true, received_by: MANAGER_ID, received_at: NOW, ...over,
+})
 Object.assign(tables, {
   purchase_order_list: [
     spoRow('po1', 1, 'DRAFT'),
@@ -1020,6 +1026,17 @@ Object.assign(tables, {
     receipt_date: TODAY, supplier_document_number: 'CH-77', supporting_document_ref: null, notes: null, status: 'POSTED', reversal_transaction_ids: null, reversal_reason: null,
     reversed_by: null, reversed_at: null, created_by: MANAGER_ID, created_at: NOW, po_number: null, supplier_name: null, supplier_code: null,
     warehouse_code: 'MAIN', line_count: 1, total_received: 3, total_accepted: 3, total_rejected: 0, receipt_type: 'DIRECT', corrects_receipt_id: null }],
+  goods_receipt_price_variance: [
+    // Posted before prices were recorded: no snapshot, so no prices (never the current PO price).
+    pvRow('pv1', 'gr1', 'GRN-000001', { po_unit_price: null, actual_unit_price: null, price_difference: null, variance_percent: null, accepted_quantity: 2, accepted_value: null, accepted_value_at_po: null, price_recorded: false }),
+    pvRow('pv2', 'gr2', 'GRN-000002', { po_unit_price: 1000, po_unit_cost: 900, actual_unit_price: 1250, actual_unit_cost: 1125, price_difference: 250, variance_percent: 25, accepted_quantity: 4,
+      accepted_value: 4500, accepted_value_at_po: 3600, payable_value: 5310, price_variance_reason: 'Supplier price revision' }),
+    pvRow('pv3', 'gr3', 'GRN-000003', { supplier_id: 'sup2', supplier_name: 'Morbi Tiles LLP', product_id: 'p3', sku: 'MOCK-CLAY', description: 'Mock Clay', po_unit_price: 50, po_unit_cost: 50,
+      actual_unit_price: 45, actual_unit_cost: 45, price_difference: -5, variance_percent: -10, accepted_quantity: 10, accepted_value: 450, accepted_value_at_po: 500, payable_value: 531,
+      price_variance_reason: 'Negotiated price change' }),
+    pvRow('pv4', 'gr4', 'GRN-000004', { receipt_status: 'REVERSED', po_unit_price: 1000, po_unit_cost: 900, actual_unit_price: 1500, actual_unit_cost: 1350, price_difference: 500, variance_percent: 50,
+      accepted_quantity: 1, accepted_value: 1350, accepted_value_at_po: 900, payable_value: 1593, price_variance_reason: 'Other: test' }),
+  ],
   goods_receipt_line_list: [{ id: 'grl1', company_id: COMPANY_ID, goods_receipt_id: 'gr1', purchase_order_id: 'po3', purchase_order_line_id: 'pol3a', line_type: 'GOODS',
     product_id: 'p1', unit: 'PCS', received_quantity: 2, accepted_quantity: 2, rejected_quantity: 0, inspection_status: 'ACCEPTED', rejection_reason: null,
     accepted_location_id: 'l1', rejected_location_id: null, batch_id: null, batch_number: null, manufacturing_date: null, expiry_date: null, serial_numbers: null,
@@ -1106,6 +1123,10 @@ const requests = []
 let insertCounter = 100
 /** Serve erp_preferences (stock adjustment reasons step only). */
 let SERVE_PREFERENCES = false
+// GRN actual purchase cost (migration 20261202090000): GRN_COST_COLUMNS = the support check finds the column;
+// GRN_COST_CONFIRMED = the posting result carries actual_cost_supported.
+let GRN_COST_COLUMNS = true
+let GRN_COST_CONFIRMED = true
 /** Extra rows in the stock register (set by the product image step only). */
 let STOCK_POSITION_EXTRA = 0
 
@@ -1972,14 +1993,16 @@ const api = http.createServer((req, res) => {
           return send(res, 200, { po_id: body.p_po_id, status: 'APPROVED', updated_at: NOW })
         case 'purchase_receipt_post_refs':
         case 'purchase_receipt_post':
-          return send(res, 200, { receipt_id: 'gr2', receipt_number: 'GRN-000002', po_status: 'PARTIALLY_RECEIVED', transaction_numbers: ['TXN-000091'] })
+          return send(res, 200, { receipt_id: 'gr2', receipt_number: 'GRN-000002', po_status: 'PARTIALLY_RECEIVED', transaction_numbers: ['TXN-000091'],
+            ...(GRN_COST_CONFIRMED ? { actual_cost_supported: true } : {}) })
         case 'goods_receipt_direct_post_refs':
         case 'goods_receipt_direct_post':
           return send(res, 200, { receipt_id: 'gr9', receipt_number: 'GRN-000009', transaction_numbers: ['TXN-000095'], unlinked: true,
             warnings: ['This receipt is not linked to a purchase order.', 'No supplier was recorded for this receipt.'] })
         case 'goods_receipt_correct_refs':
         case 'goods_receipt_correct':
-          return send(res, 200, { receipt_id: 'gr10', receipt_number: 'GRN-000010', transaction_numbers: ['TXN-000097'], corrects_receipt_number: 'GRN-000001', reversal_numbers: ['TXN-000096'] })
+          return send(res, 200, { receipt_id: 'gr10', receipt_number: 'GRN-000010', transaction_numbers: ['TXN-000097'], corrects_receipt_number: 'GRN-000001', reversal_numbers: ['TXN-000096'],
+            ...(GRN_COST_CONFIRMED ? { actual_cost_supported: true } : {}) })
         case 'goods_receipt_reverse':
           return send(res, 200, { reversal_numbers: ['TXN-000098'], po_status: null })
         case 'purchase_document_refs_set':
@@ -2201,6 +2224,11 @@ const api = http.createServer((req, res) => {
     }
 
     const table = url.pathname.replace('/rest/v1/', '')
+    if (table === 'goods_receipt_lines' && req.method === 'GET') {
+      // Support check for actual purchase costs: an older database does not know the column.
+      return GRN_COST_COLUMNS ? send(res, 200, [], { 'Content-Range': '*/0' })
+        : send(res, 400, { code: '42703', message: 'column goods_receipt_lines.po_unit_cost does not exist', details: null, hint: null })
+    }
     if ((req.method === 'PATCH' || req.method === 'POST') && ['company_settings', 'profiles'].includes(table)) {
       return send(res, req.method === 'POST' ? 201 : 204, undefined, { 'Content-Range': '*/1' })
     }
@@ -4693,6 +4721,112 @@ await step('purchase orders: goods receipt validates, posts once with a request 
   assert(second.p_header.supplier_invoice_number === 'SINV-901' && second.p_header.supplier_challan_number === 'SDC-31', 'GRN references missing ' + JSON.stringify(second.p_header))
 })
 
+await step('GRN actual purchase cost: PO price shown, actual cost editable, variance and value shown, reason required, large change warned, sent with the receipt', async () => {
+  await goto('/purchase-orders/po3')
+  await waitFor(bodyHas('Record goods receipt'), 'order')
+  await click('button', 'Record goods receipt')
+  await waitFor(`!!document.querySelector('#gr-pol3a-actual')`, 'receipt dialog with the actual cost')
+  // Defaults to the PO price; no change, no reason asked.
+  assert(await evaluate(`document.querySelector('#gr-pol3a-actual').value === '1000'`), 'actual cost does not default to the PO price')
+  await fill('#gr-pol3a-rec', '4')
+  await waitFor(`document.querySelector('[data-testid=gr-price-1]')?.innerText.includes('No change') && document.querySelector('[data-testid=gr-price-value-1]')?.innerText.includes('3,600')
+    && document.querySelector('[data-testid=gr-price-payable-1]')?.innerText.includes('4,248')`, 'no change; value at PO cost after discount; payable = 4/10 of the order line total')
+  assert(!(await evaluate(`!!document.querySelector('#gr-pol3a-price-reason')`)), 'reason asked for an unchanged price')
+  assert(await evaluate(bodyHasAll('PO unit price', 'Actual Purchase Unit Cost (₹)', 'Price difference', 'Variance', 'Discount · GST', 'Accepted goods value', '10% · CGST 9% + SGST 9%')), 'pricing labels')
+  // Actual ₹1,250 (+25%): difference, variance, increase, value after the 10% discount, warning, reason required.
+  await fill('#gr-pol3a-actual', '1250')
+  await waitFor(`document.querySelector('[data-testid=gr-price-diff-1]')?.innerText.includes('+₹250.00') && document.querySelector('[data-testid=gr-price-1]')?.innerText.includes('+25.00%')
+    && document.querySelector('[data-testid=gr-price-1]')?.innerText.includes('Increase') && document.querySelector('[data-testid=gr-price-value-1]')?.innerText.includes('4,500')
+    && document.querySelector('[data-testid=gr-price-payable-1]')?.innerText.includes('5,310')`, 'variance shown; payable 4 × 1,125 = 4,500 + CGST 405 + SGST 405 = 5,310')
+  assert(await evaluate(`!!document.querySelector('[data-testid=gr-price-warning-1]')`), 'large change not warned')
+  await screenshot('198-grn-actual-cost')
+  const before = poCalls('purchase_receipt_post_refs').length
+  await click('[role=dialog] button[type=submit]')
+  await waitFor(bodyHas('select the reason for the price change'), 'reason required')
+  assert(poCalls('purchase_receipt_post_refs').length === before, 'posted without a reason')
+  await fill('#gr-pol3a-actual', '-5')
+  await waitFor(bodyHas('not negative'), 'negative refused')
+  await fill('#gr-pol3a-actual', '1250')
+  await choose('#gr-pol3a-price-reason', 'Other')
+  await click('[role=dialog] button[type=submit]')
+  await waitFor(bodyHas('describe the reason for the price change (Other)'), 'Other needs a description')
+  assert(poCalls('purchase_receipt_post_refs').length === before, 'posted Other without a description')
+  await choose('#gr-pol3a-price-reason', 'Supplier price revision')
+  await fill('#gr-pol3a-price-remark', 'Invoice SINV-902')
+  const probesBefore = requests.filter((r) => r.path === '/rest/v1/goods_receipt_lines').length
+  await click('[role=dialog] button[type=submit]')
+  await waitFor(bodyHas('GRN-000002 posted'), 'posted (the result confirmed actual_cost_supported)')
+  const l = poCalls('purchase_receipt_post_refs').at(-1).p_lines[0]
+  assert(l.actual_unit_price === '1250' && l.price_variance_reason === 'Supplier price revision: Invoice SINV-902', 'price not sent ' + JSON.stringify(l))
+  const probe = requests.findLastIndex((r) => r.path === '/rest/v1/goods_receipt_lines')
+  const postAt = requests.findLastIndex((r) => r.path === '/rest/v1/rpc/purchase_receipt_post_refs')
+  assert(requests.filter((r) => r.path === '/rest/v1/goods_receipt_lines').length === probesBefore + 1 && probe < postAt
+    && decodeURIComponent(requests[probe].query).includes('select=po_unit_cost'), 'server support not checked before posting a changed price')
+})
+
+await step('GRN actual purchase cost: a changed price is never posted to a database without actual-cost support, and never reported as posted unless the server confirms it', async () => {
+  try {
+    // 1. Older database (column missing): a changed price is refused before anything is posted.
+    GRN_COST_COLUMNS = false
+    await goto('/purchase-orders/po3')
+    await waitFor(bodyHas('Record goods receipt'), 'order')
+    await click('button', 'Record goods receipt')
+    await waitFor(`!!document.querySelector('#gr-pol3a-actual')`, 'receipt dialog')
+    await fill('#gr-pol3a-rec', '2')
+    await fill('#gr-pol3a-actual', '1100')
+    await choose('#gr-pol3a-price-reason', 'Market price increase')
+    const before = poCalls('purchase_receipt_post_refs').length
+    await click('[role=dialog] button[type=submit]')
+    await waitFor(`document.querySelector('[data-testid=gr-error]')?.innerText.includes('has not been updated for actual purchase costs')`, 'unsupported database refused')
+    assert(poCalls('purchase_receipt_post_refs').length === before, 'a changed price was posted to a database without support')
+    // An unchanged price still posts on the older database (existing behaviour).
+    await fill('#gr-pol3a-actual', '1000')
+    await click('[role=dialog] button[type=submit]')
+    await waitFor(bodyHas('GRN-000002 posted'), 'unchanged price posted')
+    assert(poCalls('purchase_receipt_post_refs').length === before + 1, 'unchanged price not posted')
+    GRN_COST_COLUMNS = true
+
+    // 2. The server posts but does not confirm actual_cost_supported: shown as an error, never as a success.
+    GRN_COST_CONFIRMED = false
+    await goto('/purchase-orders/po3')
+    await waitFor(bodyHas('Record goods receipt'), 'order')
+    await click('button', 'Record goods receipt')
+    await waitFor(`!!document.querySelector('#gr-pol3a-actual')`, 'receipt dialog')
+    await fill('#gr-pol3a-rec', '2')
+    await fill('#gr-pol3a-actual', '1100')
+    await choose('#gr-pol3a-price-reason', 'Market price increase')
+    await click('[role=dialog] button[type=submit]')
+    await waitFor(`document.querySelector('[data-testid=gr-error]')?.innerText.includes('did not confirm the actual purchase cost')`, 'unconfirmed posting shown as an error')
+    assert(!(await evaluate(bodyHas('GRN-000002 posted'))), 'an unconfirmed posting was reported as a success')
+    assert(await evaluate(`![...document.querySelectorAll('[role=dialog] button')].some((b) => b.innerText.includes('Post goods receipt'))`), 'could post again after an unconfirmed posting')
+    await screenshot('200-grn-cost-not-confirmed')
+    const sent = poCalls('purchase_receipt_post_refs').length
+    await click('[role=dialog] button', 'Close')
+    await waitFor(`!document.querySelector('#gr-pol3a-actual') && ${bodyHas('did not confirm the actual purchase cost')}`, 'error notice on the order page')
+    assert(poCalls('purchase_receipt_post_refs').length === sent, 'closing posted again')
+  } finally {
+    GRN_COST_COLUMNS = true
+    GRN_COST_CONFIRMED = true
+  }
+})
+
+await step('GRN price variance report: KPIs exclude reversed GRNs, supplier-wise and product-wise views, line list with reasons', async () => {
+  await goto('/goods-receipts')
+  await waitFor(`!!document.querySelector('[data-testid=grn-price-variance]')`, 'price variance button')
+  await click('[data-testid=grn-price-variance]')
+  await waitFor(`location.pathname === '/goods-receipts/price-variance'`, 'report page')
+  await waitFor(bodyHasAll('GRN price variance', 'Supplier-wise price changes', 'Product-wise price trend', 'GRN-000002', 'Supplier price revision', 'GRN-000003'), 'report')
+  // 2 posted lines with recorded prices (1 up, 1 down) + 1 older line without; total variance = +900 − 50 = +₹850 (the reversed +₹450 is excluded).
+  assert(await evaluate(`(() => { const t = document.querySelector('[data-testid=pv-kpis]').innerText; return t.includes('of 2 posted GRN lines with recorded prices') && t.includes('1 older lines not recorded') && t.includes('+₹850') })()`), 'KPIs')
+  assert(await evaluate(bodyHasAll('₹5,310.00', '₹531.00')), 'payable snapshots shown')
+  assert(await evaluate(`document.querySelector('[data-testid=pv-suppliers]').innerText.includes('Morbi Tiles LLP') && document.querySelector('[data-testid=pv-suppliers]').innerText.includes('+₹900')`), 'supplier-wise')
+  assert(await evaluate(`document.querySelector('[data-testid=pv-products]').innerText.includes('MOCK-WC-1')`), 'product-wise')
+  assert(!(await evaluate(bodyHas('GRN-000004'))), 'reversed GRN shown under Price changed')
+  await screenshot('199-grn-price-variance')
+  await click('[role=tab], button', 'All lines')
+  await waitFor(bodyHasAll('GRN-000004', 'GRN-000001', 'Not recorded', 'Posted before prices were recorded'), 'all lines include the reversed GRN and the unrecorded older GRN')
+})
+
 await step('purchase orders: printable A4 order uses the saved snapshots and the company logo', async () => {
   await goto('/purchase-orders/po3/print')
   await waitFor(bodyHasAll('PURCHASE ORDER', 'PO-000003', 'Shree Clay Works Pvt Ltd', 'GSTIN: 27AAPFU0939F1ZV', 'Authorised signatory', 'Payment terms: 30 Days'), 'print layout')
@@ -4893,6 +5027,7 @@ await step('GRN: receive without a PO shows the unlinked warning, validates and 
 await step('GRN: a receipt against a PO is corrected (reversed and re-posted) with a reason', async () => {
   await goto('/goods-receipts/gr1')
   await waitFor(bodyHasAll('GRN-000001', 'Items received', 'PO-000003', 'Correct', 'Reverse', 'Attachments'), 'grn detail')
+  assert(await evaluate(bodyHasAllCI('PO price', 'Actual cost', 'Difference', 'Not recorded', 'Payable (incl. GST)', 'From PO line')), 'GRN detail price columns')
   await click('button', 'Correct')
   await waitFor(`!!document.querySelector('#gr-correction') && document.querySelector('#gr-pol3a-rec').value === '2'`, 'correction dialog prefilled')
   assert(await evaluate(`document.querySelector('#gr-invoice').value === 'SINV-778' && document.querySelector('#gr-challan').value === 'DC-554'`), 'correction does not carry the GRN references')

@@ -331,11 +331,13 @@ export default function PoDetailPage() {
             else done(`${po.po_number}: ${PO_EVENT_LABELS[{ SUBMIT: 'SUBMITTED', WITHDRAW: 'WITHDRAWN', APPROVE: 'APPROVED', REJECT: 'REJECTED', SEND: 'SENT', AMEND: 'AMENDED', CANCEL: 'CANCELLED', CLOSE: 'CLOSED' }[action]].toLowerCase()}.`)
           }} />
       )}
-      {receiving && actions.includes('RECEIVE') && <GoodsReceiptDialog po={po} lines={lines} onClose={() => setReceiving(false)} onPosted={(m) => { setReceiving(false); done(m) }} />}
+      {receiving && actions.includes('RECEIVE') && <GoodsReceiptDialog po={po} lines={lines} onClose={() => setReceiving(false)} onPosted={(m) => { setReceiving(false); done(m) }}
+        onPostedWithWarning={(m) => { setReceiving(false); setNotice({ tone: 'error', text: m }); setRefresh((n) => n + 1) }} />}
       {reversing && <ReverseReceiptDialog receipt={reversing} onClose={() => setReversing(null)} onDone={(m) => { setReversing(null); done(m) }} />}
       {correcting && (
         <GoodsReceiptDialog po={po} lines={lines} correction={{ receipt: correcting, lines: receiptLines.filter((l) => l.goods_receipt_id === correcting.id) }}
-          onClose={() => setCorrecting(null)} onPosted={(m) => { setCorrecting(null); done(m) }} />
+          onClose={() => setCorrecting(null)} onPosted={(m) => { setCorrecting(null); done(m) }}
+          onPostedWithWarning={(m) => { setCorrecting(null); setNotice({ tone: 'error', text: m }); setRefresh((n) => n + 1) }} />
       )}
       {editingDetails && <PoDetailsDialog po={po} onClose={() => setEditingDetails(false)} onDone={(m) => { setEditingDetails(false); done(m) }} />}
     </>

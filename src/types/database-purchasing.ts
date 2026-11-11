@@ -224,12 +224,56 @@ export type GoodsReceiptLineRow = {
   serial_numbers: string | null
   unit_cost: number | null
   gst_rate: number | null
-  /** Direct receipts: accepted x cost incl. GST. */
+  /** Payable incl. GST when it differs from the order line: direct receipts, and PO receipts at an actual price different from the PO price. */
   line_value: number | null
   accepted_transaction_id: string | null
   rejected_transaction_id: string | null
   over_receipt_reason: string | null
   created_at: string
+  /** PO unit price when received (null on GRNs posted before prices were recorded). */
+  po_unit_price?: number | null
+  /** PO unit cost after discount, excl. GST, when received (null on GRNs posted before prices were recorded). */
+  po_unit_cost?: number | null
+  /** Actual purchase unit price entered on the GRN (before discount, excl. GST). */
+  actual_unit_price?: number | null
+  price_variance_reason?: string | null
+}
+
+/** goods_receipt_price_variance: PO price vs actual purchase price per GRN line. */
+export type GoodsReceiptPriceVarianceRow = {
+  goods_receipt_line_id: string
+  company_id: string
+  goods_receipt_id: string
+  receipt_number: string
+  receipt_date: string
+  receipt_status: 'POSTED' | 'REVERSED'
+  supplier_id: string
+  supplier_name: string | null
+  purchase_order_id: string
+  po_number: string
+  po_line_no: number
+  product_id: string | null
+  sku: string | null
+  description: string
+  line_type: 'GOODS' | 'SERVICE'
+  received_quantity: number
+  accepted_quantity: number
+  rejected_quantity: number
+  /** Snapshots taken at receipt; all null when price_recorded is false (GRNs posted before prices were recorded). */
+  po_unit_price: number | null
+  po_unit_cost: number | null
+  actual_unit_price: number | null
+  actual_unit_cost: number | null
+  price_difference: number | null
+  variance_percent: number | null
+  accepted_value_at_po: number | null
+  accepted_value: number | null
+  /** Supplier payable incl. GST stored at posting. */
+  payable_value: number | null
+  price_variance_reason: string | null
+  price_recorded: boolean
+  received_by: string | null
+  received_at: string
 }
 
 export type GoodsReceiptLineListRow = GoodsReceiptLineRow & {
@@ -261,6 +305,7 @@ export type PurchasingViews = {
   purchase_order_line_list: { Row: PurchaseOrderLineListRow; Relationships: [] }
   goods_receipt_list: { Row: GoodsReceiptListRow; Relationships: [] }
   goods_receipt_line_list: { Row: GoodsReceiptLineListRow; Relationships: [] }
+  goods_receipt_price_variance: { Row: GoodsReceiptPriceVarianceRow; Relationships: [] }
   // The lists plus the supplier invoice / challan references (20261109090000).
   purchase_order_list_v2: { Row: PurchaseOrderListRow; Relationships: [] }
   goods_receipt_list_v2: { Row: GoodsReceiptListRow; Relationships: [] }

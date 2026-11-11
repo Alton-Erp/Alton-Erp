@@ -93,6 +93,7 @@ export const SUB_ROUTES: { path: string; permission: PermissionCode | null; comp
   // Edit page: the database decides who may edit which draft (own drafts with purchase_order.create, any with purchase_order.update).
   { path: '/purchase-orders/:poId/edit', permission: 'purchases.read', component: lazy(() => import('@/pages/purchasing/po-form-page')) },
   { path: '/purchase-orders/:poId/print', permission: 'purchase_order.export', component: lazy(() => import('@/pages/purchasing/po-print-page')) },
+  { path: '/goods-receipts/price-variance', permission: 'purchases.read', component: lazy(() => import('@/pages/purchasing/grn-price-variance-page')) },
   { path: '/goods-receipts/:receiptId', permission: 'purchases.read', component: lazy(() => import('@/pages/purchasing/goods-receipt-detail-page')) },
   { path: '/goods-receipts/:receiptId/print', permission: 'purchases.read', component: lazy(() => import('@/pages/purchasing/grn-print-page')) },
   { path: '/sales/orders/new', permission: 'sales_orders.create', component: lazy(() => import('@/pages/sales/sales-order-entry-page')) },

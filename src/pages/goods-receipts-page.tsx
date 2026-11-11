@@ -1,4 +1,4 @@
-import { AlertTriangle, CalendarDays, CheckCircle2, ClipboardList, Download, Loader2, PackageCheck, PackagePlus, PackageX, Undo2 } from 'lucide-react'
+import { AlertTriangle, CalendarDays, CheckCircle2, ClipboardList, Download, Loader2, PackageCheck, PackagePlus, PackageX, TrendingUp, Undo2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 
@@ -82,10 +82,11 @@ export default function GoodsReceiptsPage() {
       <PageHeader
         title="Goods Received (GRN)"
         description="Goods received against purchase orders and without one. Only accepted quantities are added to stock."
-        actions={canReceive && (
+        actions={(
           <>
-            <Button variant="outline" onClick={() => setDirect(true)}><PackagePlus /> Receive without PO</Button>
-            <Button onClick={() => setChoosePo(true)}><ClipboardList /> Receive against PO</Button>
+            <Button variant="outline" onClick={() => navigate('/goods-receipts/price-variance')} data-testid="grn-price-variance"><TrendingUp /> Price variance</Button>
+            {canReceive && <Button variant="outline" onClick={() => setDirect(true)}><PackagePlus /> Receive without PO</Button>}
+            {canReceive && <Button onClick={() => setChoosePo(true)}><ClipboardList /> Receive against PO</Button>}
           </>
         )}
       />

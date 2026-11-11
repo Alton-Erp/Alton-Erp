@@ -17,6 +17,7 @@ import { RecordDocuments } from '@/features/admin/record-documents'
 import { money } from '@/features/billing/billing-model'
 import { formatQty } from '@/features/inventory/inventory-model'
 import { DirectReceiptDialog } from '@/features/purchasing/direct-receipt-dialog'
+import { formatPrice, formatSignedPercent, formatSignedPrice } from '@/features/purchasing/grn-price'
 import { GoodsReceiptDialog } from '@/features/purchasing/receipt-dialog'
 import { SupplierRefs } from '@/features/purchasing/supplier-refs'
 import { useAsync } from '@/hooks/use-async'
@@ -109,8 +110,9 @@ export default function GoodsReceiptDetailPage() {
             <TableHead>Item</TableHead>
             {!direct && <TableHead className="text-right">Ordered</TableHead>}
             <TableHead className="text-right">Received</TableHead><TableHead className="text-right">Accepted</TableHead><TableHead className="text-right">Rejected</TableHead>
-            {!direct && <><TableHead className="text-right">Shortage now</TableHead><TableHead className="text-right">Excess</TableHead></>}
-            <TableHead>Stored in</TableHead><TableHead>Batch</TableHead><TableHead>Stock posting</TableHead>{direct && <TableHead className="text-right">Value (incl. GST)</TableHead>}
+            {!direct && <><TableHead className="text-right">Shortage now</TableHead><TableHead className="text-right">Excess</TableHead>
+              <TableHead className="text-right">PO price</TableHead><TableHead className="text-right">Actual cost</TableHead><TableHead className="text-right">Difference</TableHead></>}
+            <TableHead>Stored in</TableHead><TableHead>Batch</TableHead><TableHead>Stock posting</TableHead><TableHead className="text-right">{direct ? 'Value (incl. GST)' : 'Payable (incl. GST)'}</TableHead>
           </TableRow></TableHeader>
           <TableBody>{lines.map((l) => {
             const pl = poLine(l.purchase_order_line_id)
@@ -122,11 +124,15 @@ export default function GoodsReceiptDetailPage() {
                 <TableCell className="text-right tabular-nums">{formatQty(l.accepted_quantity)}</TableCell>
                 <TableCell className="text-right tabular-nums">{Number(l.rejected_quantity) > 0 ? <span className="text-red-700">{formatQty(l.rejected_quantity)}<span className="block text-xs">{l.rejection_reason}{l.rejected_location_code ? ` → ${l.rejected_location_code}` : ' (recorded only)'}</span></span> : '0'}</TableCell>
                 {!direct && <><TableCell className="text-right tabular-nums">{pl && Number(pl.pending_quantity) > 0 ? <span className="text-amber-800">{formatQty(pl.pending_quantity)}</span> : '0'}</TableCell>
-                  <TableCell className="text-right tabular-nums">{l.over_receipt_reason ? <span className="text-amber-800" title={l.over_receipt_reason}>yes</span> : '—'}</TableCell></>}
+                  <TableCell className="text-right tabular-nums">{l.over_receipt_reason ? <span className="text-amber-800" title={l.over_receipt_reason}>yes</span> : '—'}</TableCell>
+                  <PriceCells line={l} /></>}
                 <TableCell>{l.accepted_location_code ?? '—'}</TableCell>
                 <TableCell>{l.batch_number ?? '—'}{l.expiry_date ? <span className="block text-xs text-muted-foreground">exp {formatDate(l.expiry_date)}</span> : null}</TableCell>
                 <TableCell className="text-xs">{[l.accepted_transaction_number, l.rejected_transaction_number].filter(Boolean).join(', ') || '—'}</TableCell>
-                {direct && <TableCell className="text-right tabular-nums">{l.line_value === null ? <span className="text-amber-800">Cost not set</span> : money(l.line_value)}</TableCell>}
+                {direct
+                  ? <TableCell className="text-right tabular-nums">{l.line_value === null ? <span className="text-amber-800">Cost not set</span> : money(l.line_value)}</TableCell>
+                  : <TableCell className="text-right tabular-nums" data-testid={`grn-payable-${l.id}`}>{l.line_value !== null ? money(l.line_value)
+                    : <span className="text-muted-foreground" title="Posted before payables were stored on the GRN: valued from the order line">From PO line</span>}</TableCell>}
               </TableRow>
             )
           })}</TableBody>
@@ -144,6 +150,29 @@ export default function GoodsReceiptDetailPage() {
         <DirectReceiptDialog correction={{ receipt: r, lines }} onClose={() => setCorrecting(false)}
           onPosted={(m, id) => { setCorrecting(false); navigate(`/goods-receipts/${id}`, { state: { message: m } }) }} />
       )}
+    </>
+  )
+}
+
+/** PO price, actual purchase unit cost and the difference (with the reason) for a GRN line. */
+function PriceCells({ line: l }: { line: { po_unit_price?: number | null; actual_unit_price?: number | null; price_variance_reason?: string | null } }) {
+  // Only the prices recorded at receipt are shown; the current (possibly amended) order is never used.
+  if (l.po_unit_price === null || l.po_unit_price === undefined || l.actual_unit_price === null || l.actual_unit_price === undefined) {
+    const note = <span className="text-xs text-muted-foreground" title="Posted before prices were recorded on the GRN">Not recorded</span>
+    return <><TableCell className="text-right">{note}</TableCell><TableCell className="text-right">{note}</TableCell><TableCell className="text-right">{note}</TableCell></>
+  }
+  const po = l.po_unit_price
+  const actual = l.actual_unit_price
+  const diff = Math.round((Number(actual) - Number(po)) * 10000) / 10000
+  const pct = diff !== null && Number(po) > 0 ? Math.round((diff / Number(po)) * 10000) / 100 : null
+  const tone = diff && diff > 0 ? 'text-red-700' : diff && diff < 0 ? 'text-green-700' : ''
+  return (
+    <>
+      <TableCell className="text-right tabular-nums">{formatPrice(po)}</TableCell>
+      <TableCell className="text-right tabular-nums">{formatPrice(actual)}</TableCell>
+      <TableCell className={`min-w-32 text-right tabular-nums whitespace-normal ${tone}`}>
+        {diff ? <>{formatSignedPrice(diff)} <span className="text-xs">({formatSignedPercent(pct)})</span>{l.price_variance_reason && <span className="block text-xs text-muted-foreground">{l.price_variance_reason}</span>}</> : <span className="text-muted-foreground">No change</span>}
+      </TableCell>
     </>
   )
 }
