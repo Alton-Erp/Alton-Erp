@@ -160,6 +160,8 @@ export interface StockValueSummary {
   valued_products: number
   partly_valued_products: number
   not_valued_products: number
+  /** Quantity on hand without a cost (pending cost), per unit (migration 20261204090000; absent before it). */
+  unvalued_units?: { unit: string; quantity: number }[]
   method: string
 }
 

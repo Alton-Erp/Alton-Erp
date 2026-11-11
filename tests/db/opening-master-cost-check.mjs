@@ -16,6 +16,7 @@ const read = (p) => readFile(p, 'utf8')
 const migDir = path.join(root, 'supabase', 'migrations')
 const MIGRATION = '20261129090000_opening_stock_master_cost.sql'
 const LOCKDOWN = '20261130090000_opening_stock_lockdown.sql'
+const OPTIONAL = '20261204090000_opening_stock_optional_cost'
 const files = (await readdir(migDir)).filter((x) => x.endsWith('.sql')).sort()
 const db = new PGlite()
 await db.exec(await read(path.join(root, 'supabase', 'tests', 'local_supabase_shim.sql')))
@@ -117,9 +118,11 @@ const audit = await val(`select metadata from public.audit_logs where action = '
 ok('an audit entry records the cost source', audit?.cost_source === 'product_master_list.master_cost' && audit.lines === 2, audit)
 
 const r2 = await post([line(1, NONE, 5), line(2, ZERO, 5), line(3, await newProduct('OC-OK', 50), 5)])
-ok('5. missing / zero Product Master Cost: those rows are flagged with the reason and nothing is posted', r2.value?.ok === false
-  && r2.value.errors.length === 2 && r2.value.errors.every((e) => /Product Master Cost is (missing|zero)/.test(e.message))
-  && (await val(`select count(*)::int from public.inventory_transactions where product_id = any($1::uuid[]) and transaction_type = 'OPENING_STOCK'`, [[NONE, ZERO]])) === 0, r2)
+// Since 20261204090000 the cost is optional: rows without a valid Product Master Cost are posted without a cost
+// (pending, not valued) instead of being rejected; they are never posted at zero.
+ok('5. missing / zero Product Master Cost: posted without a cost (not valued, never at zero); the costed row keeps its cost', r2.value?.ok === true
+  && (await opening(NONE)).cost === null && (await opening(ZERO)).cost === null && (await opening(NONE)).qty === 5
+  && (await val(`select count(*)::int from public.inventory_transactions where product_id = any($1::uuid[]) and transaction_type = 'OPENING_STOCK' and unit_cost = 0`, [[NONE, ZERO]])) === 0, r2)
 const r3 = await post([line(1, '00000000-0000-4000-8000-0000000000ff', 5)])
 ok('4. an unknown product is rejected with a clear reason', r3.value?.ok === false && /Product not found/.test(JSON.stringify(r3.value.errors)), r3)
 const r4 = await post([line(1, STD, 2)])
@@ -205,6 +208,8 @@ const acl = async (d) => (await d.query(`select string_agg(proname || '=' || coa
   from pg_proc where proname in ('inventory_submit_opening_stock', 'inventory_post_opening_stock')`)).rows[0].a
 const originalAcl = await acl(before)
 await db.exec('reset role')
+// 20261204090000 (optional cost) redefines the pricing step: roll it back first.
+await db.exec(await read(path.join(root, 'supabase', 'rollback', `${OPTIONAL}_down.sql`)))
 await db.exec(await read(path.join(root, 'supabase', 'rollback', '20261130090000_opening_stock_lockdown_down.sql')))
 ok('rollback of 20261130090000 restores the original privileges of the older functions exactly', (await acl(db)) === originalAcl, [await acl(db), originalAcl])
 await db.exec(await read(path.join(root, 'supabase', 'rollback', '20261129090000_opening_stock_master_cost_down.sql')))
@@ -215,6 +220,7 @@ ok('rollback removes the new functions and the setting, and leaves posted openin
 for (let i = 0; i < 2; i++) {
   await db.exec(await read(path.join(migDir, MIGRATION)))
   await db.exec(await read(path.join(migDir, LOCKDOWN)))
+  await db.exec(await read(path.join(migDir, `${OPTIONAL}.sql`)))
 }
 ok('both migrations apply again, twice', (await op(`select public.opening_stock_product_costs($1::uuid[])`, [[STD]])).costs[0].cost === 120
   && !(await val(`select has_function_privilege('authenticated', 'public.inventory_post_opening_stock(jsonb, text, text, text, uuid)', 'EXECUTE')`)))

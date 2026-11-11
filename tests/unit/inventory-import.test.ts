@@ -175,18 +175,29 @@ describe('opening-stock import', () => {
     assert.equal(openingValue(2.5, 12.345), 30.86)
   })
 
-  it('5. a product without a Product Master Cost (missing or zero) is flagged, never imported at zero', async () => {
+  it('5. a product without a Product Master Cost (missing or zero) is accepted with a pending cost: no cost sent, never zero', async () => {
+    // Cost optional since migration 20261204090000: the row is not rejected; it is recorded unvalued.
     const costs = new Map(ctx.costs)
     costs.set('p1', { cost: null, valid: false })
     costs.set('p4', { cost: 0, valid: false })
     costs.delete('p5')
     const { headers, data, first } = await parsed([['SKU', 'Warehouse', 'Quantity'], ['WC-1', 'MAIN', '5'], ['BASIN-1', 'MAIN', '5'], ['WC-2', 'MAIN', '5']])
     const results = validateOpeningRows(data, autoMapOpening(headers), { ...ctx, costs }, first)
-    assert.deepEqual(results.map((r) => r.status), ['error', 'error', 'error'])
-    assert.match(results[0].errors.join(), /Product Master Cost of WC-1 is missing/)
-    assert.match(results[1].errors.join(), /Product Master Cost of BASIN-1 is zero/)
-    assert.match(results[2].errors.join(), /Product Master Cost of WC-2 is missing/)
-    assert.ok(results.every((r) => r.payload === null))
+    assert.deepEqual(results.map((r) => r.status), ['valid', 'valid', 'valid'])
+    assert.deepEqual(results.map((r) => [r.cost, r.value, r.payload?.unit_cost]), [[null, null, null], [null, null, null], [null, null, null]])
+    assert.match(results[0].warnings.join(), /WC-1 has no Product Master Cost: recorded with a pending cost/)
+    assert.match(results[1].warnings.join(), /BASIN-1 has no Product Master Cost/)
+  })
+
+  it('upload without a price column, and with some blank price cells: every row accepted, valid costs fetched', async () => {
+    const costs = new Map(ctx.costs)
+    costs.set('p4', { cost: null, valid: false })
+    const noCol = await parsed([['SKU', 'Warehouse', 'Quantity'], ['WC-1', 'MAIN', '2'], ['BASIN-1', 'MAIN', '3']])
+    const a = validateOpeningRows(noCol.data, autoMapOpening(noCol.headers), { ...ctx, costs }, noCol.first)
+    assert.deepEqual(a.map((r) => [r.status, r.cost]), [['valid', 300], ['valid', null]])
+    const blanks = await parsed([['SKU', 'Warehouse', 'Quantity', 'Unit Cost'], ['WC-1', 'MAIN', '2', ''], ['BASIN-1', 'MAIN', '3', '']])
+    const b = validateOpeningRows(blanks.data, autoMapOpening(blanks.headers), { ...ctx, costs }, blanks.first)
+    assert.deepEqual(b.map((r) => [r.status, r.cost, r.value]), [['valid', 300, 600], ['valid', null, null]])
   })
 
   it('4. an unknown product code is rejected with the reason', async () => {

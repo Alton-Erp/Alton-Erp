@@ -231,7 +231,7 @@ export default function OpeningStockImportPage() {
             ['Unit', `Optional check; must equal the product unit (${UNITS.map((u) => u.code).join(', ')})`],
             ['Batch', 'Required for batch-tracked products, blank otherwise'],
             ['Manufacturing Date / Expiry Date', 'YYYY-MM-DD or DD-MM-YYYY; expiry required when the product tracks expiry'],
-            ['(no cost column)', 'Not needed. The unit cost is the Product Master Cost of each product, fetched when you validate; a cost or value column in the file is ignored. A product without a cost is rejected (never imported at zero).'],
+            ['(no cost column)', 'Optional and not needed. The unit cost is the Product Master Cost of each product, fetched when you validate; a cost or value column in the file is ignored. A product without a cost is accepted with a pending cost and is not valued (never imported at zero).'],
             ['Effective Date', 'Optional; defaults to the date chosen during import; cannot be in the future'],
             ['Reference / Notes', 'Optional, e.g. the count sheet number'],
             ['(no Source column)', 'Not needed. A Source column in an older file is ignored.'],
@@ -249,7 +249,7 @@ export default function OpeningStockImportPage() {
     { id: 'sku', header: 'Product Code', cell: (r) => <span className="font-medium">{r.sku || '—'}</span>, searchValue: (r) => r.sku, sortValue: (r) => r.sku },
     { id: 'name', header: 'Product Name', cell: (r) => r.productName ?? '—', searchValue: (r) => r.productName ?? '' },
     { id: 'qty', header: 'Opening Quantity', align: 'right', cell: (r) => (r.quantity === undefined ? '—' : `${formatNumber(r.quantity)}${r.payload ? ` ${r.payload.unit}` : ''}`) },
-    { id: 'cost', header: 'Product Master Cost', align: 'right', cell: (r) => <span data-testid="oi-cost">{r.cost === null || r.cost === undefined ? 'Missing' : formatCost(r.cost)}</span>,
+    { id: 'cost', header: 'Product Master Cost', align: 'right', cell: (r) => <span data-testid="oi-cost">{r.cost === null || r.cost === undefined ? <span className="text-amber-800">Pending cost</span> : formatCost(r.cost)}</span>,
       sortValue: (r) => r.cost ?? -1 },
     { id: 'value', header: 'Opening Stock Value', align: 'right', cell: (r) => <span data-testid="oi-value">{r.value === null || r.value === undefined ? '—' : formatCost(r.value)}</span>,
       sortValue: (r) => r.value ?? -1 },
@@ -365,7 +365,8 @@ export default function OpeningStockImportPage() {
           )}
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <KpiCard label="Rows read" value={formatNumber(results.length)} icon={FileSpreadsheet} />
-            <KpiCard label="Opening stock value (accepted)" value={formatCost(valid.reduce((sum, r) => sum + (r.value ?? 0), 0))} icon={CheckCircle2} />
+            <KpiCard label="Opening stock value (accepted)" value={formatCost(valid.reduce((sum, r) => sum + (r.value ?? 0), 0))} icon={CheckCircle2}
+              hint={valid.some((r) => r.cost === null) ? `${formatNumber(valid.filter((r) => r.cost === null).length)} row(s) with a pending cost are not valued` : undefined} />
             <KpiCard label="Accepted" value={formatNumber(valid.length)} icon={CheckCircle2} accent="available" />
             <KpiCard label="Rejected" value={formatNumber(invalid.length + results.filter((r) => r.serverError).length)} icon={Info} accent="shortage" />
           </div>

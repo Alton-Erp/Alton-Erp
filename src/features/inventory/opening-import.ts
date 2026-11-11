@@ -9,8 +9,9 @@
 //
 // Unit cost (migration 20261129090000): never read from the file. Every row gets the Product
 // Master Cost of its product, fetched from the database (opening_stock_product_costs); the
-// server sets it again when the lines are submitted. A row whose product has no cost (missing
-// or zero) is rejected rather than imported at zero.
+// server sets it again when the lines are submitted. The cost is optional (migration
+// 20261204090000): a row whose product has no valid cost (missing or zero) is accepted with a
+// pending cost and is not valued; no cost is assumed and it is never imported at zero.
 
 import { parseSheetDate, type StockSourceCode } from './inventory-model.ts'
 
@@ -131,7 +132,7 @@ export interface OpeningRowResult {
   payload: OpeningPayload | null
   productName?: string
   quantity?: number
-  /** Product Master Cost (null = missing). */
+  /** Product Master Cost (null = none: pending cost, not valued). */
   cost?: number | null
   /** Quantity × Product Master Cost. */
   value?: number | null
@@ -233,11 +234,12 @@ export function validateOpeningRows(rows: string[][], mapping: OpeningMapping, c
     if (mfg && exp && mfg > exp) errors.push('Manufacturing date is after the expiry date.')
     if (exp && exp < ctx.today) warnings.push('Batch is already expired.')
 
-    // The Product Master Cost; never a cost from the file.
+    // The Product Master Cost when it is valid; never a cost from the file. Without one the row is
+    // still accepted: its quantity is recorded with a pending cost and is not valued.
     const master = product ? ctx.costs?.get(product.id) : undefined
-    const cost = master?.cost ?? null
-    if (product && (!master || !master.valid || cost === null || cost <= 0)) {
-      errors.push(`The Product Master Cost of ${product.sku} is ${cost === 0 ? 'zero' : 'missing'}. Set the Standard Manufacturing Cost on the Product Master, then validate again.`)
+    const cost = master?.valid && master.cost !== null && master.cost > 0 ? master.cost : null
+    if (product && cost === null) {
+      warnings.push(`${product.sku} has no Product Master Cost: recorded with a pending cost (not valued until a cost is set).`)
     }
 
     const effRaw = cell(row, 'effective_date')

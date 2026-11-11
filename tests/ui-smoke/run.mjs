@@ -2287,7 +2287,9 @@ function stockValueSummary(unit, search) {
   })
   return { products: rows.length, units, total_value: rows.reduce((s, r) => s + Number(r.stock_value ?? 0), 0),
     valued_products: rows.filter((r) => r.valuation_status === 'VALUED').length, partly_valued_products: rows.filter((r) => r.valuation_status === 'PARTIAL').length,
-    not_valued_products: rows.filter((r) => r.valuation_status === 'NOT_VALUED').length, method: 'mock' }
+    not_valued_products: rows.filter((r) => r.valuation_status === 'NOT_VALUED').length,
+    unvalued_units: [...new Set(rows.filter((r) => Number(r.unvalued_on_hand) > 0).map((r) => r.base_unit))].sort()
+      .map((u) => ({ unit: u, quantity: rows.filter((r) => r.base_unit === u).reduce((s, r) => s + Number(r.unvalued_on_hand ?? 0), 0) })), method: 'mock' }
 }
 
 // User management lists the company's profiles and their role assignments.
@@ -3178,7 +3180,9 @@ await step('opening stock: no source field; add, review, edit and remove lines; 
   const lineCount = `document.querySelectorAll('[data-testid=opening-line]').length`
   const pickProduct = async (term, sku) => {
     await fill('#os-product', term)
-    await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes(${JSON.stringify(sku)}))`, `search results for ${sku}`)
+    // Let the debounced search (250 ms) replace any earlier result list before clicking (the click is by position).
+    await sleep(500)
+    await waitFor(`!document.querySelector('[role=listbox]')?.innerText.includes('Searching') && [...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes(${JSON.stringify(sku)}))`, `search results for ${sku}`)
     await click('[role=option]', sku)
   }
   const openEntry = async () => {
@@ -3195,7 +3199,7 @@ await step('opening stock: no source field; add, review, edit and remove lines; 
     // 4. No "Actual source" dropdown; the fields are in the requested order.
     const labels = await evaluate(`[...document.querySelectorAll('[role=dialog] label')].map((l) => l.innerText.trim())`)
     assert(!(await evaluate(`!!document.querySelector('#os-src')`)) && !labels.some((l) => /source/i.test(l)) && !(await evaluate(`/actual source/i.test(document.querySelector('[role=dialog]').innerText)`)), 'source field still shown: ' + JSON.stringify(labels))
-    const want = ['Product', 'Warehouse / location', 'Quantity', 'Unit cost (₹, Product Master Cost)', 'Opening stock value', 'Effective date', 'Reference (optional, e.g. count sheet no.)']
+    const want = ['Product', 'Warehouse / location', 'Quantity', 'Unit cost (₹, Product Master Cost, optional)', 'Opening stock value', 'Effective date', 'Reference (optional, e.g. count sheet no.)']
     assert(JSON.stringify(labels) === JSON.stringify(want), JSON.stringify(labels))
     assert(await evaluate(`${reviewBtn}.disabled && ${reviewBtn}.innerText.includes('Review 0 line(s)')`), 'Review must be disabled with no lines')
     await screenshot('170-opening-entry-no-source')
@@ -3227,18 +3231,21 @@ await step('opening stock: no source field; add, review, edit and remove lines; 
     await fill('#os-qty', '1')
     await click('[role=dialog] button', 'Add line')
     await waitFor(`document.querySelector('[data-testid=opening-entry-error]')?.innerText.includes('already in the list')`, 'duplicate in the list refused')
-    // 5. A product without a Product Master Cost cannot be added.
+    // 5. A product without a Product Master Cost is accepted with a pending cost (cost optional, 20261204090000).
     await click('[role=dialog] button[aria-label="Change product"]')
     await waitFor(`document.querySelector('#os-product')?.tagName === 'INPUT'`, 'product cleared')
     await pickProduct('GLZ', 'MOCK-GLZ')
-    await waitFor(`!!document.querySelector('[data-testid=os-cost-missing]')`, 'missing cost shown')
+    await waitFor(`document.querySelector('[data-testid=os-cost-missing]')?.innerText.includes('pending cost') && document.querySelector('#os-cost').value === ''`, 'no cost: pending, field blank')
     await fill('#os-batch', 'B-1')
     await click('[role=dialog] button', 'Add line')
-    await waitFor(`document.querySelector('[data-testid=opening-entry-error]')?.innerText.includes('Product Master Cost of MOCK-GLZ is missing')`, 'missing cost refused')
-    await fill('#os-batch', '')
+    await waitFor(`${lineCount} === 2 && !document.querySelector('[data-testid=opening-entry-error]')`, 'line without a cost added')
+    assert(await evaluate(`(() => { const l = [...document.querySelectorAll('[data-testid=opening-line]')][1]; return l.querySelector('[data-testid=opening-line-cost]').innerText.includes('Pending cost') && l.querySelector('[data-testid=opening-line-value]').innerText.includes('Not valued') })()`), 'pending cost line')
+    await click('[role=dialog] button[aria-label="Remove line 2"]')
+    await waitFor(`${lineCount} === 1`, 'line removed again')
 
     // 6, 7. A second product typed but not added: Review takes it and opens the review screen.
-    await click('[role=dialog] button[aria-label="Change product"]')
+    // (Adding the line above cleared the product; clear it here only if one is still selected.)
+    if (await evaluate(`!!document.querySelector('[role=dialog] button[aria-label="Change product"]')`)) await click('[role=dialog] button[aria-label="Change product"]')
     await waitFor(`document.querySelector('#os-product')?.tagName === 'INPUT'`, 'product cleared')
     await fill('#os-qty', '')
     await pickProduct('CLAY', 'MOCK-CLAY')
@@ -4522,6 +4529,8 @@ await step('Total Stock valuation: unit cost and stock value columns, Not Valued
   assert((await cardText('sv-on-hand')).includes('140 PCS') && (await cardText('sv-on-hand')).includes('50 KG'), await cardText('sv-on-hand'))
   assert((await cardText('sv-reserved')).includes('10 PCS') && (await cardText('sv-available')).includes('130 PCS'), await cardText('sv-available'))
   assert((await cardText('sv-value')).includes('1 product(s) not fully valued'), await cardText('sv-value'))
+  // Stock without a cost is shown apart (quantity), never in the value.
+  assert((await cardText('sv-unvalued')).includes('50 KG') && !(await cardText('sv-unvalued')).includes('PCS'), await cardText('sv-unvalued'))
   await screenshot('180-total-stock-valuation')
   // 7. Search: the list and the summary use the same text.
   await fill('input[aria-label="Search records"]', 'clay')
