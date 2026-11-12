@@ -1,4 +1,4 @@
-import { Copy, Download, FileSpreadsheet, GitCompareArrows, LayoutTemplate, Layers, Loader2, Network, Plus } from 'lucide-react'
+import { Download, FileSpreadsheet, GitCompareArrows, Layers, Loader2, Network, Plus } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 
@@ -96,11 +96,9 @@ export default function BomsPage() {
               {exporting ? <Loader2 className="animate-spin" /> : <Download />} Export to Excel
             </Button>
             <Button variant="outline" asChild><Link to="/production/boms/compare"><GitCompareArrows /> Compare BOMs</Link></Button>
-            <Button variant="outline" asChild><Link to="/production/bom-templates"><LayoutTemplate /> BOM templates</Link></Button>
             <PermissionGate permission="production_bom.create">
               <Button variant="outline" asChild><Link to="/production/boms/import"><FileSpreadsheet /> Import from Excel</Link></Button>
               <Button variant="outline" asChild><Link to="/production/boms/generate"><Layers /> Generate multiple</Link></Button>
-              <Button variant="outline" asChild><Link to="/production/boms/similar"><Copy /> Create similar product</Link></Button>
               <Button asChild><Link to="/production/boms/new"><Plus /> Create New BOM</Link></Button>
             </PermissionGate>
           </>

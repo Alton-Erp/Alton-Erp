@@ -1,5 +1,7 @@
-// BOM templates, similar products and comparison (migration 20261203090000). Reads use the existing views
+// Generate multiple BOMs and comparison (migration 20261203090000). Reads use the existing views
 // (RLS: production_bom.read, products.read, inventory.read); every write goes through a database function.
+// The template pages and the similar-product page were removed from the app; their tables and functions stay in the
+// database unchanged (no data is dropped).
 import { requireSupabase } from '@/lib/supabase'
 import type { BomItemListRow, BomListRow } from '@/types/database-production'
 
@@ -11,89 +13,6 @@ async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
   return data
 }
 
-export type TemplateStatus = 'ACTIVE' | 'ARCHIVED'
-
-export interface BomTemplateRow {
-  id: string
-  company_id: string
-  template_name: string
-  description: string | null
-  category_id: string | null
-  output_quantity: number
-  output_unit: string
-  status: TemplateStatus
-  source_bom_id: string | null
-  source_bom_code: string | null
-  source_bom_version: number | null
-  created_by: string | null
-  created_at: string
-  updated_at: string
-}
-
-export interface BomTemplateItem {
-  id: string
-  line_no: number
-  component_product_id: string
-  sku: string
-  product_name: string
-  unit: string
-  quantity_required: number
-  wastage_percentage: number
-  notes: string | null
-  source_type: string | null
-  preferred_supplier_id: string | null
-}
-
-export interface BomTemplateSummary extends BomTemplateRow {
-  component_count: number
-}
-
-/** Whether the database has the template tables (migration applied). */
-export const isMissingRelation = (e: unknown) => ['PGRST205', '42P01'].includes((e as { code?: string } | null)?.code ?? '')
-
-export async function fetchTemplates(): Promise<BomTemplateSummary[]> {
-  const [t, i] = await Promise.all([
-    db().from('bom_templates' as never).select('*').order('template_name'),
-    db().from('bom_template_items' as never).select('template_id'),
-  ])
-  if (t.error) throw t.error
-  if (i.error) throw i.error
-  const counts = new Map<string, number>()
-  for (const r of (i.data ?? []) as { template_id: string }[]) counts.set(r.template_id, (counts.get(r.template_id) ?? 0) + 1)
-  return ((t.data ?? []) as BomTemplateRow[]).map((r) => ({ ...r, component_count: counts.get(r.id) ?? 0 }))
-}
-
-export async function fetchTemplate(id: string): Promise<{ template: BomTemplateRow; items: BomTemplateItem[] }> {
-  const { data, error } = await db().from('bom_templates' as never).select('*').eq('id', id).single()
-  if (error) throw error
-  const items = await db().from('bom_template_items' as never).select('*').eq('template_id', id).order('line_no')
-  if (items.error) throw items.error
-  const rows = (items.data ?? []) as Omit<BomTemplateItem, 'sku' | 'product_name'>[]
-  const products = await productNames(rows.map((r) => r.component_product_id))
-  return {
-    template: data as BomTemplateRow,
-    items: rows.map((r) => ({ ...r, sku: products.get(r.component_product_id)?.sku ?? '?', product_name: products.get(r.component_product_id)?.product_name ?? 'Unknown product' })),
-  }
-}
-
-async function productNames(ids: string[]) {
-  const map = new Map<string, { sku: string; product_name: string; base_unit: string }>()
-  if (ids.length === 0) return map
-  const { data, error } = await db().from('products').select('id, sku, product_name, base_unit').in('id', [...new Set(ids)])
-  if (error) throw error
-  for (const p of data ?? []) map.set(p.id, p)
-  return map
-}
-
-export interface TemplateHeader {
-  template_name: string
-  description: string | null
-  category_id: string | null
-  output_quantity: number
-  output_unit: string
-  source_bom_id?: string | null
-}
-
 export type BomToolItem = {
   component_product_id: string
   quantity_required: number
@@ -103,14 +22,6 @@ export type BomToolItem = {
   source_type: string | null
   preferred_supplier_id: string | null
 }
-
-export const saveTemplate = (templateId: string | null, header: TemplateHeader, items: BomToolItem[], key: string | null) =>
-  rpc<{ template_id: string; template_name: string; components: number }>('bom_template_save', {
-    p_template_id: templateId, p_template: header, p_items: items, p_idempotency_key: key,
-  })
-
-export const setTemplateStatus = (templateId: string, status: TemplateStatus) =>
-  rpc<{ template_id: string; status: TemplateStatus; changed: boolean }>('bom_template_set_status', { p_template_id: templateId, p_status: status })
 
 export interface SimilarProductInput {
   product: Record<string, unknown>
@@ -134,6 +45,21 @@ export const createSimilarProducts = (source: { bom_id?: string; template_id?: s
   rpc<{ created: number; products: SimilarProductResult[] }>('bom_create_similar_products', {
     p_source: source, p_products: products, p_idempotency_key: key,
   })
+
+export interface GeneratedBom extends Omit<SimilarProductResult, 'status'> {
+  status: 'DRAFT'
+  /** true: a draft BOM for a product already in the Product Master; false: a new product was created. */
+  existing_product: boolean
+}
+
+/**
+ * Generate Multiple with rows that are existing Product Master products (migration 20261207090000): each entry is
+ * { product_id } (new draft BOM for that product) or { product } (new product, as createSimilarProducts), in one
+ * transaction. Nothing is activated; no stock moves.
+ */
+export type GenerateEntry = Omit<SimilarProductInput, 'product'> & ({ product_id: string } | { product: Record<string, unknown> })
+export const generateMultipleBoms = (sourceBomId: string, entries: GenerateEntry[], key: string) =>
+  rpc<{ created: number; products: GeneratedBom[] }>('bom_generate_multiple', { p_source: { bom_id: sourceBomId }, p_entries: entries, p_idempotency_key: key })
 
 // ---------------------------------------------------------------------------
 // Component information for the editor: Product Master Cost and available stock

@@ -118,7 +118,7 @@ export const EMPTY_PRODUCT_FORM: ProductFormValues = {
 
 const str = (v: number | string | null | undefined) => (v === null || v === undefined ? '' : String(v))
 
-/** A stored product as form values (the Product Master edit form and "Create similar product"). */
+/** A stored product as form values (the Product Master edit form and Generate multiple). */
 export function productToFormValues(p: ProductRow): ProductFormValues {
   return {
     sku: p.sku,

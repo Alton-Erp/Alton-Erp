@@ -13,7 +13,6 @@ export const PAGE_COMPONENTS: Record<NavKey, LazyExoticComponent<ComponentType>>
   'products-dashboard': lazy(() => import('@/pages/products/products-dashboard-page')),
   products: lazy(() => import('@/pages/products-page')),
   'production-boms': lazy(() => import('@/pages/production/boms-page')),
-  'production-bom-templates': lazy(() => import('@/pages/production/bom-templates-page')),
   inventory: lazy(() => import('@/pages/inventory/inventory-overview-page')),
   'inventory-register': lazy(() => import('@/pages/inventory/stock-register-page')),
   'inventory-movements': lazy(() => import('@/pages/inventory/stock-movements-page')),
@@ -82,11 +81,8 @@ export const SUB_ROUTES: { path: string; permission: PermissionCode | null; comp
   { path: '/inventory/opening-stock/import', permission: 'inventory_opening.create', component: lazy(() => import('@/pages/inventory/opening-stock-import-page')) },
   { path: '/production/boms/new', permission: 'production_bom.create', component: lazy(() => import('@/pages/production/bom-editor-page')) },
   { path: '/production/boms/import', permission: 'production_bom.create', component: lazy(() => import('@/pages/production/bom-import-page')) },
-  { path: '/production/boms/similar', permission: 'production_bom.create', component: lazy(() => import('@/pages/production/bom-similar-product-page')) },
   { path: '/production/boms/generate', permission: 'production_bom.create', component: lazy(() => import('@/pages/production/bom-generate-page')) },
   { path: '/production/boms/compare', permission: 'production_bom.read', component: lazy(() => import('@/pages/production/bom-compare-page')) },
-  { path: '/production/bom-templates/new', permission: 'production_bom.create', component: lazy(() => import('@/pages/production/bom-template-page')) },
-  { path: '/production/bom-templates/:templateId', permission: 'production_bom.read', component: lazy(() => import('@/pages/production/bom-template-page')) },
   { path: '/production/boms/:bomId/versions', permission: 'production_bom.read', component: lazy(() => import('@/pages/production/bom-versions-page')) },
   { path: '/production/boms/:bomId', permission: 'production_bom.read', component: lazy(() => import('@/pages/production/bom-editor-page')) },
   { path: '/production/new', permission: 'production_order.create', component: lazy(() => import('@/pages/production/production-entry-page')) },
@@ -134,6 +130,9 @@ export const REDIRECTS: { from: string; to: string }[] = [
   { from: '/suppliers', to: '/ledger/suppliers' },
   { from: '/settings', to: '/admin/erp-settings?tab=company' },
   { from: '/reports/modules', to: '/reports' },
+  // Removed BOM tools: old bookmarks land on the BOM list / Generate Multiple (never on a BOM called "similar").
+  { from: '/production/bom-templates', to: '/production/boms' },
+  { from: '/production/boms/similar', to: '/production/boms/generate' },
 ]
 
 // Public authentication pages (outside the protected layout).

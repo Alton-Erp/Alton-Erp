@@ -1,12 +1,13 @@
-// BOM templates, clone, similar products and comparison: pure model + wiring (no browser, no database).
+// BOM tools (clone, generate multiple, comparison): pure model + wiring (no browser, no database).
+// BOM templates and "create similar product" were removed from the app; the wiring tests check they stay removed.
 import assert from 'node:assert/strict'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import {
-  bomCost, compareBoms, componentProblem, costDifference, itemsFromLines, lineChanges, linesFromItems, newLine, productPayload, roundTo, similarProductValues,
+  bomCost, clearLineComponent, compareBoms, componentProblem, costDifference, itemsFromLines, lineChanges, linesFromItems, newLine, productPayload, roundTo, similarProductValues,
   type EditorLine,
 } from '../../src/features/production/bom-tools-model.ts'
 import { EMPTY_PRODUCT_FORM } from '../../src/features/products/product-validation.ts'
@@ -56,6 +57,18 @@ describe('Component editor rules (same as the BOM editor and the database)', () 
   it('lines become BOM / template items in the inventory unit', () => {
     const items = itemsFromLines([line('a', 'A', '2', '1.5', 'KG'), newLine()])
     assert.deepEqual(items, [{ component_product_id: 'a', quantity_required: 2, unit: 'KG', wastage_percentage: 1.5, notes: null, source_type: null, preferred_supplier_id: null }])
+  })
+  it('a line whose component was cleared (quantity still typed) is skipped, never a crash', () => {
+    const cleared = { ...line('a', 'A', '2'), product: null }
+    assert.doesNotThrow(() => itemsFromLines([cleared, line('b', 'B', '1')]))
+    assert.deepEqual(itemsFromLines([cleared, line('b', 'B', '1')]).map((i) => i.component_product_id), ['b'])
+    assert.match(componentProblem([cleared]) ?? '', /select the component/)
+  })
+  it('× clears one line: component, quantity, wastage (default) and remarks; same position and key; other lines untouched', () => {
+    const ls = [{ ...line('a', 'A', '2', '4'), notes: 'Two coats' }, line('b', 'B', '1')]
+    const out = ls.map((l, i) => (i === 0 ? clearLineComponent(l, '1.5') : l))
+    assert.deepEqual([out[0].key, out[0].product, out[0].quantity, out[0].wastage, out[0].notes], [ls[0].key, null, '', '1.5', ''])
+    assert.equal(out[1], ls[1])
   })
   it('stored items become editable lines (round trip)', () => {
     const ls = linesFromItems([{ component_product_id: 'a', sku: 'A', product_name: 'Alpha', inventory_unit: 'KG', quantity_required: 2.5, wastage_percentage: 3, notes: 'x', source_type: 'PURCHASED', preferred_supplier_id: 's' }])
@@ -121,38 +134,62 @@ describe('Wiring', () => {
   const src = path.join(root, 'src')
   const read = (p: string) => readFileSync(path.join(src, p), 'utf8')
   const files = (dir: string): string[] => readdirSync(dir).flatMap((f) => { const p = path.join(dir, f); return statSync(p).isDirectory() ? files(p) : /\.tsx?$/.test(f) ? [p] : [] })
-  it('routes: create pages need production_bom.create, compare / templates need production_bom.read', () => {
+  it('routes: Generate Multiple needs production_bom.create, compare needs production_bom.read; template and similar-product routes are gone', () => {
     const routes = read('routes.ts')
-    for (const [p, perm] of [['/production/boms/similar', 'production_bom.create'], ['/production/boms/generate', 'production_bom.create'], ['/production/boms/compare', 'production_bom.read'],
-      ['/production/bom-templates/new', 'production_bom.create'], ['/production/bom-templates/:templateId', 'production_bom.read']]) {
+    for (const [p, perm] of [['/production/boms/generate', 'production_bom.create'], ['/production/boms/compare', 'production_bom.read']]) {
       assert.match(routes, new RegExp(`path: '${p.replace(/[/:]/g, (c) => `\\${c}`)}', permission: '${perm}'`), p)
     }
-    assert.ok(routes.indexOf("'/production/boms/similar'") < routes.indexOf("'/production/boms/:bomId'"))
+    assert.ok(routes.indexOf("'/production/boms/generate'") < routes.indexOf("'/production/boms/:bomId'"))
+    for (const gone of ["path: '/production/boms/similar'", "path: '/production/bom-templates", "'production-bom-templates'", 'bom-template-page', 'bom-templates-page', 'bom-similar-product-page']) assert.ok(!routes.includes(gone), gone)
+    // Old bookmarks are redirected, never opened as a BOM called "similar".
+    assert.match(routes, /\{ from: '\/production\/boms\/similar', to: '\/production\/boms\/generate' \}/)
+    assert.match(routes, /\{ from: '\/production\/bom-templates', to: '\/production\/boms' \}/)
   })
-  it('the BOM Templates sidebar entry sits in Product Master & BOM, behind production_bom.read', () => {
-    const item = NAV_ITEMS.find((i) => i.key === 'production-bom-templates')
-    assert.equal(item?.group, 'products')
-    assert.equal(item?.path, '/production/bom-templates')
-    assert.equal(NAV_PERMISSIONS['production-bom-templates'], 'production_bom.read')
-  })
-  it('the BOM pages offer every action: create, clone, similar, template, from template, compare', () => {
-    const list = read('pages/production/boms-page.tsx')
-    for (const t of ['Create New BOM', 'Create similar product', 'Generate multiple', 'Compare BOMs', 'BOM templates']) assert.ok(list.includes(t), t)
-    const detail = read('pages/production/bom-editor-page.tsx')
-    for (const t of ['Clone BOM', 'Create similar product', 'Save as BOM template', 'Compare with other BOMs', '?clone=']) assert.ok(detail.includes(t), t)
-    assert.ok(read('pages/production/bom-template-page.tsx').includes('Create product from template'))
-  })
-  it('templates and similar products are only written through the database functions (no direct table writes)', () => {
+  it('no BOM Templates entry in the sidebar or Product Master section; no stale links anywhere in the app', () => {
+    assert.equal(NAV_ITEMS.find((i) => i.key === ('production-bom-templates' as never)), undefined)
+    assert.ok(!NAV_ITEMS.some((i) => /template/i.test(i.title) || i.path.includes('bom-templates')))
+    assert.ok(!('production-bom-templates' in NAV_PERMISSIONS))
     for (const f of files(src)) {
       const s = readFileSync(f, 'utf8')
-      assert.doesNotMatch(s, /from\('bom_templates'[^)]*\)\s*\.(insert|update|upsert|delete)|from\('bom_template_items'[^)]*\)\s*\.(insert|update|upsert|delete)/, f)
+      // routes.ts only redirects the old addresses (checked above).
+      if (!f.endsWith('routes.ts')) assert.doesNotMatch(s, /\/production\/bom-templates|\/production\/boms\/similar|Create similar product|Save as BOM template|BOM templates/, f)
+    }
+    for (const gone of ['bom-similar-product-page.tsx', 'bom-template-page.tsx', 'bom-templates-page.tsx']) assert.ok(!existsSync(path.join(src, 'pages/production', gone)), gone)
+  })
+  it('the BOM pages keep create, clone, generate multiple, import and compare', () => {
+    const list = read('pages/production/boms-page.tsx')
+    for (const t of ['Create New BOM', 'Generate multiple', 'Compare BOMs', 'Import from Excel']) assert.ok(list.includes(t), t)
+    const detail = read('pages/production/bom-editor-page.tsx')
+    for (const t of ['Clone BOM', 'Generate multiple', 'Compare with other BOMs', '?clone=']) assert.ok(detail.includes(t), t)
+  })
+  it('BOMs are only written through the database functions (no direct table writes)', () => {
+    for (const f of files(src)) {
+      const s = readFileSync(f, 'utf8')
+      assert.doesNotMatch(s, /from\('(boms|bom_items|bom_templates|bom_template_items)'[^)]*\)\s*\.(insert|update|upsert|delete)/, f)
     }
     const svc = read('services/bom-tools.ts')
-    for (const fn of ['bom_template_save', 'bom_template_set_status', 'bom_create_similar_products']) assert.ok(svc.includes(`'${fn}'`), fn)
+    for (const fn of ['bom_create_similar_products', 'bom_generate_multiple']) assert.ok(svc.includes(`'${fn}'`), fn)
   })
-  it('generated BOMs are never activated by the generators (activation stays a separate, authorised action)', () => {
+  it('generated BOMs are never activated by Generate Multiple (activation stays a separate, authorised action)', () => {
     assert.doesNotMatch(read('pages/production/bom-generate-page.tsx'), /activateBom|saveAndActivateBom|production_bom_activate/)
-    const similar = read('pages/production/bom-similar-product-page.tsx')
-    assert.match(similar, /has\('production_bom\.approve'\) && \(\s*<Button onClick=\{\(\) => setAction/)
+  })
+  it('Generate Multiple: Product Name searches the Product Master, the SKU comes from the chosen product, each product once', () => {
+    const page = read('pages/production/bom-generate-page.tsx')
+    assert.match(page, /<BomProductNamePicker /)
+    assert.match(page, /value=\{r\.product\.sku\} readOnly/)
+    assert.match(page, /already chosen for product/)
+    const picker = read('features/production/bom-product-name-picker.tsx')
+    assert.match(picker, /searchBomComponents\(term\)/)
+    assert.match(picker, /Searching Product Master/)
+    assert.match(picker, /No Product Master product matches/)
+    assert.match(picker, /type="button"[^>]*\n?[^>]*onClick=\{\(e\) => \{ e\.preventDefault\(\); e\.stopPropagation\(\)/)
+  })
+  it('component × clears the line only (no navigation, no submit); the bin removes the line', () => {
+    const picker = read('features/production/bom-component-picker.tsx')
+    assert.match(picker, /<button type="button" onClick=\{\(e\) => \{ e\.preventDefault\(\); e\.stopPropagation\(\); onChange\(null\)/)
+    const editor = read('features/production/bom-component-editor.tsx')
+    assert.match(editor, /clearLineComponent\(x, defaultWastage\)/)
+    assert.match(editor, /<Button type="button" variant="ghost" size="icon-sm" aria-label=\{`Remove line/)
+    assert.doesNotMatch(editor, /navigate\(|useNavigate/)
   })
 })

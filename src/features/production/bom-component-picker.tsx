@@ -8,6 +8,8 @@ import { useDebouncedValue } from '@/hooks/use-debounced-value'
 import { describeDataError } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import { findBomComponentByCode, searchBomComponents, type BomComponentOption } from '@/services/bom-components'
+import { fetchComponentInfo } from '@/services/bom-tools'
+import { formatCost } from '@/features/products/product-list-format'
 import type { ProductOption } from '@/services/inventory'
 
 /**
@@ -24,6 +26,7 @@ export function BomComponentPicker({
   value,
   onChange,
   exclude,
+  showCost = false,
 }: {
   id?: string
   /** Accessible name, e.g. "Component line 2". */
@@ -32,6 +35,8 @@ export function BomComponentPicker({
   onChange: (product: BomComponentOption | null) => void
   /** product_id → why it cannot be chosen */
   exclude: Map<string, string>
+  /** Show each suggestion's Product Master Cost (the same lookup as the component grid). */
+  showCost?: boolean
 }) {
   const generated = useId()
   const inputId = id ?? generated
@@ -43,6 +48,7 @@ export function BomComponentPicker({
   const [loading, setLoading] = useState(false)
   const [active, setActive] = useState(0)
   const [message, setMessage] = useState<string | null>(null)
+  const [costs, setCosts] = useState<Map<string, number | null>>(new Map())
   const term = useDebouncedValue(text, 200)
   const listRef = useRef<HTMLUListElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -67,6 +73,16 @@ export function BomComponentPicker({
     // `exclude` changes identity on every render of the editor; the list only needs re-filtering, not a new search.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [term, open, value])
+
+  useEffect(() => {
+    if (!showCost || results.length === 0) return
+    let cancelled = false
+    // A missing cost permission or view gives "no cost", never an error in the list.
+    fetchComponentInfo(results.map((r) => r.product_id))
+      .then((m) => { if (!cancelled) setCosts(new Map([...m.values()].map((c) => [c.product_id, c.unit_cost]))) })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+  }, [results, showCost])
 
   const choose = (p: BomComponentOption) => {
     const reason = exclude.get(p.product_id)
@@ -109,7 +125,7 @@ export function BomComponentPicker({
           <span className="block truncate font-medium">{value.product_name}</span>
           <span className="block truncate text-xs text-muted-foreground">{value.sku} · {value.base_unit}</span>
         </span>
-        <button type="button" onClick={() => { onChange(null); setTimeout(() => inputRef.current?.focus(), 0) }} aria-label={`Change ${label}`}
+        <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onChange(null); setTimeout(() => inputRef.current?.focus(), 0) }} aria-label={`Change ${label}`}
           className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground">
           <X className="size-3.5" />
         </button>
@@ -191,6 +207,7 @@ export function BomComponentPicker({
                     <span className={cn(p.available !== null && p.available <= 0 && 'text-shortage')}>
                       · {p.available === null ? 'stock not shown' : `Available ${formatQty(p.available, p.base_unit)}`}
                     </span>
+                    {showCost && costs.has(p.product_id) && <span>· {costs.get(p.product_id) === null ? 'no cost' : `Cost ${formatCost(costs.get(p.product_id)!)}`}</span>}
                     {reason && <span className="font-medium">· {reason}</span>}
                   </span>
                 </li>

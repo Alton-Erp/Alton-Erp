@@ -6,10 +6,9 @@ import { formatQty } from '@/features/inventory/inventory-model'
 import { formatCost } from '@/features/products/product-list-format'
 import { BomComponentPicker } from '@/features/production/bom-component-picker'
 import { linesCost } from '@/features/production/bom-component-info'
-import { costDifference, newLine, type BomCost, type EditorLine } from '@/features/production/bom-tools-model'
+import { clearLineComponent, newLine, type EditorLine } from '@/features/production/bom-tools-model'
 import { validateBomLine } from '@/features/production/production-model'
 import { qtyInputMode } from '@/features/inventory/whole-units'
-import { cn } from '@/lib/utils'
 import type { ComponentInfo } from '@/services/bom-tools'
 
 /**
@@ -69,7 +68,11 @@ export function BomComponentEditor({ lines, onChange, output, outputUnit, output
                   <td className="min-w-64 px-2 py-2">
                     {editable
                       ? <BomComponentPicker id={`${idPrefix}-comp-${n}`} label={`Component line ${n}`} value={l.product ? { ...l.product, track_batches: false, track_expiry: false } : null} exclude={exclude}
-                          onChange={(p) => update(l.key, { product: p ? { product_id: p.product_id, sku: p.sku, product_name: p.product_name, base_unit: p.base_unit, available: p.available } : null })} />
+                          showCost
+                          onChange={(p) => (p
+                            ? update(l.key, { product: { product_id: p.product_id, sku: p.sku, product_name: p.product_name, base_unit: p.base_unit, available: p.available } })
+                            // X = clear this line's component only: quantity / wastage back to the defaults, its remarks cleared.
+                            : onChange(lines.map((x) => (x.key === l.key ? clearLineComponent(x, defaultWastage) : x))))} />
                       : <p className="pt-2">{l.product?.product_name ?? '—'}</p>}
                     <Input aria-label={`Remarks line ${n}`} placeholder="Remarks (optional)" maxLength={500} value={l.notes} disabled={!editable}
                       onChange={(e) => update(l.key, { notes: e.target.value })} className="mt-1.5 h-8 text-xs" />
@@ -92,8 +95,8 @@ export function BomComponentEditor({ lines, onChange, output, outputUnit, output
                   <td className="px-2 py-2 pt-4 text-right tabular-nums" data-testid={`${idPrefix}-linecost-${n}`}>{lineCost?.batchCost === null || !lineCost ? '—' : formatCost(lineCost.batchCost)}</td>
                   <td className="px-2 py-2 pt-2.5">
                     {editable && (
-                      <Button variant="ghost" size="icon-sm" aria-label={`Remove line ${n}`}
-                        onClick={() => onChange(lines.length > 1 ? lines.filter((x) => x.key !== l.key) : [newLine(defaultWastage)])}><Trash2 /></Button>
+                      <Button type="button" variant="ghost" size="icon-sm" aria-label={`Remove line ${n}`}
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); onChange(lines.length > 1 ? lines.filter((x) => x.key !== l.key) : [newLine(defaultWastage)]) }}><Trash2 /></Button>
                     )}
                   </td>
                 </tr>
@@ -104,61 +107,12 @@ export function BomComponentEditor({ lines, onChange, output, outputUnit, output
       </div>
       <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
         {editable
-          ? <Button variant="outline" size="sm" onClick={() => onChange([...lines, newLine(defaultWastage)])} disabled={lines.length >= 500} data-testid={`${idPrefix}-add`}><Plus /> Add component</Button>
+          ? <Button type="button" variant="outline" size="sm" onClick={() => onChange([...lines, newLine(defaultWastage)])} disabled={lines.length >= 500} data-testid={`${idPrefix}-add`}><Plus /> Add component</Button>
           : <span />}
         <p className="flex items-center gap-1 text-xs text-muted-foreground">
-          <Info className="size-3.5" /> Quantities are per {output || '…'} {outputUnit ?? 'unit(s)'} of output, in each component's inventory unit. To replace a component, use Change on its line.
+          <Info className="size-3.5" /> Quantities are per {output || '…'} {outputUnit ?? 'unit(s)'} of output, in each component's inventory unit. To replace a component, clear it with × and choose another; the bin removes the whole line.
         </p>
       </div>
-    </div>
-  )
-}
-
-/** Total material cost, cost per finished unit and the difference from the source BOM. */
-export function BomCostSummary({ cost, output, outputUnit, sourcePerUnit, sourceLabel, testId }: {
-  cost: BomCost
-  output: string
-  outputUnit?: string | null
-  sourcePerUnit?: number | null
-  sourceLabel?: string
-  testId?: string
-}) {
-  // A difference only between complete costs (a missing component cost would distort it).
-  const diff = cost.complete ? costDifference(cost.perUnit, sourcePerUnit ?? null) : { amount: null, percent: null }
-  const tone = diff.amount === null || diff.amount === 0 ? '' : diff.amount > 0 ? 'text-red-700' : 'text-green-700'
-  return (
-    <div className="space-y-3" data-testid={testId}>
-      <dl className="grid gap-3 sm:grid-cols-2">
-        <div className="rounded-md border p-3">
-          <dt className="text-xs text-muted-foreground">Total material cost (per {output || '…'} {outputUnit ?? ''})</dt>
-          <dd className="text-lg font-semibold tabular-nums" data-testid={testId ? `${testId}-total` : undefined}>{cost.none ? 'No cost' : formatCost(cost.total)}</dd>
-        </div>
-        <div className="rounded-md border p-3">
-          <dt className="text-xs text-muted-foreground">Cost per finished unit</dt>
-          <dd className="text-lg font-semibold tabular-nums" data-testid={testId ? `${testId}-unit` : undefined}>{cost.none ? 'No cost' : formatCost(cost.perUnit)}</dd>
-        </div>
-        {sourcePerUnit !== undefined && (
-          <>
-            <div className="rounded-md border p-3">
-              <dt className="text-xs text-muted-foreground">{sourceLabel ?? 'Source BOM'} per unit</dt>
-              <dd className="font-medium tabular-nums">{formatCost(sourcePerUnit)}</dd>
-            </div>
-            <div className="rounded-md border p-3">
-              <dt className="text-xs text-muted-foreground">Difference from source</dt>
-              <dd className={cn('font-medium tabular-nums', tone)} data-testid={testId ? `${testId}-diff` : undefined}>
-                {diff.amount === null ? '—' : `${diff.amount > 0 ? '+' : diff.amount < 0 ? '−' : ''}${formatCost(Math.abs(diff.amount))}`}
-                {diff.percent !== null && ` (${diff.percent > 0 ? '+' : diff.percent < 0 ? '−' : ''}${Math.abs(diff.percent).toFixed(2)}%)`}
-              </dd>
-            </div>
-          </>
-        )}
-      </dl>
-      {!cost.complete && cost.missing > 0 && (
-        <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">{cost.missing} component(s) have no Product Master Cost: the totals leave them out.</p>
-      )}
-      <p className="text-xs text-muted-foreground">
-        Component cost = required quantity × (1 + wastage %) × the component's Product Master Cost (second-most-recent purchase receipt, else its standard cost) — the same method as the BOM version history. An estimate only: no cost, stock or ledger value is changed.
-      </p>
     </div>
   )
 }

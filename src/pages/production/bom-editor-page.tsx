@@ -1,4 +1,4 @@
-import { ArrowLeft, Copy, CopyPlus, GitCompareArrows, History, LayoutTemplate, Loader2, Network, Pencil, Plus, Trash2 } from 'lucide-react'
+import { ArrowLeft, Copy, CopyPlus, GitCompareArrows, History, Loader2, Network, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
@@ -696,9 +696,7 @@ export default function BomEditorPage() {
                 {has('production_bom.create') && (
                   <>
                     <Button variant="outline" className="w-full justify-start" asChild><Link to={`/production/boms/new?clone=${bom.id}`}><Copy /> Clone BOM</Link></Button>
-                    {has('products.create') && <Button variant="outline" className="w-full justify-start" asChild><Link to={`/production/boms/similar?source=${bom.id}`}><CopyPlus /> Create similar product</Link></Button>}
-                    {has('products.create') && <Button variant="outline" className="w-full justify-start" asChild><Link to={`/production/boms/generate?source=${bom.id}`}><CopyPlus /> Generate multiple similar</Link></Button>}
-                    <Button variant="outline" className="w-full justify-start" asChild><Link to={`/production/bom-templates/new?bom=${bom.id}`}><LayoutTemplate /> Save as BOM template</Link></Button>
+                    <Button variant="outline" className="w-full justify-start" asChild><Link to={`/production/boms/generate?source=${bom.id}`}><CopyPlus /> Generate multiple</Link></Button>
                   </>
                 )}
                 <Button variant="outline" className="w-full justify-start" asChild><Link to={`/production/boms/compare?ids=${bom.id}`}><GitCompareArrows /> Compare with other BOMs</Link></Button>

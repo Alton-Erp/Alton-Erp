@@ -1,4 +1,4 @@
-// BOM templates, clone, similar products and comparison: pure helpers shared by the screens.
+// BOM tools (clone, generate multiple, comparison): pure helpers shared by the screens.
 //
 // Cost uses the existing BOM cost method (bom_version_history / bomUnitCost): per finished unit, each
 // component costs quantity × (1 + wastage %) × unit cost ÷ output quantity (4 decimals), and the BOM
@@ -102,6 +102,9 @@ export interface EditorLine {
 
 export const newLine = (wastage = '0'): EditorLine => ({ key: crypto.randomUUID(), product: null, quantity: '', wastage, notes: '', source: '', supplierId: '' })
 
+/** A line whose component was cleared (× on the line): same position and key, empty component, default quantity and wastage, no remarks. */
+export const clearLineComponent = (line: EditorLine, wastage = '0'): EditorLine => ({ ...newLine(wastage), key: line.key })
+
 /** Stored component rows (BOM or template items) as editable lines. */
 export function linesFromItems(items: {
   component_product_id: string; sku: string; product_name: string; unit?: string; inventory_unit?: string | null
@@ -144,7 +147,8 @@ export function componentProblem(lines: EditorLine[], outputProductId?: string |
 
 /** Lines as BOM / template items for the database (unit = the component's inventory unit). */
 export function itemsFromLines(lines: EditorLine[]) {
-  return filledLines(lines).map((l) => ({
+  // Only lines with a component (componentProblem refuses a quantity without one before anything is saved).
+  return filledLines(lines).filter((l) => l.product).map((l) => ({
     component_product_id: l.product!.product_id,
     quantity_required: Number(l.quantity),
     unit: l.product!.base_unit,
@@ -255,7 +259,7 @@ export function compareBoms(boms: CompareBom[], unitCost: (productId: string) =>
 }
 
 // ---------------------------------------------------------------------------
-// New product details (Create similar product / Generate multiple)
+// New product details (Generate multiple, rows that are new products)
 // ---------------------------------------------------------------------------
 
 /**
@@ -273,13 +277,6 @@ export function similarProductValues(source: ProductFormValues, overrides: Parti
 }
 
 /** Product Master fields copied from the source product without a field on the screen (shown read-only). */
-export const COPIED_FIELDS: [keyof ProductFormValues, string][] = [
-  ['default_source_type', 'Default source'], ['track_batches', 'Batch tracking'], ['track_expiry', 'Expiry tracking'], ['inventory_tracked', 'Stock item'],
-  ['preferred_supplier_id', 'Preferred supplier'], ['minimum_selling_price', 'Minimum selling price'], ['reorder_level_days', 'Reorder level (days)'],
-  ['length_cm', 'Length (cm)'], ['width_cm', 'Width (cm)'], ['height_cm', 'Height (cm)'], ['is_manufacturable', 'Manufactured in-house'],
-  ['production_notes', 'Production notes'], ['remarks', 'Remarks'],
-]
-
 /** The validated product as sent to bom_create_similar_products (status and BOM flag are set by the database). */
 export function productPayload(input: ProductInput): Record<string, unknown> {
   const rest: Record<string, unknown> = { ...input }
