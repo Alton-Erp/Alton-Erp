@@ -346,6 +346,21 @@ Object.assign(tables, {
   // bom_list plus the finished product's planning fields (migration 20261114090000).
   bom_list_v2: [bomRow('bom1', 1, 'APPROVED', VIEWER_ID), bomRow('bom2', 2, 'PENDING_APPROVAL', MANAGER_ID)]
     .map((b) => ({ ...b, tax_rate: 18, lead_time_days: 12, group_head: 'Sanitaryware', minimum_cover_days: 15, ean: '4006381333931' })),
+  // BOM cost columns (migration 20261208090000): bom1 approved and costed, bom2 pending (no approved cost).
+  bom_cost_list: [
+    { bom_id: 'bom1', company_id: COMPANY_ID, finished_product_id: 'p1', status: 'APPROVED', bom_unit_cost: 1320.69, bom_cost_status: 'COMPLETE', known_unit_cost: 1320.69,
+      line_count: 2, missing_count: 0, cost_calculated_at: '2026-11-12T09:30:00Z', product_master_cost: 850, product_master_cost_source: 'PURCHASE', cost_difference: 470.69 },
+    { bom_id: 'bom2', company_id: COMPANY_ID, finished_product_id: 'p1', status: 'PENDING_APPROVAL', bom_unit_cost: null, bom_cost_status: 'NOT_APPROVED', known_unit_cost: null,
+      line_count: 2, missing_count: null, cost_calculated_at: null, product_master_cost: 850, product_master_cost_source: 'PURCHASE', cost_difference: null },
+  ],
+  product_cost_history: [
+    { id: 'pch2', company_id: COMPANY_ID, product_id: 'p1', previous_cost: 900, new_cost: 850, previous_source: 'GRN', new_source: 'GRN', event: 'GRN_REVERSED',
+      bom_id: null, bom_code: null, bom_version: null, goods_receipt_id: 'gr9', receipt_number: 'GRN-000009', purchase_event_id: null,
+      reason: 'GRN GRN-000010 reversed', created_by: MANAGER_ID, created_at: '2026-11-12T09:00:00Z' },
+    { id: 'pch1', company_id: COMPANY_ID, product_id: 'p1', previous_cost: 1200, new_cost: 900, previous_source: 'MANUAL', new_source: 'GRN', event: 'GRN_POSTED',
+      bom_id: null, bom_code: null, bom_version: null, goods_receipt_id: 'gr10', receipt_number: 'GRN-000010', purchase_event_id: null,
+      reason: 'GRN GRN-000010 posted', created_by: MANAGER_ID, created_at: '2026-11-11T09:00:00Z' },
+  ],
   production_order_list: [
     orderRow('po1', 'PRD-000001', 'IN_PROGRESS', VIEWER_ID, { completed_quantity: 4, actual_quantity: 4, actual_start_date: TODAY, approved_by: MANAGER_ID, material_lines_issued: 1, material_status: 'PARTIALLY_ISSUED' }),
     orderRow('po2', 'PRD-000002', 'PENDING_APPROVAL', MANAGER_ID),
@@ -666,7 +681,11 @@ function masterRow(p) {
   return { ...p, master_cost: cost, master_cost_source: bought ? 'PURCHASE' : fallback === null ? null : 'STANDARD',
     master_cost_receipt_number: bought ? 'GRN-000009' : null, master_cost_receipt_date: bought ? '2026-10-20' : null, fallback_cost: fallback,
     last_purchase_cost: last, last_purchase_date: bought ? TODAY : null, master_cost_change: last === null || cost === null ? null : last - cost,
-    master_cost_change_percent: last === null || !cost ? null : Math.round((last - cost) / cost * 10000) / 100 }
+    master_cost_change_percent: last === null || !cost ? null : Math.round((last - cost) / cost * 10000) / 100,
+    // Cost Intelligence (migration 20261208090000): p1 has an approved BOM whose cost is stored; its cost is still the earlier rule.
+    bom_manufacturing_cost: bought ? 1320.69 : null, bom_cost_bom_code: bought ? 'BOM-000001' : null, bom_cost_version: bought ? 1 : null,
+    bom_cost_status: bought ? 'COMPLETE' : null, bom_cost_at: bought ? NOW : null, master_cost_reference: null, cost_updated_at: null,
+    default_cost_source: 'BOM', cost_status: 'NO_NEW_COST', cost_status_note: bought ? 'No new cost available: recalculate to apply the BOM cost.' : null }
 }
 const PC_HISTORY = {
   product: { id: 'p1', sku: 'MOCK-WC-1', product_name: 'Mock Closet 1', base_unit: 'PCS', standard_cost: 1200, standard_manufacturing_cost: 1200, mrp: 1500, selling_price: 1300 },
@@ -1605,6 +1624,15 @@ const api = http.createServer((req, res) => {
           ])
         case 'production_save_bom':
           return send(res, 200, { bom_id: 'bom1', bom_code: 'BOM-000001', version: 1 })
+        case 'product_sourcing_proposals':
+          return send(res, 200, (body.p_product_ids ?? []).filter((id) => id === 'p1').map((id) => ({ product_id: id, sku: 'MOCK-WC-1', product_name: 'Mock Closet 1',
+            current_method: 'IN_HOUSE', proposed_method: 'HYBRID', approved_boms: 1, posted_grns: 2, reason: '1 approved BOM version(s), 2 posted GRN(s).' })))
+        case 'product_sourcing_apply':
+          return send(res, 200, { product_id: body.p_product_id, changed: true, sourcing_method: body.p_method, master_cost: 850 })
+        case 'product_cost_set_default_source':
+          return send(res, 200, { product_id: body.p_product_id, default_cost_source: body.p_source, master_cost: 850 })
+        case 'product_cost_recalculate':
+          return send(res, 200, { products: 3, changed: 1 })
         case 'bom_create_similar_products': {
           const created = body.p_products.map((x, i) => ({ product_id: `np${i + 1}`, sku: x.product.sku || `FG-00009${i + 1}`, product_name: x.product.product_name,
             bom_id: `nb${i + 1}`, bom_code: `BOM-00009${i + 1}`, version: 1, status: 'DRAFT', components: x.items.length }))
@@ -2751,8 +2779,8 @@ await step('add-product saves only after the API confirms and offers "add anothe
   assert(catInsert && catInsert.body.name === 'Smoke Taps' && catInsert.body.code === 'SMOKE-TAPS' && catInsert.body.description === 'Created from the product form', JSON.stringify(catInsert?.body))
   await click('#p-type')
   await click('[role=option]', 'Finished Good')
-  await click('button[role=radio]', 'Hybrid')
-  await waitFor(bodyHas('inventory receipts'), 'hybrid explanation')
+  await click('button[role=radio]', 'Both (Make & Buy)')
+  await waitFor(bodyHas('recorded on its inventory receipt'), 'make & buy explanation')
   assert(!(await evaluate(bodyHas('Please correct the highlighted fields'))), 'stale validation banner after fixing fields')
   await screenshot('02-add-product-form')
   await click('button[type=submit]', 'Save product')
@@ -3879,6 +3907,56 @@ await step('BOM tools 3b: Generate multiple — Product Name searches the Produc
     glaze.standard_cost = before[1]
     products.splice(products.findIndex((x) => x.id === 'p91'), 1)
   }
+})
+
+await step('Cost intelligence: BOM list cost columns (INR, dash for non-approved, sortable, tooltips, Recalculate); Product Master Cost Intelligence section, sourcing suggestion and Cost History', async () => {
+  await goto('/production/boms?status=ALL')
+  await waitFor(`!!document.querySelector('[data-testid=bom-cost-bom1]')`, 'BOM cost column')
+  const heads = await evaluate(`[...document.querySelectorAll('th')].map((h) => h.innerText.trim().toLowerCase())`)
+  for (const h of ['bom cost / unit', 'product master cost', 'cost difference', 'cost updated']) assert(heads.includes(h), `missing column ${h}: ${heads.join(', ')}`)
+  assert((await evaluate(`document.querySelector('[data-testid=bom-cost-bom1]').innerText`)) === '₹1,320.69', 'BOM cost / unit of the approved BOM')
+  assert((await evaluate(`document.querySelector('[data-testid=bom-cost-bom2]').innerText`)) === '—', 'pending BOM must show a dash')
+  assert(await evaluate(`document.querySelector('[data-testid=bom-cost-bom2]').title.includes('never used as the manufacturing cost')`), 'dash tooltip')
+  assert(await evaluate(bodyHas('+₹470.69')), 'cost difference')
+  assert(await evaluate(bodyHas('₹850.00')), 'product master cost')
+  assert(await evaluate(`[...document.querySelectorAll('th')].find((h) => h.innerText.trim().toLowerCase() === 'bom cost / unit').title.includes('wastage')`), 'header tooltip')
+  // Sortable: ascending puts the costed BOM first, the dash last.
+  await evaluate(`[...document.querySelectorAll('th button')].find((b) => b.innerText.trim().toLowerCase() === 'bom cost / unit').click()`)
+  const order = await evaluate(`[...document.querySelectorAll('[data-testid^=bom-cost-]')].map((e) => e.dataset.testid)`)
+  assert(order[0] === 'bom-cost-bom1' && order.at(-1) === 'bom-cost-bom2', `sort order ${order}`)
+  // Recalculate: confirmation, one call, result shown.
+  const n = rpcCalls('product_cost_recalculate').length
+  await click('button', 'Recalculate costs')
+  await waitFor(bodyHas('Recalculate BOM and Product Master costs?'), 'recalculate confirmation')
+  await click('[role=alertdialog] button', 'Recalculate')
+  await waitFor(`document.querySelector('[data-testid=bom-cost-notice]')?.innerText.includes('1 Product Master Cost change')`, 'recalculate result')
+  assert(rpcCalls('product_cost_recalculate').length === n + 1 && rpcCalls('product_cost_recalculate').at(-1).body.p_product_ids === null, 'one recalculation call for all')
+  await screenshot('208-bom-cost-columns')
+
+  // Product Master: Cost Intelligence section.
+  await goto('/products/p1')
+  await waitFor(`!!document.querySelector('[data-testid=cost-intelligence]')`, 'cost intelligence section')
+  const text = (id) => evaluate(`document.querySelector('[data-testid=${id}]')?.innerText ?? ''`)
+  assert((await text('ci-bom')).includes('₹1,320.69') && (await text('ci-bom')).includes('BOM-000001 v1'), 'BOM manufacturing cost')
+  assert((await text('ci-purchase')).includes('₹920.00'), 'last purchase cost')
+  assert((await text('ci-current')).includes('₹850.00'), 'current product master cost')
+  assert((await text('ci-source')).includes('GRN (earlier rule'), 'cost source')
+  assert((await text('ci-method')).includes('Manufacture'), 'sourcing method')
+  assert((await text('ci-status')).includes('No new cost available'), 'cost status')
+  // Suggestion from the BOM / GRN history: nothing changes until applied (confirmation).
+  await waitFor(`document.querySelector('[data-testid=ci-proposal]')?.innerText.includes('Both (Make & Buy)')`, 'sourcing suggestion')
+  const applied = rpcCalls('product_sourcing_apply').length
+  await click('[data-testid=ci-proposal] button', 'Apply suggestion')
+  await waitFor(bodyHas('Change the sourcing method to Both (Make & Buy)?'), 'apply confirmation')
+  assert(rpcCalls('product_sourcing_apply').length === applied, 'applied before confirmation')
+  await click('[role=alertdialog] button', 'Change sourcing method')
+  await waitFor(bodyHas('Sourcing method changed to Both (Make & Buy).'), 'applied')
+  assert(rpcCalls('product_sourcing_apply').at(-1).body.p_method === 'HYBRID', 'apply payload')
+  await screenshot('209-product-cost-intelligence')
+  // Cost History tab.
+  await click('button', 'Cost History')
+  await waitFor(`!!document.querySelector('[data-testid=cost-history] table')`, 'cost history table')
+  assert(await evaluate(bodyHas('₹900.00 → ₹850.00')) && await evaluate(bodyHas('GRN reversed')) && await evaluate(bodyHas('GRN-000009')), 'history rows')
 })
 
 await step('BOM tools 4: compare BOMs — per finished unit, differences highlighted, totals', async () => {

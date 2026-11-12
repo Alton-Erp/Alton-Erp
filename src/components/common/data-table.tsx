@@ -21,6 +21,8 @@ export interface DataTableColumn<T> {
   className?: string
   /** When provided, the column header sorts the (client-side) data. */
   sortValue?: (row: T) => string | number | null
+  /** Tooltip of the column header (how the value is calculated). */
+  headerTitle?: string
 }
 
 interface DataTableProps<T> {
@@ -143,6 +145,7 @@ export function DataTable<T>({
                   key={column.id}
                   className={cn(ALIGN[column.align ?? 'left'], column.className)}
                   aria-sort={column.sortValue ? (active ? (sort!.ascending ? 'ascending' : 'descending') : 'none') : undefined}
+                  title={column.headerTitle}
                 >
                   {column.sortValue ? (
                     <button

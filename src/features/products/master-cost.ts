@@ -1,11 +1,14 @@
-// Product Master Cost (migration 20261128090000): the cost of the second-most-recent valid purchase
-// receipt; with fewer than two receipts, the product's standard (manufacturing) cost. The database
-// calculates it in the view product_master_list; these helpers only read and present it.
+// Product Master Cost, calculated by the database in the view product_master_list; these helpers only read
+// and present it.
+//   * Cost Intelligence (migration 20261208090000): the stored cost from the active approved BOM (BOM), the
+//     latest valid posted GRN (GRN) or the authorised manual purchase cost override (MANUAL), by the product's
+//     sourcing method.
+//   * Until a product has such a cost: the earlier rule (migration 20261128090000), the second-most-recent
+//     valid purchase receipt (PURCHASE), else the entered standard cost (STANDARD).
 
 export interface ProductMasterCostFields {
   master_cost: number | null
-  /** PURCHASE = second-most-recent receipt; STANDARD = fallback (fewer than two receipts). */
-  master_cost_source: 'PURCHASE' | 'STANDARD' | null
+  master_cost_source: MasterCostSource | null
   master_cost_receipt_number: string | null
   master_cost_receipt_date: string | null
   /** The entered standard cost used as the fallback. */
@@ -16,6 +19,8 @@ export interface ProductMasterCostFields {
   master_cost_change_percent: number | null
 }
 
+export type MasterCostSource = 'BOM' | 'GRN' | 'MANUAL' | 'PURCHASE' | 'STANDARD'
+
 interface CostSource {
   standard_cost: number | null
   standard_manufacturing_cost?: number | null
@@ -23,7 +28,7 @@ interface CostSource {
 
 export interface MasterCost {
   cost: number | null
-  source: 'PURCHASE' | 'STANDARD' | null
+  source: MasterCostSource | null
   receiptNumber: string | null
   receiptDate: string | null
   fallback: number | null
@@ -56,6 +61,9 @@ export function costChange(last: number | null | undefined, cost: number | null 
 
 /** Tooltip of the Cost cell: where the value comes from. */
 export function masterCostNote(m: MasterCost, formatDate: (d: string) => string): string {
+  if (m.source === 'BOM') return 'BOM Manufacturing Cost (active approved BOM)'
+  if (m.source === 'GRN') return `Latest valid purchase receipt${m.receiptNumber ? ` ${m.receiptNumber}` : ''}`
+  if (m.source === 'MANUAL') return 'Manual purchase cost override'
   if (m.source === 'PURCHASE') {
     return `Second-most-recent purchase receipt${m.receiptNumber ? ` ${m.receiptNumber}` : ''}${m.receiptDate ? ` (${formatDate(m.receiptDate)})` : ''}`
   }

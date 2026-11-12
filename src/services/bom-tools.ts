@@ -2,6 +2,7 @@
 // (RLS: production_bom.read, products.read, inventory.read); every write goes through a database function.
 // The template pages and the similar-product page were removed from the app; their tables and functions stay in the
 // database unchanged (no data is dropped).
+import type { MasterCostSource } from '@/features/products/master-cost'
 import { requireSupabase } from '@/lib/supabase'
 import type { BomItemListRow, BomListRow } from '@/types/database-production'
 
@@ -71,7 +72,7 @@ export interface ComponentInfo {
   base_unit: string
   /** Product Master Cost (product_master_list, with its standard-cost fallback); null when none. */
   unit_cost: number | null
-  cost_source: 'PURCHASE' | 'STANDARD' | null
+  cost_source: MasterCostSource | null
   /** Available stock; null when the user may not see stock. */
   available: number | null
 }
@@ -81,10 +82,10 @@ export async function fetchComponentInfo(ids: string[]): Promise<Map<string, Com
   const unique = [...new Set(ids)].filter(Boolean)
   const map = new Map<string, ComponentInfo>()
   if (unique.length === 0) return map
-  let rows: { id: string; sku: string; product_name: string; base_unit: string; cost: number | null; source: 'PURCHASE' | 'STANDARD' | null }[] = []
+  let rows: { id: string; sku: string; product_name: string; base_unit: string; cost: number | null; source: MasterCostSource | null }[] = []
   const view = await db().from('product_master_list' as never).select('id, sku, product_name, base_unit, master_cost, master_cost_source').in('id', unique)
   if (!view.error) {
-    rows = ((view.data ?? []) as { id: string; sku: string; product_name: string; base_unit: string; master_cost: number | null; master_cost_source: 'PURCHASE' | 'STANDARD' | null }[])
+    rows = ((view.data ?? []) as { id: string; sku: string; product_name: string; base_unit: string; master_cost: number | null; master_cost_source: MasterCostSource | null }[])
       .map((r) => ({ id: r.id, sku: r.sku, product_name: r.product_name, base_unit: r.base_unit, cost: r.master_cost === null ? null : Number(r.master_cost), source: r.master_cost_source }))
   } else {
     // Database without the Product Master Cost view: the standard cost, by the same fallback rule.

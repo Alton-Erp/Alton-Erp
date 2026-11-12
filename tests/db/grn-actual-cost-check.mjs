@@ -21,7 +21,10 @@ const migDir = path.join(root, 'supabase', 'migrations')
 const MIG = '20261202090000_grn_actual_cost.sql'
 const db = new PGlite()
 await db.exec(await read(path.join(root, 'supabase', 'tests', 'local_supabase_shim.sql')))
-for (const f of (await readdir(migDir)).filter((x) => x.endsWith('.sql')).sort()) await db.exec(await read(path.join(migDir, f)))
+// Pinned to the migrations before 20261208090000: from that migration on, a purchased product's Product Master Cost is its
+// latest valid GRN (Cost Intelligence; tests/db/product-cost-intelligence-check.mjs). This check keeps verifying the rule below, which
+// still applies to products without a stored cost.
+for (const f of (await readdir(migDir)).filter((x) => x.endsWith('.sql') && x < '20261208090000').sort()) await db.exec(await read(path.join(migDir, f)))
 console.log('✓ migrations applied')
 let suite = await read(path.join(root, 'supabase', 'tests', 'stage7_e2e_verification.sql'))
 suite = suite.slice(0, suite.lastIndexOf('\ndo $$'))

@@ -601,9 +601,9 @@ export interface OpeningProductCost {
   product_id: string
   sku: string
   product_name: string
-  /** Product Master Cost (second-most-recent valid GRN, else the Standard Manufacturing Cost); null = missing. */
+  /** Product Master Cost (product_master_list.master_cost); null = missing. */
   cost: number | null
-  source: 'PURCHASE' | 'STANDARD' | null
+  source: 'BOM' | 'GRN' | 'MANUAL' | 'PURCHASE' | 'STANDARD' | null
   /** False when the cost is missing or zero: the line cannot be posted. */
   valid: boolean
 }

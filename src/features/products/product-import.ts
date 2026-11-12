@@ -57,7 +57,7 @@ export const IMPORT_FIELDS = [
   { key: 'supplier_model_number', label: 'Supplier Model No.', required: false, synonyms: ['supplier model no', 'supplier model no.', 'supplier model number', 'supplier model', 'vendor model no', 'vendor model number'] },
   { key: 'supplier_product_name', label: 'Supplier Product Name', required: false, synonyms: ['supplier product name', 'supplier item name', 'vendor product name', 'vendor item name', 'supplier description'] },
   { key: 'product_type', label: 'Product Type', required: true, synonyms: ['product type', 'type', 'item type'] },
-  { key: 'source_type', label: 'Source Type', required: false, synonyms: ['source type', 'source', 'default source', 'default source type', 'sourcing'] },
+  { key: 'source_type', label: 'Source Type', required: false, synonyms: ['source type', 'source', 'default source', 'default source type', 'sourcing', 'sourcing method'] },
   { key: 'unit', label: 'Unit', required: false, synonyms: ['unit', 'uom', 'unit of measure', 'unit of measurement', 'base unit'] },
   { key: 'length_cm', label: 'Length (cm)', required: false, synonyms: ['length (cm)', 'length cm', 'length'] },
   { key: 'width_cm', label: 'Width (cm)', required: false, synonyms: ['width (cm)', 'width cm', 'width', 'breadth'] },

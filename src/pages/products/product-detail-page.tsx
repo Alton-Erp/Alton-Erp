@@ -14,6 +14,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { ProductSourceBadge, ProductStatusBadge } from '@/features/products/product-badges'
 import { productGaps } from '@/features/products/product-completeness'
 import { PurchaseCostHistoryTab } from '@/features/products/purchase-cost-history'
+import { CostIntelligenceCard, ProductCostHistoryTab } from '@/features/products/cost-intelligence-panel'
+import type { CostIntelligenceFields } from '@/features/products/cost-intelligence'
 import { ProductImagePanel } from '@/features/products/product-image-panel'
 import { BOM_OUTPUT_TYPES, PRODUCT_TYPE_LABELS, SOURCE_TYPE_DESCRIPTIONS, unitLabel } from '@/features/products/product-model'
 import { useAsync } from '@/hooks/use-async'
@@ -43,7 +45,7 @@ const ACTION_LABELS: Record<string, string> = {
   'products.purchase_cost_overridden': 'Last purchase cost overridden',
 }
 
-const TABS = [['overview', 'Overview'], ['purchase-cost', 'Purchase Cost History']] as const
+const TABS = [['overview', 'Overview'], ['cost-history', 'Cost History'], ['purchase-cost', 'Purchase Cost History']] as const
 type DetailTab = (typeof TABS)[number][0]
 
 async function loadDetail(id: string, canReadBoms: boolean) {
@@ -62,7 +64,7 @@ export default function ProductDetailPage() {
   const { productId = '' } = useParams()
   const location = useLocation()
   const [params, setParams] = useSearchParams()
-  const tab: DetailTab = params.get('tab') === 'purchase-cost' ? 'purchase-cost' : 'overview'
+  const tab: DetailTab = TABS.some(([t]) => t === params.get('tab')) ? (params.get('tab') as DetailTab) : 'overview'
   const { access } = useAuth()
   const { has } = usePermissions()
   const timezone = access?.company?.timezone
@@ -94,7 +96,7 @@ export default function ProductDetailPage() {
   const unitName = unitLabel(p.base_unit)
   const name = (id: string | null) => (id ? (names.get(id) ?? 'Another user') : 'System')
   const money = (v: number | null | undefined) => (v === null || v === undefined ? null : formatCurrency(Number(v)))
-  // Product Master Cost (migration 20261128090000): second-most-recent purchase receipt, else the standard cost.
+  // Product Master Cost (product_master_list): the stored BOM / GRN / manual cost (20261208090000), else the earlier rule.
   const pm = p as typeof p & Partial<ProductMasterCostFields>
   const mc = masterCost(pm)
   const change = costChange(pm.last_purchase_cost, mc.cost)
@@ -196,7 +198,7 @@ export default function ProductDetailPage() {
         ))}
       </div>
 
-      {tab === 'purchase-cost' ? <PurchaseCostHistoryTab productId={p.id} timezone={timezone} /> : (
+      {tab === 'purchase-cost' ? <PurchaseCostHistoryTab productId={p.id} timezone={timezone} /> : tab === 'cost-history' ? <ProductCostHistoryTab productId={p.id} timezone={timezone} /> : (
       <div className="grid gap-6 xl:grid-cols-3">
         <div className="space-y-6 xl:col-span-2">
           <InfoCard title="Basic Information">
@@ -226,7 +228,7 @@ export default function ProductDetailPage() {
             <Item label="Product Type">{PRODUCT_TYPE_LABELS[p.product_type]}</Item>
             <Item label="Unit of Measurement">{unitName === p.base_unit ? p.base_unit : `${unitName} (${p.base_unit})`}</Item>
             <Item label="Group Head">{p.group_head}</Item>
-            <Item label="Default Source Type">
+            <Item label="Sourcing Method">
               <ProductSourceBadge source={p.default_source_type} />
               <span className="mt-1 block text-xs text-muted-foreground">{SOURCE_TYPE_DESCRIPTIONS[p.default_source_type]}</span>
             </Item>
@@ -263,6 +265,9 @@ export default function ProductDetailPage() {
             <Item label="Standard Manufacturing Cost (fallback)">{money(mc.fallback)}</Item>
             <Item label="Minimum Selling Price">{money(p.minimum_selling_price)}</Item>
           </InfoCard>
+
+          <CostIntelligenceCard product={p as typeof p & CostIntelligenceFields} canEdit={has('products.update') && !archived} timezone={timezone}
+            onChanged={(n) => { setNotice(n); if (n.tone === 'success') setRefresh((r) => r + 1) }} />
 
           <InfoCard title="Inventory Planning" description="Planned in days of stock cover (available stock ÷ average daily consumption). Stock balances come from the inventory module.">
             <Item label="Lead Time">{p.lead_time_days == null ? null : `${formatNumber(Number(p.lead_time_days))} days`}</Item>

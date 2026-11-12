@@ -392,12 +392,12 @@ function ProductForm({ existing, categories, suppliers }: { existing: ProductRow
             </Field>
             <fieldset className="space-y-2 sm:col-span-2">
               <legend className="mb-2 text-sm font-medium">
-                Default Source Type
+                Sourcing Method
                 {!values.default_source_type && values.product_type && (
                   <span className="ml-2 font-normal text-muted-foreground">(not chosen: {SOURCE_TYPE_LABELS[defaultSourceFor(values.product_type)]} will be used)</span>
                 )}
               </legend>
-              <div className="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Default source type">
+              <div className="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Sourcing method">
                 {SOURCE_TYPES.map((s) => {
                   const selected = values.default_source_type === s
                   return (
@@ -422,7 +422,7 @@ function ProductForm({ existing, categories, suppliers }: { existing: ProductRow
               {values.default_source_type === 'HYBRID' && (
                 <p className="flex gap-2 rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-xs text-teal-900">
                   <Info aria-hidden className="mt-0.5 size-3.5 shrink-0" />
-                  Hybrid products can be both manufactured and purchased. The actual source of each stock quantity will be recorded on inventory receipts in the inventory module, not here.
+                  Both (Make &amp; Buy) products can be manufactured and purchased. BOM and purchase costs are kept separately; the actual source and cost of each stock quantity is recorded on its inventory receipt, not here.
                 </p>
               )}
             </fieldset>

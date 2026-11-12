@@ -17,7 +17,10 @@ const migDir = path.join(root, 'supabase', 'migrations')
 const MIGRATION = '20261129090000_opening_stock_master_cost.sql'
 const LOCKDOWN = '20261130090000_opening_stock_lockdown.sql'
 const OPTIONAL = '20261204090000_opening_stock_optional_cost'
-const files = (await readdir(migDir)).filter((x) => x.endsWith('.sql')).sort()
+// Pinned to the migrations before 20261208090000: from that migration on, a purchased product's Product Master Cost is its
+// latest valid GRN (Cost Intelligence; tests/db/product-cost-intelligence-check.mjs). This check keeps verifying the rule below, which
+// still applies to products without a stored cost.
+const files = (await readdir(migDir)).filter((x) => x.endsWith('.sql') && x < '20261208090000').sort()
 const db = new PGlite()
 await db.exec(await read(path.join(root, 'supabase', 'tests', 'local_supabase_shim.sql')))
 for (const f of files) await db.exec(await read(path.join(migDir, f)))

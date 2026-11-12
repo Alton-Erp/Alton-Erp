@@ -66,16 +66,17 @@ export function parseBomSource(value: string): BomSource | null {
 export const SOURCE_TYPES = ['IN_HOUSE', 'OUTSOURCED', 'HYBRID'] as const
 export type SourceType = (typeof SOURCE_TYPES)[number]
 
+/** Sourcing method (stored codes unchanged: IN_HOUSE / OUTSOURCED / HYBRID). */
 export const SOURCE_TYPE_LABELS: Record<SourceType, string> = {
-  IN_HOUSE: 'In-House',
-  OUTSOURCED: 'Outsourced',
-  HYBRID: 'Hybrid',
+  IN_HOUSE: 'Manufacture',
+  OUTSOURCED: 'Purchase',
+  HYBRID: 'Both (Make & Buy)',
 }
 
 export const SOURCE_TYPE_DESCRIPTIONS: Record<SourceType, string> = {
-  IN_HOUSE: "Normally manufactured at the company's own plant.",
-  OUTSOURCED: 'Normally purchased as a finished good from an outside supplier.',
-  HYBRID: 'May be manufactured in-house or procured from outside suppliers.',
+  IN_HOUSE: "Normally manufactured at the company's own plant (In-House). Product Master Cost follows the approved BOM.",
+  OUTSOURCED: 'Normally purchased from an outside supplier (Outsourced). Product Master Cost follows the latest valid GRN.',
+  HYBRID: 'Manufactured and purchased (Hybrid). BOM and purchase costs are kept separately; the default cost source decides the Product Master Cost.',
 }
 
 export const PRODUCT_STATUSES = ['ACTIVE', 'INACTIVE'] as const
@@ -327,6 +328,13 @@ const SOURCE_ALIASES: Record<string, SourceType> = {
   TRADING: 'OUTSOURCED',
   HYBRID: 'HYBRID',
   BOTH: 'HYBRID',
+  MANUFACTURE: 'IN_HOUSE',
+  MAKE: 'IN_HOUSE',
+  PURCHASE: 'OUTSOURCED',
+  BUY: 'OUTSOURCED',
+  BOTH_MAKE_BUY: 'HYBRID',
+  MAKE_BUY: 'HYBRID',
+  MAKE_AND_BUY: 'HYBRID',
 }
 
 export function parseSourceType(value: string): SourceType | null {
