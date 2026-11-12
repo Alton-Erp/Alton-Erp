@@ -42,6 +42,8 @@ const before = await one(`select count(*)::int n, md5(string_agg(id::text || sku
 
 // Rollbacks run newest first: 20261114 (bom_list_v2 reads products.lead_time_days) is rolled back before this one.
 // Newer migrations that depend on this one are rolled back first (the Product Master view selects every products column).
+// 20261209 (GST-exclusive reporting) reads purchase_order_list_v2.
+await db.exec(await read('supabase', 'rollback', '20261209090000_gst_exclusive_reporting_down.sql'))
 await db.exec(await read('supabase', 'rollback', '20261128090000_product_master_cost_down.sql'))
 await db.exec(await read('supabase', 'rollback', '20261114090000_bom_planning_product_ean_down.sql'))
 const down = await read('supabase', 'rollback', MIGRATION.replace('.sql', '_down.sql'))

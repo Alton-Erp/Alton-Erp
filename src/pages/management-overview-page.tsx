@@ -29,6 +29,7 @@ import { describeDataError } from '@/lib/errors'
 import { formatDate, formatDateTime, formatNumber, toIsoDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { fetchInventoryOverview, type InventoryOverview } from '@/services/inventory'
+import { EXCL_GST_MISSING, EXCL_GST_NOTE, exclOk, fetchExclGst, reviewText, type ExclGstDashboard } from '@/services/gst-exclusive'
 import { fetchManagementOverview, sectionOk, type ManagementOverview } from '@/services/management'
 
 const SOURCE_COLORS = { manufactured: '#2563EB', outsourced: '#8B5CF6', unknown: '#9CA3AF' }
@@ -44,6 +45,8 @@ export default function ManagementOverviewPage() {
   const to = toIsoDate(range.to)
   const canStock = has('inventory.read')
   const ov = useAsync(() => fetchManagementOverview(from, to), [from, to, refresh])
+  // Every amount shown is GST-exclusive (migration 20261209090000); null before that update.
+  const ex = useAsync(() => fetchExclGst('MANAGEMENT', from, to), [from, to, refresh])
   // Current stock with its source split (in-house = manufactured, outsourced); not period-bound.
   const stock = useAsync(() => (canStock ? fetchInventoryOverview() : Promise.resolve(null)), [canStock, refresh])
 
@@ -54,12 +57,12 @@ export default function ManagementOverviewPage() {
         <Button variant="outline" size="icon" aria-label="Refresh" onClick={() => setRefresh((n) => n + 1)}><RefreshCw className={ov.loading || stock.loading ? 'animate-spin' : undefined} /></Button>
       </>} />
   )
-  if (ov.loading && !ov.data) return (<>{header}<LoadingState variant="cards" rows={9} /></>)
-  if (ov.error || !ov.data) return (<>{header}<Card><ErrorState message={describeDataError(ov.error)} onRetry={ov.reload} /></Card></>)
+  if ((ov.loading && !ov.data) || (ex.loading && ex.data === undefined)) return (<>{header}<LoadingState variant="cards" rows={9} /></>)
+  if (ov.error || !ov.data || ex.error) return (<>{header}<Card><ErrorState message={describeDataError(ov.error ?? ex.error)} onRetry={() => { ov.reload(); ex.reload() }} /></Card></>)
   return (
     <>
       {header}
-      <Dashboard d={ov.data} stock={stock.data ?? null} stockError={canStock && stock.error ? describeDataError(stock.error) : canStock ? null : 'No inventory access.'} />
+      <Dashboard d={ov.data} ex={ex.data ?? null} stock={stock.data ?? null} stockError={canStock && stock.error ? describeDataError(stock.error) : canStock ? null : 'No inventory access.'} />
     </>
   )
 }
@@ -87,7 +90,7 @@ function MetricCard({ label, value, hint, icon: Icon, to, tone = 'neutral', test
   )
 }
 
-function Dashboard({ d, stock, stockError }: { d: ManagementOverview; stock: InventoryOverview | null; stockError: string | null }) {
+function Dashboard({ d, ex, stock, stockError }: { d: ManagementOverview; ex: ExclGstDashboard | null; stock: InventoryOverview | null; stockError: string | null }) {
   const { href } = useDrill('management')
   const navigate = useNavigate()
   const ctx = { from: d.from, to: d.to, today: d.today }
@@ -105,7 +108,12 @@ function Dashboard({ d, stock, stockError }: { d: ManagementOverview; stock: Inv
   const per = bucket === 'day' ? 'per day' : bucket === 'week' ? 'per week' : 'per month'
 
   // Charts follow the period; quantities are shown one unit at a time.
-  const salesSeries = sectionOk(sales) ? bucketSeries(sales.daily, ['value', 'orders'] as const, d.from, d.to, bucket) : []
+  // Amounts excl. GST: sales orders at their taxable totals, invoices at taxable value, purchases at taxable value.
+  const exSales = exclOk(ex?.sales) ? ex.sales : null
+  const exPur = exclOk(ex?.purchase) ? ex.purchase : null
+  const exBill = exclOk(ex?.invoicing) ? ex.invoicing : null
+  const amt = (v: number | null | undefined) => (ex && v !== null && v !== undefined ? money(v) : '—')
+  const salesSeries = sectionOk(sales) && exSales ? bucketSeries(exSales.daily, ['value', 'orders'] as const, d.from, d.to, bucket) : []
   const prodUnit = sectionOk(prod) ? mainUnit(prod.daily.map((r) => ({ unit: r.unit, quantity: Number(r.good) + Number(r.rejected) }))) : null
   const prodSeries = sectionOk(prod) ? bucketSeries(prod.daily.filter((r) => r.unit === prodUnit), ['good', 'rejected'] as const, d.from, d.to, bucket) : []
   const moveUnit = sectionOk(inv) ? mainUnit(inv.movement.map((r) => ({ unit: r.unit, quantity: Number(r.in ?? 0) + Number(r.out ?? 0) }))) : null
@@ -132,13 +140,14 @@ function Dashboard({ d, stock, stockError }: { d: ManagementOverview; stock: Inv
   return (
     <>
       <p className="mb-4 text-xs text-muted-foreground">
-        Period {formatDate(d.from)} – {formatDate(d.to)} · stock and outstanding balances are as of now ({formatDateTime(d.generated_at)}) · amounts in {d.currency}, including GST.
+        <span data-testid="gst-basis">{EXCL_GST_NOTE}</span> Period {formatDate(d.from)} – {formatDate(d.to)} · as of {formatDateTime(d.generated_at)}.
       </p>
+      {!ex && <p role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-900" data-testid="gst-missing">{EXCL_GST_MISSING}</p>}
 
       <section aria-label="Key figures" className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         <MetricCard testId="kpi-total-stock" label="Total stock" icon={Boxes} to={stockError ? null : drill('inventory.on_hand')}
           value={stockError ? '—' : sourceText(split, 'total')}
-          hint={stockError ?? (k.inventory_value === null ? 'Physical stock on hand' : `Physical stock on hand · valued at ${money(k.inventory_value)}`)} />
+          hint={stockError ?? (k.inventory_value === null ? 'Physical stock on hand' : `Physical stock on hand · Stock Value (Excl. GST) ${money(k.inventory_value)}`)} />
         <MetricCard testId="kpi-manufactured-stock" label="Manufactured stock" icon={Factory} tone="blue" to={stockError ? null : drill('inventory.in_house')}
           value={stockError ? '—' : sourceText(split, 'manufactured')} hint={stockError ?? 'Stock lots made in-house'} />
         <MetricCard testId="kpi-outsourced-stock" label="Outsourced stock" icon={Truck} tone="violet" to={stockError ? null : drill('inventory.outsourced')}
@@ -146,10 +155,10 @@ function Dashboard({ d, stock, stockError }: { d: ManagementOverview; stock: Inv
           hint={stockError ?? (unknownText ? `From outsourcing partners · ${unknownText} with no source recorded` : 'Stock lots from outsourcing partners')} />
         <MetricCard testId="kpi-purchase-orders" label="Purchase orders" icon={ClipboardList} to={sectionOk(pur) ? drill('purchase.created') : null}
           value={sectionOk(pur) ? formatNumber(pur.created) : '—'}
-          hint={sectionOk(pur) ? `Raised in the period · ${money(pur.period_value)} placed · ${formatNumber(pur.open)} open` : noAccess(pur)} />
+          hint={sectionOk(pur) ? `Raised in the period · Taxable Purchases ${amt(exPur?.period_value)} · ${formatNumber(pur.open)} open` : noAccess(pur)} />
         <MetricCard testId="kpi-pending-grns" label="Pending GRNs" icon={PackageCheck} tone="amber" to={sectionOk(pur) ? drill('purchase.open') : null}
           value={sectionOk(pur) ? formatNumber(pur.open) : '—'}
-          hint={sectionOk(pur) ? `POs awaiting goods · ${money(pur.outstanding_receipt_value)} still to receive${pur.overdue ? ` · ${formatNumber(pur.overdue)} overdue` : ''}` : noAccess(pur)} />
+          hint={sectionOk(pur) ? `POs awaiting goods · ${amt(exPur?.outstanding_receipt_value)} still to receive (excl. GST)${pur.overdue ? ` · ${formatNumber(pur.overdue)} overdue` : ''}` : noAccess(pur)} />
         <MetricCard testId="kpi-production-orders" label="Production orders" icon={Factory} to={sectionOk(prod) ? drill('production.orders') : null}
           value={sectionOk(prod) ? formatNumber(prod.orders) : '—'}
           hint={sectionOk(prod) ? `Planned to start in the period · ${formatNumber(prod.open_orders)} open · ${formatNumber(prod.orders_completed)} completed` : noAccess(prod)} />
@@ -157,19 +166,25 @@ function Dashboard({ d, stock, stockError }: { d: ManagementOverview; stock: Inv
           // sales_dashboard counts cancelled orders in total_orders; they are left out here, and the value is the
           // overview's order value (drafts and cancelled excluded), the same basis as the "Sales orders booked" chart.
           value={sectionOk(sales) ? formatNumber(Math.max(Number(sales.total_orders) - Number(sales.cancelled ?? 0), 0)) : '—'}
-          hint={sectionOk(sales) ? `Booked in the period, excluding cancelled · order value ${money(k.sales_order_value)}` : noAccess(sales)} />
-        <MetricCard testId="kpi-invoiced-sales" label="Invoiced sales" icon={IndianRupee} tone="green" to={drill('billing.issued_period')}
-          value={money(k.sales_invoiced)} hint={`${formatNumber(k.invoices)} invoice(s) issued in the period · ${money(k.receipts)} received`} />
-        <MetricCard testId="kpi-outstanding" label="Outstanding payments" icon={HandCoins} tone="red" to={drill('billing.outstanding_all')}
-          value={money(k.customer_outstanding)} hint={`Due from customers on issued invoices · ${money(k.supplier_outstanding)} due to suppliers`} />
+          hint={sectionOk(sales) ? `Booked in the period, excluding cancelled · order value ${amt(exSales?.order_value)} (excl. GST)` : noAccess(sales)} />
+        <MetricCard testId="kpi-invoiced-sales" label="Taxable Sales" icon={IndianRupee} tone="green" to={drill('billing.issued_period')}
+          value={amt(ex?.sales_invoiced)} hint={`${formatNumber(k.invoices)} invoice(s) issued in the period · taxable value, GST excluded`} />
+        <MetricCard testId="kpi-outstanding" label="Outstanding Receivables (Excl. GST)" icon={HandCoins} tone="red" to={drill('billing.outstanding_all')}
+          value={amt(ex?.receivables?.outstanding_excl_gst)}
+          hint={ex ? <>
+            <span className="block">Due from customers on issued invoices · Outstanding Payables (Excl. GST) {money(ex.payables?.outstanding_excl_gst ?? 0)}</span>
+            {[reviewText(ex.receivables ? { count: ex.receivables.review_count, balance: ex.receivables.review_balance } : null, 'part-paid invoice(s)', money),
+              reviewText(ex.payables ? { count: ex.payables.review_count, balance: ex.payables.review_balance } : null, 'supplier balance(s) with payments', money)]
+              .filter((t): t is string => Boolean(t)).map((t) => <span key={t} className="mt-1 block text-amber-800" data-testid="kpi-outstanding-review">{t}</span>)}
+          </> : EXCL_GST_MISSING} />
       </section>
 
       <section aria-label="Charts" className="mb-6 grid gap-4 xl:grid-cols-2">
-        <ChartCard title="Sales orders booked" description={`Order value ${per} in the period`} isEmpty={!sectionOk(sales) || salesSeries.every((p) => !p.value)}
-          emptyMessage={sectionOk(sales) ? 'No sales orders in this period.' : `Not shown: ${noAccess(sales)}`}
-          table={{ headers: ['Period', 'Orders', 'Value'], rows: salesSeries.map((p) => [p.label, p.orders, money(p.value)]), links: salesSeries.map((p) => salesHref(p.start)) }}
+        <ChartCard title="Sales orders booked" description={`Order value excl. GST ${per} in the period`} isEmpty={!sectionOk(sales) || salesSeries.every((p) => !p.value)}
+          emptyMessage={!sectionOk(sales) ? `Not shown: ${noAccess(sales)}` : !exSales ? EXCL_GST_MISSING : 'No sales orders in this period.'}
+          table={{ headers: ['Period', 'Orders', 'Value (excl. GST)'], rows: salesSeries.map((p) => [p.label, p.orders, money(p.value)]), links: salesSeries.map((p) => salesHref(p.start)) }}
           drillHint={salesHref(salesSeries[0]?.start) ? hint : undefined}>
-          <TrendLineChart seriesName="Order value" valueFormatter={(v) => money(v)} data={salesSeries.map((p) => ({ label: p.label, value: p.value }))}
+          <TrendLineChart seriesName="Order value (excl. GST)" valueFormatter={(v) => money(v)} data={salesSeries.map((p) => ({ label: p.label, value: p.value }))}
             onSelect={salesHref(salesSeries[0]?.start) ? (i) => go(salesHref(salesSeries[i]?.start)) : undefined} />
         </ChartCard>
         <ChartCard title="Production output" description={`Good vs rejected / scrap ${per}${prodUnit ? ` (${prodUnit})` : ''}`} isEmpty={!sectionOk(prod) || prodSeries.every((p) => !p.good && !p.rejected)}
@@ -192,25 +207,26 @@ function Dashboard({ d, stock, stockError }: { d: ManagementOverview; stock: Inv
           <DonutChart seriesName={donutUnit?.unit ?? 'Stock'} valueFormatter={(v) => `${formatNumber(v)} ${donutUnit?.unit ?? ''}`} data={donut}
             onSelect={donutHref(donut[0]?.label) ? (i) => go(donutHref(donut[i]?.label)) : undefined} />
         </ChartCard>
-        <ChartCard title="Invoiced vs collected" description={`Per month, the 12 months to ${formatDate(d.to)}`}
-          isEmpty={!sectionOk(bill) || bill.monthly.every((x) => !Number(x.invoiced) && !Number(x.received))}
-          emptyMessage={sectionOk(bill) ? 'No invoices or receipts yet.' : `Not shown: ${noAccess(bill)}`}
-          table={{ headers: ['Month', 'Invoiced', 'Received'], rows: sectionOk(bill) ? bill.monthly.map((x) => [bucketLabel(x.month, 'month'), money(x.invoiced), money(x.received)]) : [],
-            links: sectionOk(bill) ? bill.monthly.map((x) => billHref(x.month, 'a')) : [] }}
-          drillHint={sectionOk(bill) && billHref(bill.monthly[0]?.month, 'a') ? hint : undefined}>
-          <PairedBarChart aName="Invoiced" bName="Received" aColor={TONE_FILL.info} bColor={TONE_FILL.success} valueFormatter={(v) => money(v)}
-            data={sectionOk(bill) ? bill.monthly.map((x) => ({ label: bucketLabel(x.month, 'month'), a: Number(x.invoiced), b: Number(x.received) })) : []}
-            onSelect={sectionOk(bill) ? (i, s) => go(billHref(bill.monthly[i]?.month, s)) : undefined} />
+        <ChartCard title="Taxable sales invoiced" description={`Taxable value and GST of issued invoices per month, the 12 months to ${formatDate(d.to)}`}
+          isEmpty={!sectionOk(bill) || !exBill || exBill.monthly.every((x) => !Number(x.taxable) && !Number(x.gst))}
+          emptyMessage={!sectionOk(bill) ? `Not shown: ${noAccess(bill)}` : !exBill ? EXCL_GST_MISSING : 'No invoices yet.'}
+          table={{ headers: ['Month', 'Taxable sales', 'GST (shown separately)', 'Received (incl. GST; receipts are not split)'],
+            rows: exBill ? exBill.monthly.map((x) => [bucketLabel(x.month, 'month'), money(x.taxable), money(x.gst), money(x.received)]) : [],
+            links: exBill ? exBill.monthly.map((x) => billHref(x.month, 'a')) : [] }}
+          drillHint={exBill && billHref(exBill.monthly[0]?.month, 'a') ? hint : undefined}>
+          <PairedBarChart aName="Taxable sales" bName="GST" stacked aColor={TONE_FILL.info} bColor={TONE_FILL.neutral} valueFormatter={(v) => money(v)}
+            data={exBill ? exBill.monthly.map((x) => ({ label: bucketLabel(x.month, 'month'), a: Number(x.taxable), b: Number(x.gst) })) : []}
+            onSelect={exBill ? (i) => go(billHref(exBill.monthly[i]?.month, 'a')) : undefined} />
         </ChartCard>
-        <ChartCard title="Purchases ordered vs received" description={`Per month, the 12 months to ${formatDate(d.to)}`}
-          isEmpty={!sectionOk(pur) || pur.monthly.every((x) => !Number(x.ordered) && !Number(x.received))}
-          emptyMessage={sectionOk(pur) ? 'No purchases yet.' : `Not shown: ${noAccess(pur)}`}
-          table={{ headers: ['Month', 'Ordered', 'Received'], rows: sectionOk(pur) ? pur.monthly.map((x) => [bucketLabel(x.month, 'month'), money(x.ordered), money(x.received)]) : [],
-            links: sectionOk(pur) ? pur.monthly.map((x) => purHref(x.month, 'a')) : [] }}
-          drillHint={sectionOk(pur) && purHref(pur.monthly[0]?.month, 'a') ? hint : undefined}>
+        <ChartCard title="Purchases ordered vs received" description={`Taxable value (excl. GST) per month, the 12 months to ${formatDate(d.to)}`}
+          isEmpty={!sectionOk(pur) || !exPur || exPur.monthly.every((x) => !Number(x.ordered) && !Number(x.received))}
+          emptyMessage={!sectionOk(pur) ? `Not shown: ${noAccess(pur)}` : !exPur ? EXCL_GST_MISSING : 'No purchases yet.'}
+          table={{ headers: ['Month', 'Ordered (excl. GST)', 'Received (excl. GST)'], rows: exPur ? exPur.monthly.map((x) => [bucketLabel(x.month, 'month'), money(x.ordered), money(x.received)]) : [],
+            links: exPur ? exPur.monthly.map((x) => purHref(x.month, 'a')) : [] }}
+          drillHint={exPur && purHref(exPur.monthly[0]?.month, 'a') ? hint : undefined}>
           <PairedBarChart aName="Ordered" bName="Received" aColor={TONE_FILL.info} bColor={TONE_FILL.success} valueFormatter={(v) => money(v)}
-            data={sectionOk(pur) ? pur.monthly.map((x) => ({ label: bucketLabel(x.month, 'month'), a: Number(x.ordered), b: Number(x.received) })) : []}
-            onSelect={sectionOk(pur) ? (i, s) => go(purHref(pur.monthly[i]?.month, s)) : undefined} />
+            data={exPur ? exPur.monthly.map((x) => ({ label: bucketLabel(x.month, 'month'), a: Number(x.ordered), b: Number(x.received) })) : []}
+            onSelect={exPur ? (i, s) => go(purHref(exPur.monthly[i]?.month, s)) : undefined} />
         </ChartCard>
       </section>
 
@@ -236,14 +252,19 @@ function Dashboard({ d, stock, stockError }: { d: ManagementOverview; stock: Inv
               ))}</tbody></table>
           )}
         </ListCard>
-        <ListCard title="Customer balances" description="Largest open invoice balances" link={{ to: '/billing/ageing', label: 'Ageing' }}>
+        <ListCard title="Customer balances" description="Largest open invoice balances, excl. GST" link={{ to: '/billing/ageing', label: 'Ageing' }}>
           {!sectionOk(bill) ? <p className="py-2 text-sm text-muted-foreground">Not shown: {noAccess(bill)}</p> : bill.customer_outstanding.length === 0 ? <p className="py-2 text-sm text-muted-foreground">Nothing outstanding.</p> : (
-            <table className="w-full text-sm" aria-label="Customer balances"><thead className="text-xs text-muted-foreground"><tr><th className="pb-1 text-left font-medium">Customer</th><th className="pb-1 text-right font-medium">Outstanding</th><th className="pb-1 text-right font-medium">Overdue</th></tr></thead>
-              <tbody>{bill.customer_outstanding.map((c) => (
-                <tr key={c.party_id} className="border-t"><td className="max-w-0 truncate py-1.5"><Link className="text-primary hover:underline" to={`/ledger/${c.party_id}`}>{c.customer}</Link></td>
-                  <td className="py-1.5 text-right tabular-nums">{money(c.outstanding)}</td>
-                  <td className={cn('py-1.5 text-right tabular-nums', Number(c.overdue) > 0 && 'text-red-700')}>{money(c.overdue)}</td></tr>
-              ))}</tbody></table>
+            <table className="w-full text-sm" aria-label="Customer balances"><thead className="text-xs text-muted-foreground"><tr><th className="pb-1 text-left font-medium">Customer</th><th className="pb-1 text-right font-medium">Outstanding (excl. GST)</th><th className="pb-1 text-right font-medium">Overdue (excl. GST)</th></tr></thead>
+              <tbody>{bill.customer_outstanding.map((c) => {
+                const x = ex?.customer_outstanding?.find((r) => r.party_id === c.party_id)
+                return (
+                  <tr key={c.party_id} className="border-t" data-testid={`customer-balance-${c.party_id}`}><td className="max-w-0 truncate py-1.5"><Link className="text-primary hover:underline" to={`/ledger/${c.party_id}`}>{c.customer}</Link>
+                    {x && x.review_invoices > 0 && <span className="block text-[11px] text-amber-800" title="Payments are not split into taxable value and GST, so these invoices are left out of the GST-exclusive figures.">
+                      + {x.review_invoices} part-paid invoice(s), {money(x.review_balance)} incl. GST, to review</span>}</td>
+                    <td className="py-1.5 text-right align-top tabular-nums">{x ? money(x.outstanding_excl_gst) : '—'}</td>
+                    <td className={cn('py-1.5 text-right align-top tabular-nums', Number(x?.overdue_excl_gst) > 0 && 'text-red-700')}>{x ? money(x.overdue_excl_gst) : '—'}</td></tr>
+                )
+              })}</tbody></table>
           )}
         </ListCard>
       </section>

@@ -650,6 +650,31 @@ const MODULE_DASHBOARDS = {
   GRN: { total: 2, today: 1, month: 2, in_period: 2, value_in_period: 4460, pending_orders: 1, pending_value: 8496, rejected: [{ unit: 'PCS', quantity: 2 }], unlinked: 1, reversed: 0,
     recent_items: [{ receipt_id: 'gr1', receipt_number: 'GRN-000001', receipt_date: TODAY, sku: 'MOCK-CLAY', product_name: 'Mock ceramic body', unit: 'KG', accepted: 100, rejected: 0, direct: false }] },
 }
+// GST-exclusive dashboard figures (migration 20261209090000): taxable values; part-paid invoice flagged for review.
+const MONTH0 = `${TODAY.slice(0, 7)}-01`
+const EXCL_GST = (scope) => {
+  const purchase = scope === 'MANAGEMENT'
+    ? { available: true, period_value: 3780, outstanding_receipt_value: 178, received_value: 3780, top_suppliers: [{ supplier: 'Shree Clay Works Pvt Ltd', value: 3780, orders: 1 }],
+        monthly: [{ month: MONTH0, ordered: 3780, received: 3780 }] }
+    : { available: true, period_value: 9000, outstanding_receipt_value: 7200, received_value: 3780, top_suppliers: [{ supplier: 'Shree Clay Works Pvt Ltd', value: 9000, orders: 1 }],
+        monthly: [{ month: MONTH0, ordered: 9000, received: 3780 }] }
+  const sales = { available: true, total_value: 27000, order_value: 27000, daily: [{ day: TODAY, value: 27000, orders: 2 }], orders: { so1: 100000 } }
+  const invoicing = { available: true, taxable_value: 12000, gst: 2160, invoices: 1, outstanding_excl_gst: 0, outstanding_review: { count: 1, balance: 1121 },
+    overdue_excl_gst: 0, overdue_review: { count: 0, balance: 0 }, monthly: [{ month: MONTH0, taxable: 12000, gst: 2160, received: 14160 }],
+    by_invoice: { inv2: { taxable: 1900, outstanding_excl_gst: null, status: 'REVIEW' }, inv1: { taxable: 1900, outstanding_excl_gst: null, status: null } } }
+  const base = { scope, basis: 'EXCL_GST', generated_at: NOW }
+  if (scope === 'MANAGEMENT') return { ...base, purchase, sales, invoicing, sales_invoiced: 12000, invoices: 1,
+    receivables: { outstanding_excl_gst: 0, outstanding_incl_gst: 1121, review_count: 1, review_balance: 1121 },
+    payables: { outstanding_excl_gst: 3780, outstanding_incl_gst: 4460, review_count: 0, review_balance: 0 }, customer_outstanding: [] }
+  if (scope === 'PURCHASE' || scope === 'GRN') return { ...base, purchase }
+  if (scope === 'SALES') return { ...base, sales }
+  if (scope === 'BILLING') return { ...base, invoicing }
+  return { ...base, receivables_excl_gst: 0, receivables_review: { count: 1, balance: 1121 }, payables_excl_gst: 3780, payables_review: { count: 0, balance: 0 },
+    by_party: { 'pty-sup1': { receivable_excl_gst: 0, receivable_status: 'SETTLED', payable_excl_gst: 3780, payable_status: 'EXACT' } },
+    top_customers: [{ party_id: 'pty-cu1', invoiced: 1900 }], top_suppliers: [{ party_id: 'pty-sup1', received: 3780 }] }
+}
+// Inventory by category rows of the mock inventory overview (a step varies the count and the names).
+let CATEGORY_ROWS = null
 const ERP_DEFAULTS = {
   'general.date_format': 'DD MMM YYYY', 'numbering.po_prefix': 'PO', 'numbering.grn_prefix': 'GRN', 'numbering.production_prefix': 'PRD', 'numbering.sales_order_prefix': 'SO',
   'product.auto_sku': true, 'product.sku_prefixes': { FINISHED_GOOD: 'FG', RAW_MATERIAL: 'RM', COMPONENT: 'CMP', SUBASSEMBLY: 'SUB', OUTSOURCED_COMPONENT: 'OSC', PACKAGING_MATERIAL: 'PKG', CONSUMABLE: 'CON', OTHER: 'ITM' },
@@ -1078,6 +1103,11 @@ Object.assign(tables, {
 Object.defineProperty(tables, 'purchase_order_list_v2', { enumerable: true, get: () => tables.purchase_order_list.map((o) => ({ ...o,
   supplier_invoice_number: o.id === 'po3' ? 'SINV-778' : null, supplier_challan_number: o.id === 'po3' ? 'SDC-12' : null,
   receipt_invoice_numbers: o.id === 'po3' ? 'SINV-778' : null, receipt_challan_numbers: o.id === 'po3' ? 'DC-554' : null })) })
+Object.defineProperty(tables, 'purchase_order_list_excl_gst', { enumerable: true, get: () => tables.purchase_order_list_v2.map((o) => ({ ...o,
+  pending_taxable_value: Math.round(Number(o.pending_value ?? 0) / 1.18 * 100) / 100 })) })
+Object.defineProperty(tables, 'sales_invoice_list_excl_gst', { enumerable: true, get: () => tables.sales_invoice_list.map((i) => ({ ...i,
+  outstanding_excl_gst: i.status !== 'ISSUED' ? null : Number(i.paid ?? 0) > 0 && Number(i.balance_due) > 0 ? null : Number(i.balance_due) > 0 ? Number(i.taxable_subtotal ?? 0) : 0,
+  excl_gst_status: i.status !== 'ISSUED' ? null : Number(i.balance_due) <= 0 ? 'SETTLED' : Number(i.paid ?? 0) > 0 ? 'REVIEW' : 'EXACT' })) })
 Object.defineProperty(tables, 'goods_receipt_list_v2', { enumerable: true, get: () => tables.goods_receipt_list.map((r) => ({ ...r,
   supplier_invoice_number: r.id === 'gr1' ? 'SINV-778' : null, supplier_challan_number: r.id === 'gr1' ? 'DC-554' : null })) })
 // Day-based reorder planning (inventory_reorder_plan).
@@ -1543,7 +1573,7 @@ const api = http.createServer((req, res) => {
           return send(res, 200, {
             active_products: 1, products_with_stock: 1, never_stocked: 0, out_of_stock: 0, fully_reserved: 0, low_stock: 0, healthy: 1, no_threshold: 0,
             units: [{ unit: 'PCS', on_hand: 140, reserved: 10, available: 130, in_house: 100, outsourced: 40, unknown: 0 }],
-            by_category: [{ category: 'Water Closets / Toilets', unit: 'PCS', on_hand: 140 }],
+            by_category: CATEGORY_ROWS ?? [{ category: 'Water Closets / Toilets', unit: 'PCS', on_hand: 140 }],
             by_warehouse: [{ warehouse_code: 'MAIN', warehouse_name: 'Mock main store', unit: 'PCS', on_hand: 140 }],
             first_transaction_at: NOW, last_transaction_at: NOW, warehouses: 1, pending_opening: 1, pending_adjustments: 1, pending_counts: 0,
             timezone: 'Asia/Kolkata', as_of: NOW,
@@ -1717,6 +1747,8 @@ const api = http.createServer((req, res) => {
           return send(res, 200, MGMT_OVERVIEW(body.p_from, body.p_to))
         case 'module_dashboard':
           return send(res, 200, MODULE_DASHBOARDS[body.p_module] ?? null)
+        case 'gst_exclusive_dashboard':
+          return send(res, 200, EXCL_GST(body.p_scope))
         case 'erp_settings_get':
           return send(res, 200, ERP_SETTINGS)
         // Preferences (ERP settings values read by every screen). Served only where a step needs them; elsewhere the
@@ -1786,8 +1818,9 @@ const api = http.createServer((req, res) => {
               return { count: shown.length, rows: shown }
             })() })
         case 'sales_orders_v2_list':
+        case 'sales_orders_v2_list_excl_gst':
           return send(res, 200, [{ id: 'so1', sales_order_number: 'SO-000001', order_date: TODAY, customer_id: 'cu1', customer_name: 'Acme Ltd', customer_reference: 'ACME-77',
-            requested_delivery_date: null, grand_total: 118000, status: 'READY_FOR_DISPATCH', order_status: 'CONFIRMED', created_at: NOW, units: [] }])
+            requested_delivery_date: null, grand_total: 118000, taxable_total: 100000, status: 'READY_FOR_DISPATCH', order_status: 'CONFIRMED', created_at: NOW, units: [] }])
         // V2 Stage 6: invoicing
         case 'invoice_dashboard':
           return send(res, 200, { from: body.p_from, to: body.p_to, today: TODAY, currency: 'INR', total_invoices: 14, created_today: 2, this_month: 9, total_value: 254380.5,
@@ -2016,9 +2049,12 @@ const api = http.createServer((req, res) => {
             outstanding_receipt_value: 8496, generated_at: NOW })
         case 'ledger_sync_parties':
           return send(res, 200, { customers_added: 0, suppliers_added: 0 })
-        case 'ledger_parties': {
+        case 'ledger_parties':
+        case 'ledger_parties_excl_gst': {
           const rows = LEDGER_PARTIES.filter((p) => !body.p_party_id || p.party_id === body.p_party_id)
-          return send(res, 200, rows)
+          return send(res, 200, fn === 'ledger_parties' ? rows : rows.map((r) => ({ ...r,
+            receivable_excl_gst: Number(r.receivable) > 0 ? null : 0, receivable_gst_status: Number(r.receivable) > 0 ? 'REVIEW' : 'SETTLED',
+            payable_excl_gst: Number(r.payable) > 0 ? Math.round(Number(r.payable) / 1.18 * 100) / 100 : 0, payable_gst_status: Number(r.payable) > 0 ? 'EXACT' : 'SETTLED' })))
         }
         case 'party_transactions':
           return send(res, 200, { customer_visible: true, supplier_visible: true, entries: LEDGER_ENTRIES })
@@ -2779,7 +2815,7 @@ await step('add-product saves only after the API confirms and offers "add anothe
   assert(catInsert && catInsert.body.name === 'Smoke Taps' && catInsert.body.code === 'SMOKE-TAPS' && catInsert.body.description === 'Created from the product form', JSON.stringify(catInsert?.body))
   await click('#p-type')
   await click('[role=option]', 'Finished Good')
-  await click('button[role=radio]', 'Both (Make & Buy)')
+  await click('button[role=radio]', 'Outsourced-IMP')
   await waitFor(bodyHas('recorded on its inventory receipt'), 'make & buy explanation')
   assert(!(await evaluate(bodyHas('Please correct the highlighted fields'))), 'stale validation banner after fixing fields')
   await screenshot('02-add-product-form')
@@ -3909,6 +3945,91 @@ await step('BOM tools 3b: Generate multiple — Product Name searches the Produc
   }
 })
 
+await step('Charts: Inventory by Category with 5, 15, 30, 50 and 100 categories, long names, large and small values, desktop and phone widths; no overlap, Show all, table view, drill-down; GST-exclusive wording', async () => {
+  const longName = 'Premium Rimless Wall-Hung Water Closets with Soft-Close Seat Covers'
+  const rowsFor = (n) => Array.from({ length: n }, (_, i) => ({ category: i % 7 === 0 ? `${longName} ${i + 1}` : `Category ${String(i + 1).padStart(3, '0')}`, unit: 'PCS',
+    on_hand: i === 0 ? 526000 : i % 3 === 0 ? 3 : 1000 + i * 37 }))
+  const measure = `(() => {
+    const box = document.querySelector('[data-testid=inventory-by-category]')
+    const svg = box.querySelector('svg.recharts-surface')
+    const rect = (el) => el.getBoundingClientRect()
+    const ticks = [...box.querySelectorAll('text[data-full-label]')].map(rect).sort((a, b) => a.top - b.top)
+    const labels = [...box.querySelectorAll('.recharts-label-list text')].map(rect).sort((a, b) => a.top - b.top)
+    const overlap = (arr) => arr.some((b, i) => i > 0 && b.top < arr[i - 1].bottom - 0.5)
+    const s = rect(svg)
+    return { ticks: ticks.length, labels: labels.length, tickOverlap: overlap(ticks), labelOverlap: overlap(labels),
+      labelClipped: labels.some((l) => l.right > s.right + 1 || l.left < s.left - 1), tickClipped: ticks.some((t) => t.left < s.left - 1),
+      shown: Number(box.dataset.shown), titles: [...box.querySelectorAll('text[data-full-label] title')].map((t) => t.textContent),
+      texts: [...box.querySelectorAll('text[data-full-label]')].map((t) => t.textContent),
+      values: [...box.querySelectorAll('.recharts-label-list text')].map((t) => t.textContent),
+      pageScroll: document.documentElement.scrollWidth > window.innerWidth + 1 }
+  })()`
+  try {
+    for (const [width, height, name] of [[1440, 1000, 'desktop'], [1024, 768, 'laptop'], [390, 844, 'phone']]) {
+      await setViewport(width, height)
+      for (const n of [5, 15, 30, 50, 100]) {
+        CATEGORY_ROWS = rowsFor(n)
+        await goto('/inventory')
+        const shown = n <= 11 ? n : 11
+        await waitFor(`document.querySelectorAll('[data-testid=inventory-by-category] .recharts-label-list text').length === ${shown}`, `${name}: ${n} categories drawn`)
+        const r = await evaluate(measure)
+        const tag = `${name}, ${n} categories`
+        assert(r.ticks === shown && r.labels === shown && r.shown === shown, `${tag}: rows ${JSON.stringify([r.ticks, r.labels, r.shown])}`)
+        assert(!r.tickOverlap && !r.labelOverlap, `${tag}: labels overlap`)
+        assert(!r.labelClipped && !r.tickClipped, `${tag}: label outside the chart`)
+        assert(!r.pageScroll, `${tag}: page scrolls horizontally`)
+        assert(r.values[0] === '5,26,000', `${tag}: largest first, Indian format (${r.values[0]})`)
+        assert(r.titles.some((t) => t.startsWith(longName)) && r.texts.some((t) => t.endsWith('…')), `${tag}: long name truncated with the full name in a tooltip`)
+        if (n > 11) assert(r.texts.at(-1).startsWith('Others (') && await evaluate(bodyHas(`Show all (${n})`)), `${tag}: Others row and Show all`)
+        if ((name === 'desktop' && n === 15) || (name === 'phone' && n === 30)) { await evaluate(`document.querySelector('[data-testid=inventory-by-category]').scrollIntoView()`); await sleep(200) }
+        if (name === 'desktop' && n === 15) await screenshot('210-category-chart-desktop')
+        if (name === 'phone' && n === 30) await screenshot('211-category-chart-phone')
+      }
+    }
+    // Show all: 100 categories, every bar drawn with room for its label (the chart scrolls inside the card).
+    await setViewport(1440, 1000)
+    CATEGORY_ROWS = rowsFor(100)
+    await goto('/inventory')
+    await waitFor(bodyHas('Show all (100)'), 'show all button')
+    await click('[data-testid=inventory-by-category] button', 'Show all (100)')
+    await waitFor(`document.querySelectorAll('[data-testid=inventory-by-category] .recharts-label-list text').length === 100`, 'all 100 drawn')
+    const all = await evaluate(measure)
+    assert(!all.tickOverlap && !all.labelOverlap && !all.labelClipped && all.texts.every((t) => !t.startsWith('Others')), `show all: ${JSON.stringify([all.tickOverlap, all.labelOverlap, all.labelClipped])}`)
+    assert(await evaluate(`(() => { const sc = document.querySelector('[data-testid=inventory-by-category] [data-chart=horizontal-bar]'); return sc.scrollHeight > sc.clientHeight })()`), 'long chart scrolls inside its card')
+    await evaluate(`document.querySelector('[data-testid=inventory-by-category]').scrollIntoView()`)
+    await screenshot('212-category-chart-show-all')
+    await click('[data-testid=inventory-by-category] button', 'Top 10')
+    await waitFor(`document.querySelectorAll('[data-testid=inventory-by-category] .recharts-label-list text').length === 11`, 'back to top 10 + Others')
+    // Table view: every category with its full name and drill-down link.
+    await click('[data-testid=inventory-by-category] button[aria-label="Table view"]')
+    await waitFor(`document.querySelectorAll('[data-testid=inventory-by-category] tbody tr').length === 100`, 'table lists all 100')
+    assert(await evaluate(`[...document.querySelectorAll('[data-testid=inventory-by-category] tbody a')].some((a) => a.innerText === ${JSON.stringify(`${longName} 1`)})`), 'full name in the table')
+    await click('[data-testid=inventory-by-category] button[aria-label="Chart view"]')
+    // Clicking a bar opens that category's products (drill-down preserved).
+    await waitFor(`!!document.querySelector('[data-testid=inventory-by-category] .recharts-bar-rectangle path')`, 'bars')
+    await click('[data-testid=inventory-by-category] .recharts-bar-rectangle path')
+    await waitFor(`location.pathname === '/drilldown/inventory.category' && new URLSearchParams(location.search).get('seg') === ${JSON.stringify(`${longName} 1`)}`, 'bar opens its category')
+    // Empty data: a proper empty state.
+    CATEGORY_ROWS = []
+    await goto('/inventory')
+    await waitFor(`!!document.querySelector('[data-testid=inventory-by-category]') && document.querySelector('[data-testid=inventory-by-category]').innerText.includes('No stock on hand.')`, 'empty state')
+  } finally {
+    CATEGORY_ROWS = null
+    await cdp('Emulation.clearDeviceMetricsOverride')
+  }
+  // GST-exclusive wording on the dashboards; never "including GST".
+  for (const path of ['/', '/purchase-orders/dashboard', '/goods-receipts/dashboard', '/sales/dashboard', '/billing/dashboard', '/ledger/dashboard']) {
+    await goto(path)
+    await waitFor(`document.querySelector('[data-testid=gst-basis]')?.innerText.includes('All monetary values are in INR, excluding GST. Stock and outstanding balances are as of the current date and time.')`, `${path}: GST basis`)
+    assert(!(await evaluate(bodyHas('including GST'))), `${path}: still says including GST`)
+  }
+  await goto('/')
+  await waitFor(bodyHasAll('Taxable Sales', '12,000.00', 'Outstanding Receivables (Excl. GST)', 'Outstanding Payables (Excl. GST) ₹3,780.00', 'Stock Value (Excl. GST)', 'Taxable sales invoiced'), 'management figures excl. GST')
+  assert(await evaluate(`document.querySelector('[data-testid=kpi-outstanding-review]')?.innerText.includes('1 part-paid invoice(s) (₹1,121.00 incl. GST) not included')`), 'part-paid invoice flagged for review')
+  assert(rpcCalls('gst_exclusive_dashboard').some((c) => c.body.p_scope === 'MANAGEMENT'), 'GST-exclusive figures read from the database')
+  await screenshot('213-management-excl-gst')
+})
+
 await step('Cost intelligence: BOM list cost columns (INR, dash for non-approved, sortable, tooltips, Recalculate); Product Master Cost Intelligence section, sourcing suggestion and Cost History', async () => {
   await goto('/production/boms?status=ALL')
   await waitFor(`!!document.querySelector('[data-testid=bom-cost-bom1]')`, 'BOM cost column')
@@ -3944,13 +4065,13 @@ await step('Cost intelligence: BOM list cost columns (INR, dash for non-approved
   assert((await text('ci-method')).includes('Manufacture'), 'sourcing method')
   assert((await text('ci-status')).includes('No new cost available'), 'cost status')
   // Suggestion from the BOM / GRN history: nothing changes until applied (confirmation).
-  await waitFor(`document.querySelector('[data-testid=ci-proposal]')?.innerText.includes('Both (Make & Buy)')`, 'sourcing suggestion')
+  await waitFor(`document.querySelector('[data-testid=ci-proposal]')?.innerText.includes('Outsourced-IMP')`, 'sourcing suggestion')
   const applied = rpcCalls('product_sourcing_apply').length
   await click('[data-testid=ci-proposal] button', 'Apply suggestion')
-  await waitFor(bodyHas('Change the sourcing method to Both (Make & Buy)?'), 'apply confirmation')
+  await waitFor(bodyHas('Change the sourcing method to Outsourced-IMP?'), 'apply confirmation')
   assert(rpcCalls('product_sourcing_apply').length === applied, 'applied before confirmation')
   await click('[role=alertdialog] button', 'Change sourcing method')
-  await waitFor(bodyHas('Sourcing method changed to Both (Make & Buy).'), 'applied')
+  await waitFor(bodyHas('Sourcing method changed to Outsourced-IMP.'), 'applied')
   assert(rpcCalls('product_sourcing_apply').at(-1).body.p_method === 'HYBRID', 'apply payload')
   await screenshot('209-product-cost-intelligence')
   // Cost History tab.
@@ -4171,7 +4292,7 @@ await step('sales orders: server-paged list; only the V2 ways to create an order
 // V2 Stage 5: sales orders with automatic reservations
 await step('sales dashboard: all 12 KPIs (quantities per unit), filters, recent orders, shortages and fulfilment summary', async () => {
   await goto('/sales/dashboard')
-  await waitFor(bodyHasAll('Sales Dashboard', 'Total Sales Orders', 'Orders Created Today', 'Orders This Month', 'Total Sales Order Value', 'Pending Orders',
+  await waitFor(bodyHasAll('Sales Dashboard', 'Total Sales Orders', 'Orders Created Today', 'Orders This Month', 'Sales Order Value (Excl. GST)', 'Pending Orders',
     'Partially Fulfilled Orders', 'Fully Fulfilled Orders', 'Cancelled Orders', 'Finished Goods Reserved', 'Production Required', 'Raw Material Shortages', 'Orders Awaiting Dispatch'), 'dashboard KPIs')
   await waitFor(bodyHasAll('340 PCS', '70 PCS', 'SO-000001', 'MOCK-CLAY', 'Shree Clay Works Pvt Ltd', 'Stock Shortage'), 'figures, recent order and shortage')
   await choose('#sd-status', 'Ready for Dispatch')
@@ -4491,9 +4612,10 @@ await step('receivables, ageing, statements, tax summary, reports and settings r
 // V2 Stage 6: invoicing, GST, payments and Excel import
 await step('invoice dashboard: all figures, GST summary, overdue list, trend; payment filter sent', async () => {
   await goto('/billing/dashboard')
-  await waitFor(bodyHasAll('Invoice Dashboard', 'Total invoices', 'Created today', 'Issued this month', 'Invoice value', 'Taxable value', 'GST', 'Amount received', 'Outstanding',
+  await waitFor(bodyHasAll('Invoice Dashboard', 'Total invoices', 'Created today', 'Issued this month', 'Taxable Sales', 'Total GST', 'Amount received (incl. GST)', 'Outstanding Receivables (Excl. GST)',
     'Overdue', 'Partially paid', 'Fully paid', 'Drafts', 'Cancelled'), 'KPI labels')
-  await waitFor(bodyHasAll('2,54,380.50', 'GST summary', '18%', 'Overdue invoices', 'Monthly trend', 'INV/26-27/0001', 'Nothing is filed'), 'figures')
+  await waitFor(bodyHasAll('12,000.00', '1 part-paid invoice(s)', 'GST summary', '18%', 'Overdue invoices', 'Monthly trend', 'INV/26-27/0001', 'Nothing is filed', 'excluding GST'), 'figures')
+  assert(!(await evaluate(bodyHas('2,54,380.50'))), 'GST-inclusive invoice value still shown')
   await choose('#id-pay', 'Overdue')
   for (let i = 0; i < 50 && rpcCalls('invoice_dashboard').at(-1).body.p_payment_status !== 'OVERDUE'; i++) await sleep(100)
   assert(rpcCalls('invoice_dashboard').at(-1).body.p_payment_status === 'OVERDUE', 'payment filter not sent')
@@ -4656,7 +4778,7 @@ await step('invoice settings: GST rates, rounding, PDF and bank accounts saved t
 // V2 Stage 7: management overview, module dashboards, search, reports, activity, reconciliation, settings
 await step('management dashboard: nine figures, period filter (today / week / month / year / custom), charts and lists; no quick actions', async () => {
   await goto('/')
-  const metrics = ['Total stock', 'Manufactured stock', 'Outsourced stock', 'Purchase orders', 'Pending GRNs', 'Production orders', 'Sales orders', 'Invoiced sales', 'Outstanding payments']
+  const metrics = ['Total stock', 'Manufactured stock', 'Outsourced stock', 'Purchase orders', 'Pending GRNs', 'Production orders', 'Sales orders', 'Taxable Sales', 'Outstanding Receivables (Excl. GST)']
   await waitFor(bodyHasAll('Management Dashboard', ...metrics), 'metrics')
   const card = (id) => evaluate(`document.querySelector('[data-testid=${id}]')?.innerText ?? ''`)
   // Stock split from inventory_overview (in-house = manufactured, outsourced); never invented.
@@ -4664,11 +4786,13 @@ await step('management dashboard: nine figures, period filter (today / week / mo
   assert((await card('kpi-manufactured-stock')).includes('100 PCS'), await card('kpi-manufactured-stock'))
   assert((await card('kpi-outsourced-stock')).includes('40 PCS'), await card('kpi-outsourced-stock'))
   assert(/\b2\b/.test(await card('kpi-purchase-orders')) && (await card('kpi-purchase-orders')).includes('1 open'), await card('kpi-purchase-orders'))
-  assert((await card('kpi-pending-grns')).includes('₹210.00 still to receive'), await card('kpi-pending-grns'))
-  assert((await card('kpi-sales-orders')).includes('₹31,860.00'), await card('kpi-sales-orders'))
-  assert((await card('kpi-invoiced-sales')).includes('₹14,160.00'), await card('kpi-invoiced-sales'))
-  assert((await card('kpi-outstanding')).includes('₹4,460.00 due to suppliers'), await card('kpi-outstanding'))
-  for (const t of ['Sales orders booked', 'Production output', 'Stock movement', 'Stock by source', 'Invoiced vs collected', 'Purchases ordered vs received', 'Needs attention', 'Low stock', 'Customer balances']) {
+  assert((await card('kpi-pending-grns')).includes('₹178.00 still to receive (excl. GST)'), await card('kpi-pending-grns'))
+  assert((await card('kpi-sales-orders')).includes('₹27,000.00 (excl. GST)'), await card('kpi-sales-orders'))
+  assert((await card('kpi-invoiced-sales')).includes('₹12,000.00'), await card('kpi-invoiced-sales'))
+  assert((await card('kpi-purchase-orders')).includes('Taxable Purchases ₹3,780.00'), await card('kpi-purchase-orders'))
+  assert((await card('kpi-total-stock')).includes('Stock Value (Excl. GST) ₹2,800.00'), await card('kpi-total-stock'))
+  assert((await card('kpi-outstanding')).includes('Outstanding Payables (Excl. GST) ₹3,780.00') && (await card('kpi-outstanding')).includes('1 part-paid invoice(s)'), await card('kpi-outstanding'))
+  for (const t of ['Sales orders booked', 'Production output', 'Stock movement', 'Stock by source', 'Taxable sales invoiced', 'Purchases ordered vs received', 'Needs attention', 'Low stock', 'Customer balances']) {
     assert(await evaluate(bodyHas(t)), `missing "${t}"`)
   }
   // Legacy widgets are gone.
@@ -4705,7 +4829,7 @@ await step('management dashboard: nine figures, period filter (today / week / mo
   // Phone width: no horizontal scroll.
   await setViewport(390, 844)
   await goto('/')
-  await waitFor(bodyHas('Outstanding payments'), 'mobile dashboard')
+  await waitFor(bodyHas('Outstanding Receivables (Excl. GST)'), 'mobile dashboard')
   assert(await noHorizontalScroll(), 'mobile: dashboard scrolls horizontally')
   await screenshot('v2-management-dashboard-mobile')
   await cdp('Emulation.clearDeviceMetricsOverride')
@@ -4722,7 +4846,7 @@ await step('Total Stock valuation: unit cost and stock value columns, Not Valued
   await waitFor(`location.pathname === '/drilldown/inventory.on_hand' && !!document.querySelector('[data-testid=drill-table]')`, 'Total Stock drill-down')
   assert(lastQuery('/rest/v1/inventory_product_stock_value').includes('on_hand=neq.0'), lastQuery('/rest/v1/inventory_product_stock_value'))
   const heads = await evaluate(th)
-  assert(JSON.stringify(heads) === JSON.stringify(['sku', 'product', 'category', 'unit', 'on hand', 'reserved', 'available', 'unit cost (₹)', 'total stock value (₹)', 'stock status']), JSON.stringify(heads))
+  assert(JSON.stringify(heads) === JSON.stringify(['sku', 'product', 'category', 'unit', 'on hand', 'reserved', 'available', 'unit cost (₹)', 'stock value (excl. gst, ₹)', 'stock status']), JSON.stringify(heads))
   // 1 / 4: known cost (two lots: 100 @ 450 + 40 @ 480).  6: no cost -> Not Valued, never ₹0.
   await waitFor(`${rowText('MOCK-WC-1')}.includes('₹458.57') && ${rowText('MOCK-WC-1')}.includes('₹64,200.00')`, 'valued product row')
   const clay = await evaluate(rowText('MOCK-CLAY'))
@@ -4744,11 +4868,11 @@ await step('Total Stock valuation: unit cost and stock value columns, Not Valued
   await fill('input[aria-label="Search records"]', '')
   await waitFor(`document.querySelector('[data-testid=sv-value]')?.innerText.includes('₹64,200.00')`, 'search cleared')
   // Sorting by stock value and unit cost happens on the server.
-  await click('[data-testid=drill-table] th button', 'Total Stock Value')
+  await click('[data-testid=drill-table] th button', 'Stock Value (Excl. GST')
   await waitFor(`new URLSearchParams(location.search).get('sort') === 'stock_value'`, 'sort by value')
   for (let t = Date.now(); !lastQuery('/rest/v1/inventory_product_stock_value').includes('order=stock_value.asc') && Date.now() - t < 5000;) await sleep(100)
   assert(lastQuery('/rest/v1/inventory_product_stock_value').includes('order=stock_value.asc.nullslast'), lastQuery('/rest/v1/inventory_product_stock_value'))
-  await click('[data-testid=drill-table] th button', 'Total Stock Value')
+  await click('[data-testid=drill-table] th button', 'Stock Value (Excl. GST')
   await waitFor(`new URLSearchParams(location.search).get('sort') === '-stock_value'`, 'sort by value, highest first')
   await click('[data-testid=drill-table] th button', 'Unit Cost')
   await waitFor(`new URLSearchParams(location.search).get('sort') === 'unit_cost'`, 'sort by unit cost')
@@ -4757,7 +4881,7 @@ await step('Total Stock valuation: unit cost and stock value columns, Not Valued
   // Columns selector lists the new columns; hiding one hides it.
   await click('button', 'Columns')
   await waitFor(`[...document.querySelectorAll('[role=dialog] label, [data-radix-popper-content-wrapper] label')].some((l) => l.innerText.includes('Unit Cost (₹)'))`, 'columns selector')
-  assert(await evaluate(`[...document.querySelectorAll('[data-radix-popper-content-wrapper] label')].some((l) => l.innerText.includes('Total Stock Value (₹)'))`), 'value column not in the selector')
+  assert(await evaluate(`[...document.querySelectorAll('[data-radix-popper-content-wrapper] label')].some((l) => l.innerText.includes('Stock Value (Excl. GST, ₹)'))`), 'value column not in the selector')
   await evaluate(`[...document.querySelectorAll('[data-radix-popper-content-wrapper] label')].find((l) => l.innerText.includes('Unit Cost (₹)')).querySelector('button').click()`)
   await waitFor(`!${th}.includes('unit cost (₹)')`, 'unit cost hidden')
   await evaluate(`[...document.querySelectorAll('[data-radix-popper-content-wrapper] label')].find((l) => l.innerText.includes('Unit Cost (₹)')).querySelector('button').click()`)
@@ -4774,9 +4898,9 @@ await step('Total Stock valuation: unit cost and stock value columns, Not Valued
   const h = sheet[0]
   const wc = sheet.find((r) => r[0] === 'MOCK-WC-1')
   const cl = sheet.find((r) => r[0] === 'MOCK-CLAY')
-  assert(h.includes('Unit Cost (₹)') && h.includes('Total Stock Value (₹)'), JSON.stringify(h))
-  assert(Math.abs(wc[h.indexOf('Unit Cost (₹)')] - 458.5714285714) < 0.0001 && wc[h.indexOf('Total Stock Value (₹)')] === 64200, JSON.stringify(wc))
-  assert(cl[h.indexOf('Unit Cost (₹)')] === 'Not Valued' && cl[h.indexOf('Total Stock Value (₹)')] === 'Not Valued', JSON.stringify(cl))
+  assert(h.includes('Unit Cost (₹)') && h.includes('Stock Value (Excl. GST, ₹)'), JSON.stringify(h))
+  assert(Math.abs(wc[h.indexOf('Unit Cost (₹)')] - 458.5714285714) < 0.0001 && wc[h.indexOf('Stock Value (Excl. GST, ₹)')] === 64200, JSON.stringify(wc))
+  assert(cl[h.indexOf('Unit Cost (₹)')] === 'Not Valued' && cl[h.indexOf('Stock Value (Excl. GST, ₹)')] === 'Not Valued', JSON.stringify(cl))
   // Product stock card: average cost, total value, value per location and lot.
   await click('[data-testid=drill-table] a', 'MOCK-WC-1')
   await waitFor(`location.pathname === '/inventory/stock/p1'`, 'stock card')
@@ -4798,7 +4922,7 @@ await step('global search: records (product, sales order) and modules; choosing 
 await step('module dashboards: products, ledger, purchase orders and goods received', async () => {
   const pages = [
     ['/products/dashboard', ['Product Master Dashboard', 'Total Products', 'Finished Goods', 'Raw Materials', 'Components', 'Outsourced Parts', 'Products Without BOM', 'Recently Added', 'Low Stock Products', 'MOCK-WC-2']],
-    ['/ledger/dashboard', ['Ledger Dashboard', 'Total Customers', 'Total Suppliers', 'Customer and Supplier', 'Customer Receivables', 'Supplier Payables', 'Outstanding Balances', 'Top customers', 'Top suppliers']],
+    ['/ledger/dashboard', ['Ledger Dashboard', 'Total Customers', 'Total Suppliers', 'Customer and Supplier', 'Outstanding Receivables (Excl. GST)', 'Outstanding Payables (Excl. GST)', 'Outstanding Balances', 'Top customers', 'Top suppliers']],
     ['/purchase-orders/dashboard', ['Purchase Orders Dashboard', 'Total POs', 'Open POs', 'Partially Received POs', 'Fully Received POs', 'Pending Purchase Value', 'Overdue Deliveries', 'Top suppliers']],
     ['/goods-receipts/dashboard', ['Goods Received Dashboard', 'Total GRNs', 'GRNs Today', 'Monthly GRNs', 'Pending Receipts', 'Rejected Goods', 'Unlinked GRNs', 'Recently received items', '2 PCS']],
   ]
@@ -6281,7 +6405,7 @@ await step('read-only user sees billing but cannot create, issue, record payment
 
 await step('read-only user sees the Management Dashboard but no settings or user administration in the menu', async () => {
   await goto('/')
-  await waitFor(bodyHasAll('Management Dashboard', 'Total stock', 'Outstanding payments'), 'dashboard for viewer')
+  await waitFor(bodyHasAll('Management Dashboard', 'Total stock', 'Outstanding Receivables (Excl. GST)'), 'dashboard for viewer')
   for (const href of ['/admin/erp-settings', '/users', '/audit-logs']) {
     assert(!(await evaluate(`!!document.querySelector('aside a[href="${href}"]')`)), `viewer sees ${href} in the menu`)
   }
@@ -6314,7 +6438,7 @@ await step('Drill-down 1: a dashboard figure is a link (mouse and keyboard) to i
   for (const type of ['keyDown', 'keyUp']) await cdp('Input.dispatchKeyEvent', { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
   await waitFor(`location.pathname === '/drilldown/purchase.open'`, 'drill-down page')
   await waitFor(`document.querySelector('[data-testid=drill-count]')?.innerText.startsWith('${shown} ')`, 'same count as the card')
-  assert(lastQuery('/rest/v1/purchase_order_list_v2').includes('status=in.(APPROVED,SENT,PARTIALLY_RECEIVED)'), lastQuery('/rest/v1/purchase_order_list_v2'))
+  assert(lastQuery('/rest/v1/purchase_order_list_excl_gst').includes('status=in.(APPROVED,SENT,PARTIALLY_RECEIVED)'), lastQuery('/rest/v1/purchase_order_list_excl_gst'))
   await waitFor(`${bodyHasAll('Open POs', 'Purchase Dashboard', 'PO-000003', 'Rule: status in Approved, Sent, Partially received')} && !document.querySelector('[data-testid=drill-table]').innerText.includes('PO-000001')`, 'records and rule')
   assert(await evaluate(`[...document.querySelectorAll('nav[aria-label=Breadcrumb] a')].some((a) => a.innerText.includes('Purchase Dashboard') && a.getAttribute('href').includes('from=2026-11-01'))`), 'breadcrumb back to the dashboard with its period')
   await screenshot('131-drill-page')
@@ -6323,14 +6447,14 @@ await step('Drill-down 1: a dashboard figure is a link (mouse and keyboard) to i
 await step('Drill-down 2: search, sort and columns run on the server; a record opens and Back returns to the same list', async () => {
   await fill('input[aria-label="Search records"]', 'PO-0000')
   await waitFor(`location.search.includes('q=PO-0000')`, 'search in the address')
-  for (let i = 0; i < 30 && !lastQuery('/rest/v1/purchase_order_list_v2').includes('po_number.ilike.%PO-0000%'); i++) await sleep(100)
-  assert(lastQuery('/rest/v1/purchase_order_list_v2').includes('or=(po_number.ilike.%PO-0000%'), lastQuery('/rest/v1/purchase_order_list_v2'))
+  for (let i = 0; i < 30 && !lastQuery('/rest/v1/purchase_order_list_excl_gst').includes('po_number.ilike.%PO-0000%'); i++) await sleep(100)
+  assert(lastQuery('/rest/v1/purchase_order_list_excl_gst').includes('or=(po_number.ilike.%PO-0000%'), lastQuery('/rest/v1/purchase_order_list_excl_gst'))
   await click('[data-testid=drill-table] th button', 'Value')
-  await waitFor(`location.search.includes('sort=grand_total')`, 'sorted')
-  for (let i = 0; i < 30 && !lastQuery('/rest/v1/purchase_order_list_v2').includes('order=grand_total.asc'); i++) await sleep(100)
-  assert(lastQuery('/rest/v1/purchase_order_list_v2').includes('order=grand_total.asc'), 'sort not sent to the server')
+  await waitFor(`location.search.includes('sort=taxable_total')`, 'sorted')
+  for (let i = 0; i < 30 && !lastQuery('/rest/v1/purchase_order_list_excl_gst').includes('order=taxable_total.asc'); i++) await sleep(100)
+  assert(lastQuery('/rest/v1/purchase_order_list_excl_gst').includes('order=taxable_total.asc'), 'sort not sent to the server')
   await click('button', 'Columns')
-  await waitFor(bodyHas('Pending value'), 'column picker')
+  await waitFor(bodyHas('Pending (excl. GST)'), 'column picker')
   await click('[role=dialog] label', 'Warehouse')
   await waitFor(`[...document.querySelectorAll('[data-testid=drill-table] th')].some((th) => th.innerText === 'Warehouse')`, 'column shown')
   await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' })
@@ -6349,7 +6473,7 @@ await step('Drill-down 3: chart bars and their table view open the records of th
   await click('.recharts-bar-rectangle path')
   await waitFor(`location.pathname === '/drilldown/purchase.supplier' && new URLSearchParams(location.search).get('seg') === 'Shree Clay Works Pvt Ltd'`, 'bar opens that supplier')
   await waitFor(bodyHasAll('Orders by Supplier', 'supplier name = Shree Clay Works Pvt Ltd'), 'supplier rule')
-  assert(lastQuery('/rest/v1/purchase_order_list_v2').includes('supplier_name=eq.Shree Clay Works Pvt Ltd') && lastQuery('/rest/v1/purchase_order_list_v2').includes('po_date=gte.2026-11-01'), lastQuery('/rest/v1/purchase_order_list_v2'))
+  assert(lastQuery('/rest/v1/purchase_order_list_excl_gst').includes('supplier_name=eq.Shree Clay Works Pvt Ltd') && lastQuery('/rest/v1/purchase_order_list_excl_gst').includes('po_date=gte.2026-11-01'), lastQuery('/rest/v1/purchase_order_list_excl_gst'))
   await evaluate('history.back()')
   await waitFor(`location.pathname === '/purchase-orders/dashboard'`, 'back')
   await waitFor(`!!document.querySelector('button[aria-label="Table view"]')`, 'table view toggle')
@@ -6382,7 +6506,7 @@ await step('Drill-down 4: Product Master figures open the Product Master list wi
 await step('Drill-down 5: the other dashboards link their figures; the period and filters travel with the link', async () => {
   for (const [path, label, key] of [['/inventory', 'Low-Stock Products', 'inventory.low_stock'], ['/production', 'Total Production Orders', 'production.orders'],
     ['/sales/dashboard', 'Pending Orders', 'sales.pending'], ['/billing/dashboard', 'Outstanding', 'billing.outstanding'], ['/goods-receipts/dashboard', 'Unlinked GRNs', 'grn.unlinked'],
-    ['/ledger/dashboard', 'Customer Receivables', 'ledger.receivables']]) {
+    ['/ledger/dashboard', 'Outstanding Receivables (Excl. GST)', 'ledger.receivables']]) {
     await goto(path)
     await waitFor(`!!${kpiLink(label)}`, `${path}: ${label} is a link`)
     assert(await evaluate(`${kpiLink(label)}.getAttribute('href').startsWith('/drilldown/${key}?')`), `${path}: ${label} → ${key}`)
@@ -6393,14 +6517,14 @@ await step('Drill-down 5: the other dashboards link their figures; the period an
   assert(href.includes('from=2026-10-01') && href.includes('to=2026-10-31') && href.includes('payment=OVERDUE'), href)
   await click('a[data-drill=kpi]', 'Total invoices')
   await waitFor(`location.pathname === '/drilldown/billing.total' && !!document.querySelector('[data-testid=drill-chip]')`, 'filter chip')
-  assert(lastQuery('/rest/v1/sales_invoice_list').includes('display_status=eq.OVERDUE') && lastQuery('/rest/v1/sales_invoice_list').includes('invoice_date=gte.2026-10-01'), lastQuery('/rest/v1/sales_invoice_list'))
+  assert(lastQuery('/rest/v1/sales_invoice_list_excl_gst').includes('display_status=eq.OVERDUE') && lastQuery('/rest/v1/sales_invoice_list_excl_gst').includes('invoice_date=gte.2026-10-01'), lastQuery('/rest/v1/sales_invoice_list_excl_gst'))
   await click('button[aria-label^="Remove Payment"]')
   await waitFor(`!location.search.includes('payment=') && !document.querySelector('[data-testid=drill-chip]')`, 'chip removed')
   await goto('/sales/dashboard')
   await waitFor(`!!${kpiLink('Pending Orders')}`, 'sales dashboard')
   await click('a[data-drill=kpi]', 'Pending Orders')
   await waitFor(`location.pathname === '/drilldown/sales.pending' && !!document.querySelector('[data-testid=drill-count]')`, 'sales records (status computed by the database)')
-  assert(rpcCalls('sales_orders_v2_list').length > 0, 'sales list not read from the database function')
+  assert(rpcCalls('sales_orders_v2_list_excl_gst').length > 0, 'sales list not read from the database function')
 })
 
 // ---------------------------------------------------------------------------
@@ -6819,7 +6943,7 @@ await step('List cards 3: Purchase Orders, Goods Received, Ledger and the stock 
   await click('a[data-drill=kpi]', 'Draft')
   await waitFor(`location.pathname === '/drilldown/purchase.status' && new URLSearchParams(location.search).get('seg') === 'DRAFT'`, 'drafts')
   await waitFor(`!!document.querySelector('[data-testid=drill-count]') && ${bodyHas('Purchase Orders')}`, 'records page, back to Purchase Orders')
-  assert(lastQuery('/rest/v1/purchase_order_list_v2').includes('status=eq.DRAFT'), lastQuery('/rest/v1/purchase_order_list_v2'))
+  assert(lastQuery('/rest/v1/purchase_order_list_excl_gst').includes('status=eq.DRAFT'), lastQuery('/rest/v1/purchase_order_list_excl_gst'))
   assert(await evaluate(`[...document.querySelectorAll('nav[aria-label=Breadcrumb] a')].some((a) => a.innerText === 'Purchase Orders' && a.getAttribute('href').startsWith('/purchase-orders'))`), 'breadcrumb')
 
   await goto('/goods-receipts')
@@ -6836,7 +6960,7 @@ await step('List cards 3: Purchase Orders, Goods Received, Ledger and the stock 
   await waitFor(`[...document.querySelectorAll('a[data-drill=kpi]')].length === 6`, 'six ledger cards')
   await click('a[data-drill=kpi]', 'Customers')
   await waitFor(`location.pathname === '/drilldown/ledger.page_customer' && !!document.querySelector('[data-testid=drill-count]')`, 'customers')
-  assert(rpcCalls('ledger_parties').length > 0, 'parties not read from the ledger function')
+  assert(rpcCalls('ledger_parties_excl_gst').length > 0, 'parties not read from the ledger function')
 
   await goto('/inventory/stock/p1')
   await waitFor(`[...document.querySelectorAll('a[data-drill=kpi]')].length === 6`, 'six stock card figures')

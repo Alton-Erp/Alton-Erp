@@ -25,6 +25,7 @@ import { useAsync } from '@/hooks/use-async'
 import { EXTENDED_DATE_RANGE_PRESETS } from '@/lib/date-range'
 import { describeDataError } from '@/lib/errors'
 import { formatDate, formatNumber, toIsoDate } from '@/lib/format'
+import { EXCL_GST_MISSING, EXCL_GST_NOTE, exclOk, fetchExclGst, reviewText } from '@/services/gst-exclusive'
 import { fetchInvoiceDashboard } from '@/services/invoicing-v2'
 
 const MONTH = new Intl.DateTimeFormat('en-IN', { month: 'short', year: '2-digit' })
@@ -49,6 +50,9 @@ export default function InvoiceDashboardPage() {
   const from = toIsoDate(range.from)
   const to = toIsoDate(range.to)
   const dash = useAsync(() => fetchInvoiceDashboard(from, to, customer === 'all' ? null : customer, status === 'all' ? null : status, payment === 'all' ? null : payment),
+    [from, to, customer, status, payment, refresh])
+  // Amounts excl. GST with the same filters (migration 20261209090000); GST is shown only as its own figure.
+  const exq = useAsync(() => fetchExclGst('BILLING', from, to, { customerId: customer === 'all' ? null : customer, status: status === 'all' ? null : status, paymentStatus: payment === 'all' ? null : payment }),
     [from, to, customer, status, payment, refresh])
   const d = dash.data
   const ctx = { from, to, customer: customer === 'all' ? null : customer, status: status === 'all' ? null : status, payment: payment === 'all' ? null : payment,
@@ -75,13 +79,16 @@ export default function InvoiceDashboardPage() {
       </CardContent>
     </Card>
   )
-  if (dash.loading && !d) return (<>{header}{filters}<LoadingState variant="cards" rows={8} /></>)
-  if (dash.error || !d) return (<>{header}{filters}<Card><ErrorState message={describeDataError(dash.error)} onRetry={dash.reload} /></Card></>)
-  const monthly = d.monthly.map((m) => ({ label: MONTH.format(new Date(`${m.month}T00:00:00`)), a: Number(m.invoiced), b: Number(m.received) }))
+  if ((dash.loading && !d) || (exq.loading && exq.data === undefined)) return (<>{header}{filters}<LoadingState variant="cards" rows={8} /></>)
+  if (dash.error || !d || exq.error) return (<>{header}{filters}<Card><ErrorState message={describeDataError(dash.error ?? exq.error)} onRetry={() => { dash.reload(); exq.reload() }} /></Card></>)
+  const x = exclOk(exq.data?.invoicing) ? exq.data.invoicing : null
+  const amt = (v: number | null | undefined) => (x && v !== null && v !== undefined ? money(v) : '—')
+  // Taxable value and GST stacked per month (receipts are not split into taxable value and GST, so they stay in the table).
+  const monthly = (x?.monthly ?? []).map((m) => ({ label: MONTH.format(new Date(`${m.month}T00:00:00`)), a: Number(m.taxable), b: Number(m.gst), received: Number(m.received) }))
   // A month of the trend: invoices issued in it, or payments received in it (whole month, as the chart counts it).
-  const monthHref = (i: number, series: 'a' | 'b') => {
+  const monthHref = (i: number, series: 'a' | 'b' | 'received') => {
     const m = d.monthly[i]
-    return m ? href(series === 'a' ? 'billing.month_invoiced' : 'billing.month_received', { ...ctx, ...bucketRange(m.month, 'month') }) : null
+    return m ? href(series === 'received' ? 'billing.month_received' : 'billing.month_invoiced', { ...ctx, ...bucketRange(m.month, 'month') }) : null
   }
   const gstTotal = d.gst_summary.reduce((s, g) => ({ taxable: s.taxable + Number(g.taxable), cgst: s.cgst + Number(g.cgst), sgst: s.sgst + Number(g.sgst), igst: s.igst + Number(g.igst) }), { taxable: 0, cgst: 0, sgst: 0, igst: 0 })
 
@@ -89,16 +96,19 @@ export default function InvoiceDashboardPage() {
     <>
       {header}
       {filters}
+      <p className="-mt-3 mb-4 text-xs text-muted-foreground" data-testid="gst-basis">{EXCL_GST_NOTE} GST is shown separately where it is the figure itself.</p>
+      {!x && <p role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-900" data-testid="gst-missing">{EXCL_GST_MISSING}</p>}
       <section aria-label="Invoice figures" className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <KpiCard to={drill('billing.total')} label="Total invoices" value={formatNumber(d.total_invoices)} hint={`Issued ${formatDate(from)} – ${formatDate(to)}`} icon={FileText} accent="manufacturing" />
         <KpiCard to={drill('billing.today')} label="Created today" value={formatNumber(d.created_today)} hint="Drafts, proforma and issued" icon={CalendarDays} />
         <KpiCard to={drill('billing.month')} label="Issued this month" value={formatNumber(d.this_month)} hint="By invoice date" icon={Receipt} />
-        <KpiCard to={drill('billing.value')} label="Invoice value" value={money(d.total_value)} hint="Grand total of issued invoices" icon={IndianRupee} accent="manufacturing" />
-        <KpiCard to={drill('billing.taxable')} label="Taxable value" value={money(d.taxable_value)} hint="Before GST" icon={Receipt} />
-        <KpiCard to={drill('billing.gst')} label="GST" value={money(d.gst_collected)} hint="CGST + SGST + IGST on issued invoices" icon={Percent} />
-        <KpiCard to={drill('billing.received')} label="Amount received" value={money(d.amount_received)} hint="Allocated to these invoices" icon={Wallet} accent="available" />
-        <KpiCard to={drill('billing.outstanding')} label="Outstanding" value={money(d.outstanding)} hint="Balance still due" icon={HandCoins} accent="pending" />
-        <KpiCard to={drill('billing.overdue')} label="Overdue" value={money(d.overdue_amount)} hint="Past the due date" icon={AlarmClock} accent="shortage" />
+        <KpiCard to={drill('billing.value')} label="Taxable Sales" value={amt(x?.taxable_value)} hint="Issued invoices, GST excluded" icon={IndianRupee} accent="manufacturing" />
+        <KpiCard to={drill('billing.gst')} label="Total GST" value={money(d.gst_collected)} hint="CGST + SGST + IGST on issued invoices (shown separately)" icon={Percent} />
+        <KpiCard to={drill('billing.received')} label="Amount received (incl. GST)" value={money(d.amount_received)} hint="Allocated to these invoices; receipts are not split into taxable value and GST" icon={Wallet} accent="available" />
+        <KpiCard to={drill('billing.outstanding')} label="Outstanding Receivables (Excl. GST)" value={amt(x?.outstanding_excl_gst)}
+          hint={reviewText(x?.outstanding_review, 'part-paid invoice(s)', money) ?? 'Taxable value still due'} icon={HandCoins} accent="pending" />
+        <KpiCard to={drill('billing.overdue')} label="Overdue (Excl. GST)" value={amt(x?.overdue_excl_gst)}
+          hint={reviewText(x?.overdue_review, 'part-paid invoice(s)', money) ?? 'Past the due date'} icon={AlarmClock} accent="shortage" />
         <KpiCard to={drill('billing.partially_paid')} label="Partially paid" value={formatNumber(d.partially_paid)} icon={HandCoins} accent="pending" />
         <KpiCard to={drill('billing.fully_paid')} label="Fully paid" value={formatNumber(d.fully_paid)} icon={CheckCircle2} accent="available" />
         <KpiCard to={drill('billing.drafts')} label="Drafts" value={formatNumber(d.drafts)} hint={`${d.proforma} proforma`} icon={FilePen} />
@@ -106,11 +116,12 @@ export default function InvoiceDashboardPage() {
       </section>
 
       <div className="grid gap-6 xl:grid-cols-2">
-        <ChartCard title="Monthly trend" description="Invoiced and received over the last 12 months" isEmpty={monthly.every((m) => !m.a && !m.b)} emptyMessage="No invoices or receipts yet."
-          table={{ headers: ['Month', 'Invoiced', 'Received'], rows: monthly.map((m) => [m.label, money(m.a), money(m.b)]), links: monthly.map((_, i) => monthHref(i, 'a')) }}
-          drillHint={drill('billing.month_invoiced') ? 'Click a bar to open the invoices or payments of that month.' : undefined}>
-          <PairedBarChart aName="Invoiced" bName="Received" aColor={TONE_FILL.info} bColor={TONE_FILL.success} valueFormatter={(v) => money(v)} data={monthly}
-            onSelect={drill('billing.month_invoiced') ? (i, s) => { const h = monthHref(i, s); if (h) navigate(h) } : undefined} />
+        <ChartCard title="Monthly trend" description="Taxable sales and GST invoiced over the last 12 months" isEmpty={monthly.every((m) => !m.a && !m.b)}
+          emptyMessage={x ? 'No invoices yet.' : EXCL_GST_MISSING}
+          table={{ headers: ['Month', 'Taxable sales', 'GST', 'Received (incl. GST)'], rows: monthly.map((m) => [m.label, money(m.a), money(m.b), money(m.received)]), links: monthly.map((_, i) => monthHref(i, 'a')) }}
+          drillHint={drill('billing.month_invoiced') ? 'Click a bar to open the invoices of that month.' : undefined}>
+          <PairedBarChart aName="Taxable sales" bName="GST" stacked aColor={TONE_FILL.info} bColor={TONE_FILL.neutral} valueFormatter={(v) => money(v)} data={monthly}
+            onSelect={drill('billing.month_invoiced') ? (i) => { const h = monthHref(i, 'a'); if (h) navigate(h) } : undefined} />
         </ChartCard>
         <Card>
           <CardHeader><CardTitle>GST summary</CardTitle></CardHeader>
@@ -134,7 +145,7 @@ export default function InvoiceDashboardPage() {
             <ul className="divide-y text-sm">{d.recent.map((r) => (
               <li key={r.id} className="flex flex-wrap items-center gap-3 py-2">
                 <Link className="font-medium text-primary hover:underline" to={`/billing/invoices/${r.id}`}>{r.invoice_number ?? 'Draft'}</Link>
-                <span className="min-w-0 flex-1 truncate">{r.customer_name}</span><span className="tabular-nums">{money(r.grand_total)}</span>
+                <span className="min-w-0 flex-1 truncate">{r.customer_name}</span><span className="tabular-nums" title="Taxable value (excl. GST)">{amt(x?.by_invoice[r.id]?.taxable)}</span>
                 <StatusBadge tone={(r.payment_status ? PAYMENT_STATUS_META[r.payment_status as PaymentStatusKey]?.tone : INVOICE_STATUS[r.status]?.tone) ?? 'neutral'}
                   label={r.payment_status ? PAYMENT_STATUS_META[r.payment_status as PaymentStatusKey]?.label ?? r.payment_status : INVOICE_STATUS[r.status]?.label ?? r.status} />
               </li>
@@ -144,11 +155,13 @@ export default function InvoiceDashboardPage() {
           <CardHeader><CardTitle>Overdue invoices</CardTitle></CardHeader>
           <CardContent>{d.overdue.length === 0 ? <p className="text-sm text-muted-foreground">No overdue invoices.</p> : (
             <table className="w-full text-sm" aria-label="Overdue invoices"><thead className="text-xs text-muted-foreground"><tr><th className="pb-1 text-left">Invoice</th><th className="pb-1 text-left">Customer</th>
-              <th className="pb-1 text-left">Due</th><th className="pb-1 text-right">Days</th><th className="pb-1 text-right">Balance</th></tr></thead>
+              <th className="pb-1 text-left">Due</th><th className="pb-1 text-right">Days</th><th className="pb-1 text-right">Balance (excl. GST)</th></tr></thead>
               <tbody>{d.overdue.map((o) => (
                 <tr key={o.id} className="border-t"><td className="py-1.5"><Link className="text-primary hover:underline" to={`/billing/invoices/${o.id}`}>{o.invoice_number}</Link></td>
                   <td className="py-1.5">{o.customer_name}</td><td className="py-1.5">{formatDate(o.due_date)}</td>
-                  <td className="py-1.5 text-right text-shortage">{o.days_overdue}</td><td className="py-1.5 text-right tabular-nums">{money(o.balance_due)}</td></tr>
+                  <td className="py-1.5 text-right text-shortage">{o.days_overdue}</td><td className="py-1.5 text-right tabular-nums">{x?.by_invoice[o.id]?.status === 'REVIEW'
+                    ? <span className="text-amber-800" title={`${money(o.balance_due)} incl. GST; payments are not split into taxable value and GST`}>Review</span>
+                    : amt(x?.by_invoice[o.id]?.outstanding_excl_gst)}</td></tr>
               ))}</tbody></table>)}</CardContent>
         </Card>
       </div>

@@ -26,12 +26,13 @@ const cost = (over: Partial<BomCostRow>): BomCostRow => ({
 })
 
 describe('Sourcing method (the existing default_source_type, relabelled)', () => {
-  it('Manufacture / Purchase / Both (Make & Buy); stored codes unchanged', () => {
-    assert.deepEqual(SOURCE_TYPE_LABELS, { IN_HOUSE: 'Manufacture', OUTSOURCED: 'Purchase', HYBRID: 'Both (Make & Buy)' })
+  it('Manufacture / Purchase-IN / Outsourced-IMP; stored codes unchanged', () => {
+    assert.deepEqual(SOURCE_TYPE_LABELS, { IN_HOUSE: 'Manufacture', OUTSOURCED: 'Purchase-IN', HYBRID: 'Outsourced-IMP' })
   })
   it('imports accept the new labels and the earlier ones', () => {
     for (const [v, code] of [['Manufacture', 'IN_HOUSE'], ['Purchase', 'OUTSOURCED'], ['Both (Make & Buy)', 'HYBRID'], ['Make & Buy', 'HYBRID'],
-      ['In-House', 'IN_HOUSE'], ['Outsourced', 'OUTSOURCED'], ['Hybrid', 'HYBRID'], ['both', 'HYBRID']] as const) {
+      ['In-House', 'IN_HOUSE'], ['Outsourced', 'OUTSOURCED'], ['Hybrid', 'HYBRID'], ['both', 'HYBRID'],
+      ['Purchase-IN', 'OUTSOURCED'], ['purchase in', 'OUTSOURCED'], ['PURCHASE_IN', 'OUTSOURCED'], ['Outsourced-IMP', 'HYBRID'], ['outsourced imp', 'HYBRID'], ['OUTSOURCED_IMP', 'HYBRID']] as const) {
       assert.equal(parseSourceType(v), code, v)
     }
     assert.equal(parseSourceType('Sometimes'), null)

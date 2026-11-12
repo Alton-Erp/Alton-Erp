@@ -169,7 +169,7 @@ export default function BomsPage() {
         open={recalc === 'confirm'}
         onOpenChange={(o) => { if (!o && recalc === 'confirm') setRecalc(null) }}
         title="Recalculate BOM and Product Master costs?"
-        description="Every approved BOM is costed again from the current component costs, and each product's Product Master Cost follows its sourcing method (Manufacture: approved BOM; Purchase: latest valid GRN; Both: its default source). Products without a valid new cost keep their cost. Changes are recorded in the cost history; stock lots and posted transactions are not changed."
+        description="Every approved BOM is costed again from the current component costs, and each product's Product Master Cost follows its sourcing method (Manufacture: approved BOM; Purchase-IN: latest valid GRN; Outsourced-IMP: its default source). Products without a valid new cost keep their cost. Changes are recorded in the cost history; stock lots and posted transactions are not changed."
         confirmLabel="Recalculate"
         onConfirm={() => void runRecalc()}
       />

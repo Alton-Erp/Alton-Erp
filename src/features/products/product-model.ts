@@ -69,14 +69,14 @@ export type SourceType = (typeof SOURCE_TYPES)[number]
 /** Sourcing method (stored codes unchanged: IN_HOUSE / OUTSOURCED / HYBRID). */
 export const SOURCE_TYPE_LABELS: Record<SourceType, string> = {
   IN_HOUSE: 'Manufacture',
-  OUTSOURCED: 'Purchase',
-  HYBRID: 'Both (Make & Buy)',
+  OUTSOURCED: 'Purchase-IN',
+  HYBRID: 'Outsourced-IMP',
 }
 
 export const SOURCE_TYPE_DESCRIPTIONS: Record<SourceType, string> = {
   IN_HOUSE: "Normally manufactured at the company's own plant (In-House). Product Master Cost follows the approved BOM.",
-  OUTSOURCED: 'Normally purchased from an outside supplier (Outsourced). Product Master Cost follows the latest valid GRN.',
-  HYBRID: 'Manufactured and purchased (Hybrid). BOM and purchase costs are kept separately; the default cost source decides the Product Master Cost.',
+  OUTSOURCED: 'Purchased domestically from a supplier. Product Master Cost follows the latest valid posted GRN (GST excluded, after discount).',
+  HYBRID: 'Externally sourced / imported, or made and bought. BOM and purchase costs are kept separately; the default cost source (BOM or GRN) decides the Product Master Cost.',
 }
 
 export const PRODUCT_STATUSES = ['ACTIVE', 'INACTIVE'] as const
@@ -335,6 +335,13 @@ const SOURCE_ALIASES: Record<string, SourceType> = {
   BOTH_MAKE_BUY: 'HYBRID',
   MAKE_BUY: 'HYBRID',
   MAKE_AND_BUY: 'HYBRID',
+  // Labels from 2026-12: Purchase-IN (stored OUTSOURCED) and Outsourced-IMP (stored HYBRID).
+  // The older code OUTSOURCED keeps its meaning (Purchase-IN); only the full new label means HYBRID.
+  PURCHASE_IN: 'OUTSOURCED',
+  PURCHASEIN: 'OUTSOURCED',
+  OUTSOURCED_IMP: 'HYBRID',
+  OUTSOURCEDIMP: 'HYBRID',
+  OUTSOURCED_IMPORT: 'HYBRID',
 }
 
 export function parseSourceType(value: string): SourceType | null {

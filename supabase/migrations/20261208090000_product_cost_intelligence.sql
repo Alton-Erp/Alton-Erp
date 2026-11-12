@@ -3,7 +3,7 @@
 --
 -- Inspected before writing (reused, not replaced):
 --   * Sourcing method = the existing products.default_source_type
---       IN_HOUSE = Manufacture, OUTSOURCED = Purchase, HYBRID = Both (Make & Buy).
+--       IN_HOUSE = Manufacture, OUTSOURCED = Purchase-IN, HYBRID = Outsourced-IMP (labels; earlier Purchase and Both (Make & Buy)).
 --     No new column, no value of an existing product is changed by this migration.
 --   * Purchase cost = Purchase Cost Intelligence (20261123090000): product_last_purchase_costs
 --     is kept from posted GRNs only (deferred trigger at the end of the posting), GST excluded,
@@ -551,7 +551,7 @@ begin
     raise exception 'Product not found in your company.' using errcode = 'P0001';
   end if;
   if v_p.default_source_type <> 'HYBRID' then
-    raise exception 'The default cost source is set only for products sourced as Both (Make & Buy).' using errcode = 'P0001';
+    raise exception 'The default cost source is set only for products sourced as Outsourced-IMP (Both).' using errcode = 'P0001';
   end if;
   perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('product_cost:' || v_company::text || ':' || p_product_id::text, 0));
   select default_cost_source into v_old from public.product_cost_profiles where company_id = v_company and product_id = p_product_id;
@@ -610,7 +610,7 @@ declare
   v_p       public.products;
 begin
   if p_method is null or p_method not in ('IN_HOUSE', 'OUTSOURCED', 'HYBRID') then
-    raise exception 'Choose the sourcing method: Manufacture, Purchase or Both.' using errcode = 'P0001';
+    raise exception 'Choose the sourcing method: Manufacture, Purchase-IN or Outsourced-IMP.' using errcode = 'P0001';
   end if;
   select * into v_p from public.products where id = p_product_id and company_id = v_company for update;
   if not found then

@@ -95,8 +95,8 @@ export function costIntelligence(p: CostIntelligenceFields): CostIntelligenceVie
   const method = p.default_source_type
   const defaultCostSource = method === 'HYBRID' ? (p.default_cost_source ?? 'BOM') : null
   const rule = method === 'IN_HOUSE' ? 'Manufacture: the cost of the active approved BOM.'
-    : method === 'OUTSOURCED' ? 'Purchase: the latest valid posted GRN (GST excluded, after discount).'
-      : `Both: BOM and purchase costs are kept separately; the default source (${DEFAULT_COST_SOURCE_LABELS[defaultCostSource ?? 'BOM']}) sets the Product Master Cost. Each stock receipt keeps its own actual cost.`
+    : method === 'OUTSOURCED' ? 'Purchase-IN: the latest valid posted GRN (GST excluded, after discount).'
+      : `Outsourced-IMP: BOM and purchase costs are kept separately; the default source (${DEFAULT_COST_SOURCE_LABELS[defaultCostSource ?? 'BOM']}) sets the Product Master Cost. Each stock receipt keeps its own actual cost.`
   return {
     available, bomCost, bomReference, bomNote,
     lastPurchaseCost: num(p.last_purchase_cost), lastPurchaseDate: p.last_purchase_date ?? null,

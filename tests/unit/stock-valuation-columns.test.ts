@@ -11,7 +11,7 @@ describe('Total Stock valuation columns', () => {
 
   it('lists the requested columns in order, with both value columns sortable and in the Columns selector', () => {
     assert.deepEqual(cols.filter((c) => c.visible !== false).map((c) => c.label),
-      ['SKU', 'Product', 'Category', 'Unit', 'On hand', 'Reserved', 'Available', 'Unit Cost (₹)', 'Total Stock Value (₹)', 'Stock status'])
+      ['SKU', 'Product', 'Category', 'Unit', 'On hand', 'Reserved', 'Available', 'Unit Cost (₹)', 'Stock Value (Excl. GST, ₹)', 'Stock status'])
     for (const k of ['unit_cost', 'stock_value', 'sku']) assert.ok(col(k).sortable !== false && !col(k).get, `${k} not sortable on the server`)
     assert.equal(col('unit_cost').kind, 'money')
     assert.equal(col('stock_value').kind, 'money')

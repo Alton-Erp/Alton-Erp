@@ -422,7 +422,7 @@ function ProductForm({ existing, categories, suppliers }: { existing: ProductRow
               {values.default_source_type === 'HYBRID' && (
                 <p className="flex gap-2 rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-xs text-teal-900">
                   <Info aria-hidden className="mt-0.5 size-3.5 shrink-0" />
-                  Both (Make &amp; Buy) products can be manufactured and purchased. BOM and purchase costs are kept separately; the actual source and cost of each stock quantity is recorded on its inventory receipt, not here.
+                  Outsourced-IMP products are sourced externally / imported, or made and bought. BOM and purchase costs are kept separately; the actual source and cost of each stock quantity is recorded on its inventory receipt, not here.
                 </p>
               )}
             </fieldset>

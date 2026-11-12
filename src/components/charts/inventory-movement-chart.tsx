@@ -2,6 +2,7 @@ import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, X
 
 import { formatNumber } from '@/lib/format'
 import { AXIS_TICK, CHART_COLORS } from './chart-theme'
+import { compactIndian } from './chart-layout'
 import { ChartLegend } from './chart-legend'
 import { ChartTooltip } from './chart-tooltip'
 
@@ -19,8 +20,8 @@ export function InventoryMovementChart({ data, onSelect }: { data: MovementPoint
         onClick={onSelect ? (s: unknown) => { const i = Number((s as { activeTooltipIndex?: unknown } | null)?.activeTooltipIndex); if (Number.isInteger(i) && i >= 0) onSelect(i) } : undefined}
         style={onSelect ? { cursor: 'pointer' } : undefined}>
         <CartesianGrid vertical={false} stroke={CHART_COLORS.grid} />
-        <XAxis dataKey="label" tick={AXIS_TICK} axisLine={false} tickLine={false} minTickGap={24} />
-        <YAxis tick={AXIS_TICK} axisLine={false} tickLine={false} width={48} tickFormatter={formatNumber} />
+        <XAxis dataKey="label" tick={AXIS_TICK} axisLine={false} tickLine={false} minTickGap={24} interval="preserveStartEnd" />
+        <YAxis tick={AXIS_TICK} axisLine={false} tickLine={false} width={60} tickFormatter={compactIndian} />
         <Tooltip
           cursor={{ stroke: CHART_COLORS.axis, strokeDasharray: '3 3' }}
           content={<ChartTooltip valueFormatter={formatNumber} />}

@@ -151,22 +151,25 @@ async function run(user) {
   // Purchase
   const po = await q(`${P('purchase_order_dashboard')}('${c.from}', '${c.to}')`)
   const pm = await md('PURCHASE')
+  // Money figures are shown excluding GST (migration 20261209090000): compared with gst_exclusive_dashboard.
+  const ex = (scope, status = null, payment = null) => q(`${P('gst_exclusive_dashboard')}('${scope}', '${c.from}', '${c.to}', null, ${lit(status)}, ${lit(payment)})`)
+  const xp = (await ex('PURCHASE')).purchase
   await compare('Purchase / total', 'purchase.total', c, po.total)
   await compare('Purchase / open', 'purchase.open', c, po.open)
   await compare('Purchase / overdue', 'purchase.overdue', c, po.overdue)
-  await compare('Purchase / pending value', 'purchase.pending_value', c, po.outstanding_receipt_value, 'total')
+  await compare('Purchase / pending value (excl. GST)', 'purchase.pending_value', c, xp.outstanding_receipt_value, 'total')
   await compare('Purchase / ordered in period (orders)', 'purchase.period', c, po.period_orders)
-  await compare('Purchase / ordered in period (value)', 'purchase.period', c, po.period_value, 'total')
+  await compare('Purchase / ordered in period (value excl. GST)', 'purchase.period', c, xp.period_value, 'total')
   await compare('Purchase / partially received', 'purchase.partial', c, pm.partially_received)
   await compare('Purchase / fully received', 'purchase.received', c, pm.fully_received)
-  for (const s of units(pm.top_suppliers)) await compare(`Purchase / supplier ${s.supplier}`, 'purchase.supplier', { ...c, segment: s.supplier }, s.value, 'total')
+  for (const s of units(xp.top_suppliers)) await compare(`Purchase / supplier ${s.supplier} (excl. GST)`, 'purchase.supplier', { ...c, segment: s.supplier }, s.value, 'total')
 
   // Goods received
   const g = await md('GRN')
   for (const [k, f] of [['total', 'total'], ['today', 'today'], ['month', 'month'], ['period', 'in_period'], ['unlinked', 'unlinked'], ['pending', 'pending_orders']]) {
     await compare(`GRN / ${k}`, `grn.${k}`, c, g[f])
   }
-  await compare('GRN / pending value', 'grn.pending', c, g.pending_value, 'total')
+  await compare('GRN / pending value (excl. GST)', 'grn.pending', c, (await ex('GRN')).purchase.outstanding_receipt_value, 'total')
   if (!units(g.rejected).length) await compare('GRN / rejected (none)', 'grn.rejected', c, 0, 'total')
   for (const u of units(g.rejected)) await compare(`GRN / rejected (${u.unit})`, 'grn.rejected', { ...c, unit: u.unit }, u.quantity, 'total')
   // Value of the receipts in the period (the list has no value column): same records, valued by the database.
@@ -176,19 +179,18 @@ async function run(user) {
 
   // Management overview
   const ov = await q(`${P('management_overview')}('${c.from}', '${c.to}')`)
+  const xm = await ex('MANAGEMENT')
   await compare('Management / purchase orders', 'purchase.created', c, ov.purchase.created)
   await compare('Management / pending GRNs', 'purchase.open', c, ov.purchase.open)
   await compare('Management / production orders', 'production.orders', c, ov.production.orders)
   await compare('Management / sales orders (excl. cancelled)', 'sales.booked', c, num(ov.sales.total_orders) - num(ov.sales.cancelled))
-  await compare('Management / invoiced sales (value)', 'billing.issued_period', c, ov.kpis.sales_invoiced, 'total')
+  await compare('Management / taxable sales (value)', 'billing.issued_period', c, xm.sales_invoiced, 'total')
   await compare('Management / invoiced sales (invoices)', 'billing.issued_period', c, ov.kpis.invoices)
-  await compare('Management / outstanding payments', 'billing.outstanding_all', c, ov.kpis.customer_outstanding, 'total')
-  for (const d of units(ov.sales.daily)) {
-    await compare(`Management / sales booked ${d.day}`, 'sales.booked_period', { ...c, segFrom: d.day, segTo: d.day }, d.orders)
-    await compare(`Management / sales booked ${d.day} (value)`, 'sales.booked_period', { ...c, segFrom: d.day, segTo: d.day }, d.value, 'total')
-  }
+  await compare('Management / outstanding receivables (excl. GST)', 'billing.outstanding_all', c, xm.receivables.outstanding_excl_gst, 'total')
+  for (const d of units(ov.sales.daily)) await compare(`Management / sales booked ${d.day}`, 'sales.booked_period', { ...c, segFrom: d.day, segTo: d.day }, d.orders)
+  for (const d of units(xm.sales.daily)) await compare(`Management / sales booked ${d.day} (value excl. GST)`, 'sales.booked_period', { ...c, segFrom: d.day, segTo: d.day }, d.value, 'total')
   for (const d of units(ov.production.daily)) await compare(`Management / production ${d.day} (${d.unit})`, 'production.output', { ...c, unit: d.unit, segFrom: d.day, segTo: d.day }, d.good, 'total')
-  for (const m of units(ov.purchase.monthly)) await compare(`Management / purchases ordered ${m.month}`, 'purchase.month', { ...c, segFrom: m.month, segTo: monthEnd(m.month) }, m.ordered, 'total')
+  for (const m of units(xm.purchase.monthly)) await compare(`Management / purchases ordered ${m.month} (excl. GST)`, 'purchase.month', { ...c, segFrom: m.month, segTo: monthEnd(m.month) }, m.ordered, 'total')
   for (const m of units(ov.purchase.monthly)) {
     const where = conditionsToSql(METRICS['grn.month_received'].conditions({ ...c, segFrom: m.month, segTo: monthEnd(m.month) }), { alias: 'v' })
     const v = await receiptValue(user, where)
@@ -215,7 +217,8 @@ async function run(user) {
       ['fulfilled', 'fully_fulfilled'], ['cancelled', 'cancelled'], ['awaiting', 'awaiting_dispatch']]) {
       await compare(`Sales / ${k}${tag}`, `sales.${k}`, cs, sd[f])
     }
-    await compare(`Sales / value${tag}`, 'sales.value', cs, sd.total_value, 'total')
+    const xs = (await q(`${P('gst_exclusive_dashboard')}('SALES', '${c.from}', '${c.to}', null, ${lit(status)})`)).sales
+    await compare(`Sales / value excl. GST${tag}`, 'sales.value', cs, xs.total_value, 'total')
     await compare(`Sales / shortages${tag}`, 'sales.shortages', cs, units(sd.shortages).length)
     // Finished goods reserved: the reserved quantities of the listed orders add up to the card.
     for (const u of units(sd.finished_goods_reserved)) {
@@ -240,13 +243,18 @@ async function run(user) {
       ['cancelled', 'cancelled'], ['today', 'created_today'], ['month', 'this_month']]) {
       await compare(`Invoices / ${k}${tag}`, `billing.${k}`, cb, d[f])
     }
-    for (const [k, f] of [['value', 'total_value'], ['taxable', 'taxable_value'], ['gst', 'gst_collected'], ['received', 'amount_received'], ['outstanding', 'outstanding'], ['overdue', 'overdue_amount']]) {
+    const xb = (await q(`${P('gst_exclusive_dashboard')}('BILLING', '${c.from}', '${c.to}', null, ${lit(status)}, ${lit(payment)})`)).invoicing
+    for (const [k, f] of [['taxable', 'taxable_value'], ['gst', 'gst_collected'], ['received', 'amount_received']]) {
       await compare(`Invoices / ${k}${tag}`, `billing.${k}`, cb, d[f], 'total')
     }
+    // Excl. GST: taxable sales and outstanding / overdue balances (part-paid invoices count 0 and are flagged).
+    await compare(`Invoices / value = taxable sales${tag}`, 'billing.value', cb, xb.taxable_value, 'total')
+    await compare(`Invoices / outstanding excl. GST${tag}`, 'billing.outstanding', cb, xb.outstanding_excl_gst, 'total')
+    await compare(`Invoices / overdue excl. GST${tag}`, 'billing.overdue', cb, xb.overdue_excl_gst, 'total')
     if (!status && !payment) {
-      for (const m of units(d.monthly)) {
+      for (const m of units(xb.monthly)) {
         const cm = { ...cb, segFrom: m.month, segTo: monthEnd(m.month) }
-        await compare(`Invoices / invoiced ${m.month}`, 'billing.month_invoiced', cm, m.invoiced, 'total')
+        await compare(`Invoices / taxable sales invoiced ${m.month}`, 'billing.month_invoiced', cm, m.taxable, 'total')
         await compare(`Invoices / received ${m.month}`, 'billing.month_received', cm, m.received, 'total')
       }
     }
@@ -298,8 +306,9 @@ async function run(user) {
   // Ledger
   const lg = await md('LEDGER')
   for (const [k, f] of [['customers', 'customers'], ['suppliers', 'suppliers'], ['both', 'both'], ['with_balance', 'with_balance']]) await compare(`Ledger / ${k}`, `ledger.${k}`, c, lg[f])
-  await compare('Ledger / receivables', 'ledger.receivables', c, lg.receivables, 'total')
-  await compare('Ledger / payables', 'ledger.payables', c, lg.payables, 'total')
+  const xl = await q(`${P('gst_exclusive_dashboard')}('LEDGER', '${c.from}', '${c.to}')`)
+  await compare('Ledger / receivables (excl. GST)', 'ledger.receivables', c, xl.receivables_excl_gst, 'total')
+  await compare('Ledger / payables (excl. GST)', 'ledger.payables', c, xl.payables_excl_gst, 'total')
 }
 
 console.log('\nCompany A (operator, Super Admin)')

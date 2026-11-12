@@ -31,6 +31,10 @@ interface ChartCardProps {
   drillHint?: string
   height?: number
   className?: string
+  /** Extra controls in the header (e.g. "Show all"), shown with the chart/table toggle. */
+  actions?: ReactNode
+  /** Shown under the chart (e.g. how many rows are grouped). */
+  footnote?: ReactNode
   children: ReactNode
 }
 
@@ -48,6 +52,8 @@ export function ChartCard({
   drillHint,
   height = 280,
   className,
+  actions,
+  footnote,
   children,
 }: ChartCardProps) {
   const [view, setView] = useState<'chart' | 'table'>('chart')
@@ -95,6 +101,7 @@ export function ChartCard({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {isSample && ready && <SampleTag />}
+          {ready && actions}
           {table && ready && (
             <div role="group" aria-label={`${title} view`} className="inline-flex rounded-md border p-0.5">
               <button
@@ -121,6 +128,7 @@ export function ChartCard({
       </CardHeader>
       <CardContent className="pt-4">
         <div style={{ height }}>{content}</div>
+        {footnote && ready && <p className="mt-2 text-xs text-muted-foreground">{footnote}</p>}
         {drillHint && ready && <p className="mt-2 text-xs text-muted-foreground">{drillHint}</p>}
       </CardContent>
     </Card>

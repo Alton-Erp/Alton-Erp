@@ -61,7 +61,7 @@ describe('V2 navigation scope', () => {
   it('the dashboard has no quick-action panel', async () => {
     const page = await readFile(path.join(root, 'src', 'pages', 'management-overview-page.tsx'), 'utf8')
     assert.doesNotMatch(page, /QUICK_ACTIONS|Quick actions/)
-    for (const label of ['Total stock', 'Manufactured stock', 'Outsourced stock', 'Purchase orders', 'Pending GRNs', 'Production orders', 'Sales orders', 'Invoiced sales', 'Outstanding payments']) {
+    for (const label of ['Total stock', 'Manufactured stock', 'Outsourced stock', 'Purchase orders', 'Pending GRNs', 'Production orders', 'Sales orders', 'Taxable Sales', 'Outstanding Receivables (Excl. GST)']) {
       assert.ok(page.includes(`label="${label}"`), `metric ${label}`)
     }
   })

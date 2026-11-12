@@ -2,6 +2,7 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 
 import { formatNumber } from '@/lib/format'
 import { AXIS_TICK, CHART_COLORS } from './chart-theme'
+import { compactIndian } from './chart-layout'
 import { ChartTooltip } from './chart-tooltip'
 
 /** Single-series trend (the card title names the series, so no legend). */
@@ -26,8 +27,8 @@ export function TrendLineChart({
         onClick={onSelect ? (s: unknown) => { const i = Number((s as { activeTooltipIndex?: unknown } | null)?.activeTooltipIndex); if (Number.isInteger(i) && i >= 0) onSelect(i) } : undefined}
         style={onSelect ? { cursor: 'pointer' } : undefined}>
         <CartesianGrid vertical={false} stroke={CHART_COLORS.grid} />
-        <XAxis dataKey="label" tick={AXIS_TICK} axisLine={false} tickLine={false} minTickGap={24} />
-        <YAxis tick={AXIS_TICK} axisLine={false} tickLine={false} width={48} tickFormatter={formatNumber} domain={fitToData ? ['auto', 'auto'] : undefined} />
+        <XAxis dataKey="label" tick={AXIS_TICK} axisLine={false} tickLine={false} minTickGap={24} interval="preserveStartEnd" />
+        <YAxis tick={AXIS_TICK} axisLine={false} tickLine={false} width={60} tickFormatter={compactIndian} domain={fitToData ? ['auto', 'auto'] : undefined} />
         <Tooltip cursor={{ stroke: CHART_COLORS.axis, strokeDasharray: '3 3' }} content={<ChartTooltip valueFormatter={valueFormatter} />} />
         <Line type="monotone" dataKey="value" name={seriesName} stroke={CHART_COLORS.single} strokeWidth={2}
           dot={data.length === 1 ? { r: 4 } : false} activeDot={{ r: 4, stroke: CHART_COLORS.surface, strokeWidth: 2 }} isAnimationActive={false} />

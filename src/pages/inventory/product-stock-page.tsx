@@ -85,7 +85,7 @@ export default function ProductStockPage() {
     { id: 'res', header: 'Reserved', align: 'right', cell: (r) => <span className="text-amber-800">{formatQty(r.reserved)}</span> },
     { id: 'av', header: 'Available', align: 'right', cell: (r) => <span className="font-medium text-green-700">{formatQty(r.available)}</span> },
     { id: 'cost', header: 'Unit cost (₹)', align: 'right', cell: (r) => { const v = lotValue(r); return v?.unit_cost === null || v?.unit_cost === undefined ? <span className="text-muted-foreground">{val ? notValued(r) : '—'}</span> : money(v.unit_cost) } },
-    { id: 'value', header: 'Stock value (₹)', align: 'right', cell: (r) => { const v = lotValue(r); return v?.stock_value === null || v?.stock_value === undefined ? <span className="text-muted-foreground">{val ? notValued(r) : '—'}</span> : <span className="font-medium">{money(v.stock_value)}</span> } },
+    { id: 'value', header: 'Stock value excl. GST (₹)', align: 'right', cell: (r) => { const v = lotValue(r); return v?.stock_value === null || v?.stock_value === undefined ? <span className="text-muted-foreground">{val ? notValued(r) : '—'}</span> : <span className="font-medium">{money(v.stock_value)}</span> } },
   ]
   // Per warehouse: quantities and the value of its lots (each at its own lot cost).
   const byWarehouse = [...data.lots.reduce((m, r) => {
@@ -152,7 +152,7 @@ export default function ProductStockPage() {
               { id: 'oh', header: 'On hand', align: 'right', cell: (w) => formatQty(w.on_hand) },
               { id: 'res', header: 'Reserved', align: 'right', cell: (w) => formatQty(w.reserved) },
               { id: 'av', header: 'Available', align: 'right', cell: (w) => formatQty(w.available) },
-              { id: 'value', header: 'Stock value (₹)', align: 'right', cell: (w) => (!val ? '—' : w.value === 0 && w.unvalued > 0 ? 'Not Valued'
+              { id: 'value', header: 'Stock value excl. GST (₹)', align: 'right', cell: (w) => (!val ? '—' : w.value === 0 && w.unvalued > 0 ? 'Not Valued'
                 : <>{money(w.value)}{w.unvalued > 0 && <span className="ml-1 text-xs text-muted-foreground">({formatQty(w.unvalued, u)} not valued)</span>}</>) },
             ]}
             emptyState={{ icon: Warehouse, title: 'No stock', description: '' }} />

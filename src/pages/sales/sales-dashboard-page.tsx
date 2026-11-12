@@ -23,6 +23,7 @@ import { useAsync } from '@/hooks/use-async'
 import { describeDataError } from '@/lib/errors'
 import { formatDate, formatNumber, toIsoDate } from '@/lib/format'
 import { fetchCustomers } from '@/services/customer-po'
+import { EXCL_GST_MISSING, EXCL_GST_NOTE, exclOk, fetchExclGst } from '@/services/gst-exclusive'
 import { fetchSalesDashboard, type SalesDashboard } from '@/services/sales-v2'
 
 /** /sales/dashboard — orders, value, reservations, production need, shortages and fulfilment. */
@@ -37,6 +38,10 @@ export default function SalesDashboardPage() {
   const customers = useAsync(() => fetchCustomers(true).catch(() => []), [])
   const dash = useAsync(() => fetchSalesDashboard(toIsoDate(period.from), toIsoDate(period.to), customer === 'all' ? null : customer, status === 'all' ? null : status),
     [period.from.getTime(), period.to.getTime(), customer, status])
+  // Order values excl. GST (taxable totals) with the same filters (migration 20261209090000).
+  const exq = useAsync(() => fetchExclGst('SALES', toIsoDate(period.from), toIsoDate(period.to), { customerId: customer === 'all' ? null : customer, status: status === 'all' ? null : status }),
+    [period.from.getTime(), period.to.getTime(), customer, status])
+  const xs = exclOk(exq.data?.sales) ? exq.data.sales : null
   const d = dash.data
   const v = (fn: (x: SalesDashboard) => string) => (d ? fn(d) : null)
   const ctx = { from: toIsoDate(period.from), to: toIsoDate(period.to), customer: customer === 'all' ? null : customer, status: status === 'all' ? null : status, ...(d?.today ? { today: d.today } : {}) }
@@ -66,13 +71,15 @@ export default function SalesDashboardPage() {
               {(Object.keys(SO_V2_STATUS) as SoV2Status[]).map((s) => <SelectItem key={s} value={s}>{SO_V2_STATUS[s].label}</SelectItem>)}</SelectContent>
           </Select></div>
       </div>
-      {dash.error && <Card className="mb-6"><ErrorState message={describeDataError(dash.error)} onRetry={dash.reload} /></Card>}
+      <p className="mb-4 text-xs text-muted-foreground" data-testid="gst-basis">{EXCL_GST_NOTE}</p>
+      {exq.data === null && <p role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-900" data-testid="gst-missing">{EXCL_GST_MISSING}</p>}
+      {(dash.error || exq.error) && <Card className="mb-6"><ErrorState message={describeDataError(dash.error ?? exq.error)} onRetry={() => { dash.reload(); exq.reload() }} /></Card>}
 
       <section aria-label="Sales summary" className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         <KpiCard to={to('sales.total')} label="Total Sales Orders" value={v((x) => formatNumber(x.total_orders))} hint="Ordered in the period" icon={ClipboardList} />
         <KpiCard to={to('sales.today')} label="Orders Created Today" value={v((x) => formatNumber(x.created_today))} icon={CalendarDays} accent="manufacturing" />
         <KpiCard to={to('sales.month')} label="Orders This Month" value={v((x) => formatNumber(x.this_month))} icon={CalendarRange} />
-        <KpiCard to={to('sales.value')} label="Total Sales Order Value" value={v((x) => money(x.total_value))} hint="Grand totals, cancelled orders excluded" icon={IndianRupee} accent="available" />
+        <KpiCard to={to('sales.value')} label="Sales Order Value (Excl. GST)" value={xs ? money(xs.total_value) : exq.loading ? null : '—'} hint="Taxable totals, cancelled orders excluded" icon={IndianRupee} accent="available" />
         <KpiCard to={to('sales.pending')} label="Pending Orders" value={v((x) => formatNumber(x.pending))} hint="Nothing dispatched yet" icon={Hourglass} accent="pending" />
         <KpiCard to={to('sales.partial')} label="Partially Fulfilled Orders" value={v((x) => formatNumber(x.partially_fulfilled))} icon={Truck} accent="pending" />
         <KpiCard to={to('sales.fulfilled')} label="Fully Fulfilled Orders" value={v((x) => formatNumber(x.fully_fulfilled))} icon={CheckCircle2} accent="available" />
@@ -90,14 +97,14 @@ export default function SalesDashboardPage() {
           {!d ? <CardContent><p className="text-sm text-muted-foreground">{dash.loading ? 'Loading…' : '—'}</p></CardContent>
             : d.recent.length === 0 ? <CardContent><p className="text-sm text-muted-foreground">No sales orders in this period.</p></CardContent> : (
               <Table>
-                <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Order</TableHead><TableHead>Customer</TableHead><TableHead>Date</TableHead><TableHead className="text-right">Value</TableHead><TableHead>Status</TableHead></TableRow></TableHeader>
+                <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Order</TableHead><TableHead>Customer</TableHead><TableHead>Date</TableHead><TableHead className="text-right">Value (excl. GST)</TableHead><TableHead>Status</TableHead></TableRow></TableHeader>
                 <TableBody>{d.recent.map((o) => {
                   const s = soStatusMeta(o.status)
                   return (
                     <TableRow key={o.id} className="cursor-pointer" onClick={() => navigate(`/sales/orders/${o.id}`)}>
                       <TableCell className="font-medium"><Link to={`/sales/orders/${o.id}`} className="hover:underline" onClick={(e) => e.stopPropagation()}>{o.sales_order_number}</Link></TableCell>
                       <TableCell>{o.customer_name}</TableCell><TableCell>{formatDate(o.order_date)}</TableCell>
-                      <TableCell className="text-right tabular-nums">{money(o.grand_total)}</TableCell><TableCell><StatusBadge label={s.label} tone={s.tone} /></TableCell>
+                      <TableCell className="text-right tabular-nums">{xs && xs.orders[o.id] !== undefined ? money(xs.orders[o.id]) : '—'}</TableCell><TableCell><StatusBadge label={s.label} tone={s.tone} /></TableCell>
                     </TableRow>
                   )
                 })}</TableBody>

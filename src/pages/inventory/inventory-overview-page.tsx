@@ -18,6 +18,7 @@ import { PermissionGate } from '@/auth/permission-gate'
 import { usePermissions } from '@/auth/use-permissions'
 import { CHART_COLORS, TONE_FILL } from '@/components/charts/chart-theme'
 import { HorizontalBarChart } from '@/components/charts/horizontal-bar-chart'
+import { RankedBarCard } from '@/components/charts/ranked-bar-card'
 import { InventoryMovementChart } from '@/components/charts/inventory-movement-chart'
 import { ChartCard } from '@/components/common/chart-card'
 import { DateRangeFilter } from '@/components/common/date-range-filter'
@@ -234,18 +235,20 @@ export default function InventoryOverviewPage() {
       </section>
 
       <div className="mb-6 grid gap-6 xl:grid-cols-2">
-        <ChartCard
+        <RankedBarCard
+          testId="inventory-by-category"
           title="Inventory by category"
-          description={`Current on-hand quantity${selectedUnit ? ` (${selectedUnit})` : ''}`}
-          isEmpty={byCategory.length === 0}
+          description={`Current on-hand quantity${selectedUnit ? ` (${selectedUnit})` : ''}, largest first`}
+          rows={byCategory.map((c) => ({ label: c.category, value: Number(c.on_hand), href: href('inventory.category', { ...u, segment: c.category }) }))}
+          seriesName="On hand"
+          labelHeader="Category"
+          valueHeader={`On hand (${selectedUnit ?? ''})`}
+          valueFormatter={(v) => formatQty(v)}
+          limit={10}
           emptyMessage="No stock on hand."
-          table={{ headers: ['Category', `On hand (${selectedUnit ?? ''})`], rows: byCategory.map((c) => [c.category, formatQty(Number(c.on_hand))]),
-            links: byCategory.map((c) => href('inventory.category', { ...u, segment: c.category })) }}
-          drillHint={drillable ? 'Click a category to open its products.' : undefined}
-        >
-          <HorizontalBarChart seriesName="On hand" valueFormatter={(v) => formatQty(v)} data={byCategory.map((c) => ({ label: c.category, value: Number(c.on_hand) }))}
-            onSelect={drillable ? (i) => go(href('inventory.category', { ...u, segment: byCategory[i]?.category })) : undefined} />
-        </ChartCard>
+          onOpen={drillable ? go : undefined}
+          drillHint="Click a category to open its products."
+        />
         <ChartCard
           title="In-house vs outsourced"
           description={`Actual source of current stock${selectedUnit ? ` (${selectedUnit})` : ''}`}

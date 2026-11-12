@@ -327,7 +327,7 @@ export default function ProductImportPage() {
             ['Required columns', `${IMPORT_FIELDS.filter((f) => f.required).map((f) => f.label).join(', ')}. Everything else is optional and can be added later.`],
             ['SKU', 'Optional for new products: leave blank to get the next code for the type (FG-000001, RM-000001 …). Needed to update existing products.'],
             ['Product Type', Object.values(PRODUCT_TYPE_LABELS).join(', ')],
-            ['Source Type', `${Object.values(SOURCE_TYPE_LABELS).join(', ')}. Optional (the Sourcing Method; earlier labels In-House, Outsourced and Hybrid are also accepted): finished goods, subassemblies and components default to Manufacture, others to Purchase.`],
+            ['Source Type', `${Object.values(SOURCE_TYPE_LABELS).join(', ')}. Optional (the Sourcing Method; earlier labels Purchase, Both (Make & Buy), In-House, Outsourced and Hybrid are also accepted, and Outsourced still means Purchase-IN): finished goods, subassemblies and components default to Manufacture, others to Purchase-IN.`],
             ['Unit', `${UNITS.map((u) => u.code).join(', ')} (names such as Litres or Rolls also work). Optional: PCS when blank. An existing product keeps its unit code when the file names the same unit.`],
             ['Category', `Name or code of an active category: ${(categories.data ?? []).filter((c) => c.is_active).map((c) => c.name).join(', ')}`],
             ['HSN Code', '4, 6 or 8 digits (optional)'],
