@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, Boxes, Columns3, Download, ExternalLink, Filter, IndianRupee, Lock, PackageCheck, Printer, RefreshCw, Search, ShieldX, Warehouse, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, Boxes, Columns3, Download, ExternalLink, Filter, IndianRupee, Lock, PackageCheck, Printer, RefreshCw, Search, ShieldX, Warehouse, X, CircleDashed } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
@@ -319,13 +319,17 @@ function StockValueSummary({ unit, search, refresh }: { unit: string | null; sea
   const units = (k: 'on_hand' | 'reserved' | 'available') => (d ? unitsText(d.units.map((u) => ({ unit: u.unit, quantity: Number(u[k]) }))) : '…')
   const notValued = d ? d.not_valued_products + d.partly_valued_products : 0
   return (
-    <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5" data-testid="stock-value-summary">
+    <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6" data-testid="stock-value-summary">
       <KpiCard testId="sv-products" icon={Boxes} label="Total Products" value={d ? formatNumber(d.products) : '…'} />
       <KpiCard testId="sv-on-hand" icon={Warehouse} label="Total On Hand Quantity" value={units('on_hand')} />
       <KpiCard testId="sv-reserved" icon={Lock} accent="pending" label="Total Reserved Quantity" value={units('reserved')} />
       <KpiCard testId="sv-available" icon={PackageCheck} accent="available" label="Total Available Quantity" value={units('available')} />
       <KpiCard testId="sv-value" icon={IndianRupee} label="Total Inventory Value (₹)" value={d ? money(Number(d.total_value)) : '…'}
         hint={d ? (notValued ? `Average inventory cost · ${formatNumber(notValued)} product(s) not fully valued (no cost recorded)` : 'Average inventory cost, as in the stock reports') : undefined} />
+      {/* Stock without a cost: counted in the quantities, never in the value (no cost is assumed). */}
+      <KpiCard testId="sv-unvalued" icon={CircleDashed} accent={d?.unvalued_units?.some((u) => Number(u.quantity) !== 0) ? 'pending' : 'neutral'} label="Quantity Not Valued (Pending Cost)"
+        value={d ? (d.unvalued_units ? unitsText(d.unvalued_units.map((u) => ({ unit: u.unit, quantity: Number(u.quantity) }))) : '—') : '…'}
+        hint="Recorded without a cost; excluded from the value until a cost is set" />
     </div>
   )
 }
