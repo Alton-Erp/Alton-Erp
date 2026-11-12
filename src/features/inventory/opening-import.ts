@@ -12,6 +12,12 @@
 // server sets it again when the lines are submitted. The cost is optional (migration
 // 20261204090000): a row whose product has no valid cost (missing or zero) is accepted with a
 // pending cost and is not valued; no cost is assumed and it is never imported at zero.
+//
+// Existing records (migration 20261206090000): with an additive context (the Excel import), a row whose
+// product + location + batch already has a posted opening stock record is matched to it and its quantity is
+// ADDED (never replaced) as a separate ledger entry. Without that context (manual entry, older databases) such a
+// row is rejected as before. The cost of added quantity is the existing stock's cost; an Excel cost is read only
+// for matched rows and only when "Unit Cost" is selected, and blank cells never change anything.
 
 import { parseSheetDate, type StockSourceCode } from './inventory-model.ts'
 
@@ -105,6 +111,64 @@ export interface OpeningContext {
   existing?: Map<string, string>
   /** Product Master Cost by product id (from the database). A product without an entry has no cost. */
   costs?: Map<string, { cost: number | null; valid: boolean }>
+  /** Excel import: match existing records and add to them instead of rejecting them. */
+  additive?: OpeningAdditiveContext
+}
+
+/** Fields of an existing opening stock record the import may change. Product, location and batch only identify it. */
+export interface OpeningImportFieldSelection {
+  /** Add the imported quantity to the existing quantity (never replace it). */
+  quantity: boolean
+  /** Use a valid Excel unit cost for the added quantity (existing cost rules apply). */
+  unit_cost: boolean
+  /** Put the Excel remark on the addition entry. */
+  remarks: boolean
+}
+
+export const DEFAULT_IMPORT_FIELDS: OpeningImportFieldSelection = { quantity: true, unit_cost: false, remarks: false }
+
+export const IMPORT_FIELD_OPTIONS: { key: keyof OpeningImportFieldSelection; label: string; hint: string }[] = [
+  { key: 'quantity', label: 'Quantity (Add to Existing Quantity)', hint: 'The imported quantity is added to the existing quantity (100 + 25 = 125), never replaces it.' },
+  { key: 'unit_cost', label: 'Unit Cost', hint: 'A valid Excel unit cost for the added quantity. It must equal the cost of the existing stock (posted stock is never re-valued); stock without a cost needs the opening cost override.' },
+  { key: 'remarks', label: 'Remarks', hint: 'The Excel Notes / Remarks text is recorded on the addition entry.' },
+]
+
+/** An opening stock record as matched by the import (from opening_stock_import_matches). */
+export interface OpeningMatchRecord {
+  document_number: string
+  status: 'PENDING_APPROVAL' | 'POSTED'
+  product_id: string
+  location_id: string
+  batch_number: string | null
+  quantity: number
+  added_quantity: number
+  lot_cost: number | null
+}
+
+export interface OpeningAdditiveContext {
+  /** Records keyed by openingBalanceKey (openingMatchIndex). */
+  matches: Map<string, OpeningMatchRecord[]>
+  fields: OpeningImportFieldSelection
+  /** Index of the Excel unit cost column, if the file has one (read only for matched rows with Unit Cost selected). */
+  costColumn: number | null
+  /** The opening cost override is enabled for this user (needed to give stock without a cost a cost). */
+  overrideAllowed: boolean
+}
+
+export function openingMatchIndex(records: OpeningMatchRecord[]): Map<string, OpeningMatchRecord[]> {
+  const map = new Map<string, OpeningMatchRecord[]>()
+  for (const r of records) {
+    const key = openingBalanceKey(r.product_id, r.location_id, r.batch_number)
+    map.set(key, [...(map.get(key) ?? []), r])
+  }
+  return map
+}
+
+/** Index of the first unit cost column of a file (the import reads it only for matched rows, when selected). */
+export function excelCostColumn(headers: string[]): number | null {
+  const names = ['unit cost', 'cost', 'rate', 'cost price', 'unit rate']
+  const i = headers.findIndex((h) => names.includes(String(h ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s*(rs|inr)$/, '').trim()))
+  return i >= 0 ? i : null
 }
 
 export interface OpeningPayload {
@@ -136,6 +200,23 @@ export interface OpeningRowResult {
   cost?: number | null
   /** Quantity × Product Master Cost. */
   value?: number | null
+  /** Excel import only: a new record, quantity added to an existing one, or an existing one left unchanged. */
+  action?: 'new' | 'add' | 'keep'
+  /** The record the row is matched to (action add / keep). */
+  match?: {
+    document_number: string | null
+    /** Existing quantity before this row (record + earlier additions, + earlier rows of the file). */
+    existing: number
+    /** Existing + this row (add); the existing quantity (keep). */
+    newQuantity: number
+    unit: string
+    /** Cost of the existing stock (null = not valued). */
+    lotCost: number | null
+    /** Matched to a new record created by an earlier row of the same file. */
+    fromFile: boolean
+  }
+  /** Valid Excel unit cost read for a matched row (Unit Cost selected); undefined = blank / not read. */
+  excelCost?: number
 }
 
 /** Opening stock value = quantity × Product Master Cost (rupees, 2 decimals). */
@@ -185,6 +266,8 @@ export function validateOpeningRows(rows: string[][], mapping: OpeningMapping, c
   const cell = (row: string[], key: OpeningFieldKey) => (mapping[key] === null ? '' : String(row[mapping[key]!] ?? '').trim())
   const mapped = Object.values(mapping).filter((i): i is number => i !== null)
   const seen = new Map<string, number>()
+  // Excel import: quantity per record so far (existing + earlier rows of the file).
+  const running = new Map<string, number>()
   const out: OpeningRowResult[] = []
 
   rows.forEach((row, index) => {
@@ -238,23 +321,66 @@ export function validateOpeningRows(rows: string[][], mapping: OpeningMapping, c
     // still accepted: its quantity is recorded with a pending cost and is not valued.
     const master = product ? ctx.costs?.get(product.id) : undefined
     const cost = master?.valid && master.cost !== null && master.cost > 0 ? master.cost : null
-    if (product && cost === null) {
-      warnings.push(`${product.sku} has no Product Master Cost: recorded with a pending cost (not valued until a cost is set).`)
-    }
 
     const effRaw = cell(row, 'effective_date')
     const eff = effRaw ? parseSheetDate(effRaw) : ctx.defaultEffectiveDate
     if (eff === null) errors.push('Effective date is not a valid date.')
     else if (eff && eff > ctx.today) errors.push('Effective date cannot be in the future.')
 
-    if (product && location) {
+    const add = ctx.additive
+    let action: OpeningRowResult['action'] = add ? 'new' : undefined
+    let match: OpeningRowResult['match']
+    let excelCost: number | undefined
+    if (product && location && !add) {
       const key = openingBalanceKey(product.id, location.id, batch)
       const first = seen.get(key)
       if (first !== undefined) errors.push(`Duplicate of row ${first} (same product, location and batch).`)
       else seen.set(key, rowNumber)
       const recorded = ctx.existing?.get(key)
       if (recorded) errors.push(`Opening stock for this product, location and batch already exists (${recorded}).`)
+    } else if (product && location && add) {
+      const key = openingBalanceKey(product.id, location.id, batch)
+      const records = add.matches.get(key) ?? []
+      const fileRow = seen.get(key)
+      const quantity = typeof qty === 'number' ? qty : 0
+      if (records.length > 1) {
+        errors.push('This product, location and batch has more than one opening stock record (different sources); add to it by manual stock adjustment instead.')
+      } else if (records[0]?.status === 'PENDING_APPROVAL') {
+        errors.push(`Opening stock for this product, location and batch is awaiting approval (${records[0].document_number}). Approve or reject it before adding to it.`)
+      } else if (records.length === 1 || fileRow !== undefined) {
+        const rec = records[0] as OpeningMatchRecord | undefined
+        const lotCost = rec ? rec.lot_cost : cost
+        const existing = running.get(key) ?? (rec ? rec.quantity + rec.added_quantity : 0)
+        if (!rec && !add.fields.quantity) errors.push(`Same product, location and batch as row ${fileRow}; select "Quantity" to add the rows together.`)
+        action = add.fields.quantity ? 'add' : 'keep'
+        // Excel cost: read only when Unit Cost is selected; blank keeps the existing cost.
+        if (action === 'add' && add.fields.unit_cost && add.costColumn !== null) {
+          const parsed = decimal(String(row[add.costColumn] ?? ''), 4)
+          if (parsed === null || parsed === 0) errors.push('Unit cost must be greater than zero (up to 4 decimals), or left blank to keep the existing cost.')
+          else if (parsed !== undefined) {
+            excelCost = parsed
+            if (lotCost !== null && Math.round(parsed * 10000) !== Math.round(lotCost * 10000)) {
+              errors.push(`Unit cost ${parsed} differs from the cost of the existing stock${rec ? ` in ${rec.document_number}` : ''} (${lotCost}). Adding it would re-value that stock: keep the existing cost, or import it under a new batch number to keep a separate cost.`)
+            } else if (lotCost === null && !add.overrideAllowed) {
+              errors.push(`The existing stock${rec ? ` in ${rec.document_number}` : ''} has no cost; giving the added quantity a cost needs the opening stock cost override. Leave the cost blank to keep it pending.`)
+            }
+          }
+        }
+        const newQuantity = action === 'add' ? Math.round((existing + quantity) * 1000) / 1000 : existing
+        match = { document_number: rec?.document_number ?? null, existing, newQuantity, unit: product.base_unit, lotCost, fromFile: !rec }
+        if (errors.length === 0 && action === 'add') running.set(key, newQuantity)
+        if (errors.length === 0 && action === 'add' && (excelCost ?? lotCost) === null) {
+          warnings.push('The existing stock has no cost: the added quantity is recorded with a pending cost (not valued).')
+        }
+      } else if (errors.length === 0) {
+        seen.set(key, rowNumber)
+        running.set(key, quantity)
+      }
     }
+    if (product && cost === null && action !== 'add' && action !== 'keep') {
+      warnings.push(`${product.sku} has no Product Master Cost: recorded with a pending cost (not valued until a cost is set).`)
+    }
+    const rowCost = action === 'add' ? excelCost ?? match?.lotCost ?? null : action === 'keep' ? null : cost
 
     out.push({
       rowNumber,
@@ -264,8 +390,11 @@ export function validateOpeningRows(rows: string[][], mapping: OpeningMapping, c
       warnings,
       productName: product?.product_name,
       quantity: typeof qty === 'number' ? qty : undefined,
-      cost: product ? cost : undefined,
-      value: typeof qty === 'number' ? openingValue(qty, cost) : null,
+      cost: product ? rowCost : undefined,
+      value: typeof qty === 'number' && action !== 'keep' ? openingValue(qty, rowCost) : null,
+      ...(action ? { action } : {}),
+      ...(match ? { match } : {}),
+      ...(excelCost !== undefined ? { excelCost } : {}),
       payload: errors.length
         ? null
         : {
@@ -278,7 +407,7 @@ export function validateOpeningRows(rows: string[][], mapping: OpeningMapping, c
             batch_number: batch || null,
             manufacturing_date: mfg ?? null,
             expiry_date: exp ?? null,
-            unit_cost: cost,
+            unit_cost: action === 'add' ? excelCost ?? null : cost,
             effective_date: eff as string,
             reference: cell(row, 'reference') || null,
             notes: cell(row, 'notes') || null,

@@ -1129,6 +1129,10 @@ let SERVE_PREFERENCES = false
 // GRN_COST_CONFIRMED = the posting result carries actual_cost_supported.
 let GRN_COST_COLUMNS = true
 let GRN_COST_CONFIRMED = true
+// Opening stock import adding to existing records (migration 20261206090000): off = an older database (the
+// matches lookup is unknown); SMOKE_SOD = the inventory policy's segregation of duties.
+let OPENING_ADDITIVE = false
+let SMOKE_SOD = true
 /** Extra rows in the stock register (set by the product image step only). */
 let STOCK_POSITION_EXTRA = 0
 
@@ -1528,7 +1532,7 @@ const api = http.createServer((req, res) => {
         case 'inventory_movement_trend':
           return send(res, 200, [{ bucket: TODAY, unit: 'PCS', quantity_in: 140, quantity_out: 0, transactions: 2 }])
         case 'inventory_policy_info':
-          return send(res, 200, { segregation_of_duties: true, expiry_warning_days: 30, timezone: 'Asia/Kolkata', today: TODAY, negative_stock_allowed: false })
+          return send(res, 200, { segregation_of_duties: SMOKE_SOD, expiry_warning_days: 30, timezone: 'Asia/Kolkata', today: TODAY, negative_stock_allowed: false })
         case 'inventory_find_product_by_code': {
           const code = String(body.p_code ?? '').trim().toLowerCase()
           return send(res, 200, products.filter((p) => p.barcode === code || p.sku.toLowerCase() === code).map((p) => ({
@@ -1541,6 +1545,20 @@ const api = http.createServer((req, res) => {
         case 'inventory_submit_opening_stock':
         case 'inventory_post_opening_stock':
           return send(res, 403, { code: '42501', message: `permission denied for function ${fn}` })
+        // Existing opening stock: MOCK-WC-1 at MAIN/BIN-1, OS-000003, 100 PCS at ₹850.
+        case 'opening_stock_import_matches':
+          if (!OPENING_ADDITIVE) return send(res, 404, { code: 'PGRST202', message: 'Could not find the function public.opening_stock_import_matches' })
+          return send(res, 200, (body.p_product_ids ?? []).includes('p1') ? [{ opening_line_id: 'ol3', document_number: 'OS-000003', status: 'POSTED', product_id: 'p1', location_id: 'l2',
+            batch_number: null, source_type: 'IN_HOUSE', quantity: 100, added_quantity: 0, unit_cost: 850, lot_id: 'lot-IN_HOUSE', lot_cost: 850, on_hand: 100 }] : [])
+        case 'inventory_import_opening_stock': {
+          let running = 100
+          const lines = body.p_lines ?? []
+          const adds = lines.filter((l) => l.product_id === 'p1' && l.location_id === 'l2')
+          const fresh = lines.length - adds.length
+          return send(res, 200, { ok: true, new_lines: fresh, ...(fresh ? { opening_batch_id: 'ob10', document_number: 'OS-000010', line_count: fresh } : {}), status: 'POSTED', kept: [],
+            additions: adds.map((l, i) => ({ line_no: l.line_no, document_number: 'OS-000003', opening_line_id: 'ol3', previous_quantity: running, added_quantity: l.quantity,
+              new_quantity: (running += l.quantity), unit_cost: 850, cost_source: 'EXISTING_LOT_COST', transaction_number: `TXN-00012${i}` })) })
+        }
         case 'inventory_submit_opening_stock_at_cost':
         case 'inventory_post_opening_stock_at_cost':
           return send(res, 200, { ok: true, opening_batch_id: 'ob9', document_number: 'OS-000009', line_count: body.p_lines.length })
@@ -3362,6 +3380,67 @@ await step('opening stock import: no Source mapping; an old Source column is ign
   const b = rpcCalls('inventory_submit_opening_stock_at_cost').at(-1).body
   assert(b.p_source === 'IMPORT' && b.p_lines.length === 1 && b.p_lines[0].line_no === 2 && b.p_lines[0].location_id === 'l2' && b.p_lines[0].source_type === 'IN_HOUSE'
     && b.p_lines[0].unit_cost === null, JSON.stringify(b))
+})
+
+await step('Opening stock import: existing records matched and quantity ADDED (100 + 25 + 5 = 130 PCS), fields to modify, comparison, totals per unit', async () => {
+  OPENING_ADDITIVE = true
+  SMOKE_SOD = false
+  try {
+    const file = path.join(outDir, 'opening-additive.csv')
+    writeFileSync(file, 'SKU,Warehouse,Location,Quantity,Unit Cost,Notes\nMOCK-WC-1,MAIN,BIN-1,25,999,count A\nMOCK-WC-1,MAIN,BIN-1,5,,\nMOCK-CLAY,MAIN,BIN-1,2.5,,\n')
+    const upload = async () => {
+      await goto('/inventory/opening-stock/import')
+      await waitFor(`document.querySelector('input[type=file]')`, 'upload')
+      const { root: doc } = await cdp('DOM.getDocument')
+      const { nodeId } = await cdp('DOM.querySelector', { nodeId: doc.nodeId, selector: 'input[type=file]' })
+      await cdp('DOM.setFileInputFiles', { nodeId, files: [file] })
+      await waitFor(`!!document.querySelector('[data-testid=oi-fields]')`, 'fields to modify')
+    }
+    await upload()
+    const state = (k) => `document.querySelector('#oi-field-${k}')?.getAttribute('data-state')`
+    const count = `document.querySelector('[data-testid=oi-fields-count]')?.innerText`
+    assert(await evaluate(`${state('quantity')} === 'checked' && ${state('unit_cost')} === 'unchecked' && ${state('remarks')} === 'unchecked' && ${count} === '1 of 3 selected'`), 'defaults: Quantity only')
+    assert(await evaluate(`document.querySelector('#oi-field-expiry')?.disabled === true && ${bodyHas('Not supported: the dates of an existing batch are fixed')}`), 'expiry not supported, explained')
+    assert(await evaluate(bodyHas('Blank Excel cells never erase existing data')), 'blank cells note')
+    await click('button', 'Deselect All')
+    await waitFor(`${count} === '0 of 3 selected'`, 'deselect all')
+    await click('button', 'Select All')
+    await waitFor(`${count} === '3 of 3 selected'`, 'select all')
+    await click('#oi-field-unit_cost')
+    await click('#oi-field-remarks')
+    await waitFor(`${count} === '1 of 3 selected' && ${state('quantity')} === 'checked'`, 'back to Quantity only')
+    await click('button', 'Validate rows')
+    await waitFor(`!!document.querySelector('[data-testid=oi-totals]')`, 'preview')
+    const kpi = (id) => `document.querySelector('[data-testid=oi-kpi-${id}]')?.innerText`
+    await waitFor(`${kpi('new')}.includes('1') && ${kpi('matched')}.includes('2') && ${kpi('adding')}.includes('2') && ${kpi('qty')}.includes('30 PCS') && ${kpi('qty')}.includes('2.5 KG')`, 'totals per unit')
+    const cmp = `[...document.querySelectorAll('[data-testid=oi-compare]')].map((t) => t.innerText)`
+    const tables = await evaluate(cmp)
+    assert(tables.length === 2 && /Quantity\s+100 PCS\s+25 PCS\s+Add → 125 PCS/.test(tables[0]) && /Quantity\s+125 PCS\s+5 PCS\s+Add → 130 PCS/.test(tables[1])
+      && /Unit Cost\s+₹850\.00\s+—\s+Not selected: keep/.test(tables[0]) && /Product\s+MOCK-WC-1\s+MOCK-WC-1\s+Keep/.test(tables[0]) && /Location\s+MAIN\/BIN-1\s+MAIN\/BIN-1\s+Keep/.test(tables[0]), JSON.stringify(tables))
+    assert(await evaluate(`[...document.querySelectorAll('[data-testid=oi-action]')].map((a) => a.innerText).join('|') === 'Add to OS-000003 → 125 PCS|Add to OS-000003 → 130 PCS|New record'`), 'import action column')
+    assert(!(await evaluate(bodyHas('already exists'))), 'an existing record was rejected')
+    await screenshot('206-opening-import-additive')
+    await click('button', 'Post 3 accepted row(s)')
+    await waitFor(`document.querySelector('[role=alertdialog]')`, 'confirm')
+    assert(await evaluate(`document.querySelector('[role=alertdialog]').innerText.includes('2 row(s) add their quantity to existing opening stock (never replacing it)')`), 'confirm text')
+    await click('[role=alertdialog] button', 'Post opening stock')
+    await waitFor(`document.querySelector('[data-testid=oi-done]')?.innerText.includes('OS-000010 posted with 1 new line(s). Quantity added to existing opening stock on 2 row(s).')`, 'posted')
+    const b = rpcCalls('inventory_import_opening_stock').at(-1).body
+    assert(JSON.stringify(b.p_fields) === '{"quantity":true,"unit_cost":false,"remarks":false}' && b.p_post === true && b.p_lines.length === 3
+      && b.p_lines.every((l) => l.unit_cost === null) && b.p_lines.map((l) => l.quantity).join() === '25,5,2.5', JSON.stringify(b))
+
+    // Unit Cost selected: ₹999 differs from the existing ₹850 and is refused with the row; the blank cell is fine.
+    await upload()
+    await click('#oi-field-unit_cost')
+    await waitFor(`${state('unit_cost')} === 'checked'`, 'unit cost selected')
+    assert(await evaluate(bodyHas('Read from column "Unit Cost"')), 'cost column named')
+    await click('button', 'Validate rows')
+    await waitFor(bodyHas('Unit cost 999 differs from the cost of the existing stock in OS-000003 (850)'), 'different cost refused')
+    assert(await evaluate(`${kpi('adding')}.includes('1')`), 'only the valid row adds')
+  } finally {
+    OPENING_ADDITIVE = false
+    SMOKE_SOD = true
+  }
 })
 
 await step('Opening stock cost override: OFF by default; a settings manager switches it on in ERP Settings; the override is then offered, editable and sent flagged', async () => {

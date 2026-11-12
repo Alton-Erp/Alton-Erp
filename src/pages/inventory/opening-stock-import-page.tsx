@@ -18,17 +18,22 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { formatCost } from '@/features/products/product-list-format'
 import { UNITS } from '@/features/products/product-model'
 import {
+  DEFAULT_IMPORT_FIELDS,
   OPENING_FIELDS,
   autoMapOpening,
   detectOpeningHeader,
+  excelCostColumn,
   missingOpeningFields,
   existingOpeningIndex,
   ignoredCostColumns,
+  openingMatchIndex,
   validateOpeningRows,
+  type OpeningImportFieldSelection,
   type OpeningMapping,
   type OpeningProduct,
   type OpeningRowResult,
 } from '@/features/inventory/opening-import'
+import { MatchComparison, OpeningImportFieldsCard } from '@/features/inventory/opening-import-fields'
 import { useStorage } from '@/features/inventory/use-storage'
 import type { ParsedWorkbook } from '@/features/products/spreadsheet'
 import { useAsync } from '@/hooks/use-async'
@@ -37,7 +42,7 @@ import { describeDataError } from '@/lib/errors'
 import { formatNumber, toIsoDate } from '@/lib/format'
 import { requireSupabase } from '@/lib/supabase'
 import { recordImportJob } from '@/services/admin'
-import { fetchInventoryPolicy, fetchOpeningContext, fetchOpeningCosts, postOpeningStockAtCost, submitOpeningStockAtCost } from '@/services/inventory'
+import { fetchInventoryPolicy, fetchOpeningContext, fetchOpeningCosts, fetchOpeningImportMatches, importOpeningStock, postOpeningStockAtCost, submitOpeningStockAtCost } from '@/services/inventory'
 
 type Step = 'upload' | 'map' | 'review' | 'done'
 type Row = OpeningRowResult & { serverError?: string }
@@ -79,7 +84,11 @@ export default function OpeningStockImportPage() {
   const [busy, setBusy] = useState<null | 'reading' | 'validating' | 'submitting'>(null)
   const [error, setError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState(false)
-  const [submitted, setSubmitted] = useState<{ document: string; lines: number } | null>(null)
+  const [submitted, setSubmitted] = useState<{ document: string | null; lines: number; added: number; kept: number } | null>(null)
+  // Fields changed on existing opening stock (Excel import). Quantity is always added, never replaced.
+  const [fields, setFields] = useState<OpeningImportFieldSelection>(DEFAULT_IMPORT_FIELDS)
+  // false: the database does not have the additive import yet (migration 20261206090000): existing records are rejected as before.
+  const [additive, setAdditive] = useState(true)
 
   const [browserToday] = useState(() => toIsoDate(new Date()))
   const today = policy.data?.today ?? browserToday
@@ -90,8 +99,20 @@ export default function OpeningStockImportPage() {
   const ignoredSource = headers.filter((h) => /^(stock |actual )?source( type)?$/i.test(String(h ?? '').trim()))
   // A cost column in the file is never read: every row gets the Product Master Cost from the database.
   const ignoredCost = ignoredCostColumns(headers)
+  const costCol = excelCostColumn(headers)
   const valid = results.filter((r) => r.status === 'valid')
   const invalid = results.filter((r) => r.status === 'error')
+  const matched = results.filter((r) => r.action === 'add' || r.action === 'keep')
+  const adding = valid.filter((r) => r.action === 'add')
+  const posting = valid.filter((r) => r.action !== 'keep')
+  const pendingCost = posting.filter((r) => r.cost === null).length
+  // Imported quantity per unit: units are never added together.
+  const byUnit = [...posting.reduce((m, r) => m.set(r.payload!.unit, Math.round(((m.get(r.payload!.unit) ?? 0) + r.payload!.quantity) * 1000) / 1000), new Map<string, number>())]
+    .sort(([a], [b]) => a.localeCompare(b))
+  const locationName = (id: string) => {
+    const l = storage.locations.find((x) => x.id === id)
+    return l ? `${storage.warehouseById.get(l.warehouse_id)?.warehouse_code ?? ''}/${l.location_code}` : '—'
+  }
 
   const reset = () => {
     setStep('upload')
@@ -148,8 +169,11 @@ export default function OpeningStockImportPage() {
       // Opening balances already pending or posted: a second one for the same product, location and batch is rejected here, not only by the server.
       const ids = [...products.values()].map((p) => p.id)
       const { existing } = await fetchOpeningContext(ids)
+      // Existing opening stock records to add to (null: the database does not support it yet).
+      const matches = await fetchOpeningImportMatches(ids)
+      setAdditive(matches !== null)
       // Product Master Cost of every matched product, from the database (never from the file).
-      const { costs } = await fetchOpeningCosts(ids)
+      const { costs, overrideAllowed } = await fetchOpeningCosts(ids)
       const locations = storage.locations.map((l) => ({
         id: l.id,
         warehouseCode: storage.warehouseById.get(l.warehouse_id)?.warehouse_code ?? '',
@@ -157,8 +181,13 @@ export default function OpeningStockImportPage() {
         active: l.status === 'ACTIVE' && storage.warehouseById.get(l.warehouse_id)?.status === 'ACTIVE',
         isDefault: l.is_default,
       }))
-      setResults(validateOpeningRows(data, mapping, { products, locations, defaultEffectiveDate: defaultDate || today, today, existing: existingOpeningIndex(existing),
-        costs: new Map([...costs.values()].map((c) => [c.product_id, { cost: c.cost, valid: c.valid }])) }, headerIndex + 2))
+      const rows = validateOpeningRows(data, mapping, { products, locations, defaultEffectiveDate: defaultDate || today, today, existing: existingOpeningIndex(existing),
+        costs: new Map([...costs.values()].map((c) => [c.product_id, { cost: c.cost, valid: c.valid }])),
+        additive: matches === null ? undefined : { matches: openingMatchIndex(matches), fields, costColumn: fields.unit_cost ? costCol : null, overrideAllowed } }, headerIndex + 2)
+      // Additions post at once: without the posting permission they cannot be staged for approval.
+      setResults(canPost ? rows : rows.map((r) => (r.action === 'add' && r.status === 'valid'
+        ? { ...r, status: 'error' as const, payload: null, errors: ['Adding to existing opening stock posts at once; it cannot be staged for approval. Ask a user who may post opening stock to import it.'] }
+        : r)))
       setStep('review')
     } catch (e) {
       setError(describeDataError(e))
@@ -171,18 +200,28 @@ export default function OpeningStockImportPage() {
     setBusy('submitting')
     setError(null)
     try {
-      // The server sets each line's cost from the Product Master again; no cost is sent.
-      const lines = valid.map((v) => ({ ...v.payload!, unit_cost: null }))
-      const r = canPost
-        ? await postOpeningStockAtCost(lines, 'IMPORT', file?.name ?? null, null, key)
-        : await submitOpeningStockAtCost(lines, 'IMPORT', file?.name ?? null, null, key)
+      // New records: the server sets the cost from the Product Master again, no cost is sent. Rows added to an
+      // existing record send the Excel cost only when Unit Cost is selected (the server checks it again).
+      const lines = valid.map((v) => ({ ...v.payload!, unit_cost: v.action === 'add' ? v.excelCost ?? null : null }))
+      const r = additive
+        ? await importOpeningStock(lines, fields, canPost, file?.name ?? null, key)
+        : canPost
+          ? await postOpeningStockAtCost(lines, 'IMPORT', file?.name ?? null, null, key)
+          : await submitOpeningStockAtCost(lines, 'IMPORT', file?.name ?? null, null, key)
+      const done = r.ok ? {
+        document: r.document_number ?? null,
+        lines: r.line_count ?? 0,
+        added: 'additions' in r ? r.additions.length : 0,
+        kept: 'kept' in r ? r.kept.length : 0,
+        batch: r.opening_batch_id ?? null,
+      } : null
       // Import history (Bulk Operations). Recording is best-effort; the opening stock itself is already handled.
       const byLineErr = new Map(r.ok ? [] : r.errors.map((e) => [e.line_no, e.message]))
       const rejected = results.filter((x) => x.status === 'error' || byLineErr.has(x.rowNumber))
       void recordImportJob({
-        import_type: 'OPENING_STOCK', client_job_key: key, file_name: file?.name ?? null, source_id: r.ok ? r.opening_batch_id : null, source_reference: r.ok ? r.document_number : null,
-        total_rows: results.length, success_rows: r.ok ? r.line_count : 0, failed_rows: r.ok ? invalid.length : rejected.length, duplicate_rows: 0,
-        skipped_rows: r.ok ? 0 : results.length - rejected.length, retry_of_job_id: retryOf, ...(r.ok ? {} : { status: 'REJECTED' }),
+        import_type: 'OPENING_STOCK', client_job_key: key, file_name: file?.name ?? null, source_id: done?.batch ?? null, source_reference: done?.document ?? null,
+        total_rows: results.length, success_rows: done ? done.lines + done.added : 0, failed_rows: r.ok ? invalid.length : rejected.length, duplicate_rows: 0,
+        skipped_rows: done ? done.kept : results.length - rejected.length, retry_of_job_id: retryOf, ...(r.ok ? {} : { status: 'REJECTED' }),
       }, rejected.map((x) => ({
         row_number: x.rowNumber, outcome: 'FAILED' as const, reference: x.sku || null, messages: [...x.errors, ...(byLineErr.has(x.rowNumber) ? [byLineErr.get(x.rowNumber)!] : [])],
         row_data: Object.fromEntries(headers.map((h, i) => [h || `Column ${i + 1}`, allRows[x.rowNumber - 1]?.[i] ?? ''])),
@@ -191,10 +230,10 @@ export default function OpeningStockImportPage() {
         // The server re-validates every row; nothing was staged.
         const byLine = new Map(r.errors.map((e) => [e.line_no, e.message]))
         setResults(results.map((row) => (byLine.has(row.rowNumber) ? { ...row, serverError: byLine.get(row.rowNumber) } : row)))
-        setError(`The server rejected ${r.errors.length} row(s) (e.g. opening stock already recorded). Nothing was staged. Fix or remove those rows and validate again.`)
+        setError(`The server rejected ${r.errors.length} row(s). Nothing was posted or staged. Fix or remove those rows and validate again.`)
         renew()
-      } else {
-        setSubmitted({ document: r.document_number, lines: r.line_count })
+      } else if (done) {
+        setSubmitted(done)
         setStep('done')
         renew()
       }
@@ -208,7 +247,7 @@ export default function OpeningStockImportPage() {
   const downloadErrors = async () => {
     const { downloadSheets } = await import('@/features/products/spreadsheet')
     await downloadSheets(
-      [{ name: 'Rejected rows', rows: [['Row', 'Product Code', 'Product Name', 'Product Master Cost', 'Errors', 'Warnings'], ...results.filter((r) => r.status === 'error' || r.serverError)
+      [{ name: 'Rejected rows', rows: [['Row', 'Product Code', 'Product Name', 'Unit Cost', 'Errors', 'Warnings'], ...results.filter((r) => r.status === 'error' || r.serverError)
         .map((r) => [r.rowNumber, r.sku, r.productName ?? '', r.cost ?? '', [...r.errors, ...(r.serverError ? [r.serverError] : [])].join(' | '), r.warnings.join(' | ')])] }],
       `opening-stock-errors-${toIsoDate(new Date())}`,
       'xlsx',
@@ -232,6 +271,7 @@ export default function OpeningStockImportPage() {
             ['Batch', 'Required for batch-tracked products, blank otherwise'],
             ['Manufacturing Date / Expiry Date', 'YYYY-MM-DD or DD-MM-YYYY; expiry required when the product tracks expiry'],
             ['(no cost column)', 'Optional and not needed. The unit cost is the Product Master Cost of each product, fetched when you validate; a cost or value column in the file is ignored. A product without a cost is accepted with a pending cost and is not valued (never imported at zero).'],
+            ['Existing opening stock', 'A row whose product, location and batch already have posted opening stock ADDS its quantity to it (100 + 25 = 125); it never replaces it. A Unit Cost column is read for those rows only when "Unit Cost" is selected under "Fields to Modify in Existing Opening Stock", and must equal the existing cost.'],
             ['Effective Date', 'Optional; defaults to the date chosen during import; cannot be in the future'],
             ['Reference / Notes', 'Optional, e.g. the count sheet number'],
             ['(no Source column)', 'Not needed. A Source column in an older file is ignored.'],
@@ -249,10 +289,14 @@ export default function OpeningStockImportPage() {
     { id: 'sku', header: 'Product Code', cell: (r) => <span className="font-medium">{r.sku || '—'}</span>, searchValue: (r) => r.sku, sortValue: (r) => r.sku },
     { id: 'name', header: 'Product Name', cell: (r) => r.productName ?? '—', searchValue: (r) => r.productName ?? '' },
     { id: 'qty', header: 'Opening Quantity', align: 'right', cell: (r) => (r.quantity === undefined ? '—' : `${formatNumber(r.quantity)}${r.payload ? ` ${r.payload.unit}` : ''}`) },
-    { id: 'cost', header: 'Product Master Cost', align: 'right', cell: (r) => <span data-testid="oi-cost">{r.cost === null || r.cost === undefined ? <span className="text-amber-800">Pending cost</span> : formatCost(r.cost)}</span>,
+    { id: 'cost', header: additive ? 'Unit Cost' : 'Product Master Cost', align: 'right', cell: (r) => <span data-testid="oi-cost">{r.cost === null || r.cost === undefined ? <span className="text-amber-800">Pending cost</span> : formatCost(r.cost)}</span>,
       sortValue: (r) => r.cost ?? -1 },
     { id: 'value', header: 'Opening Stock Value', align: 'right', cell: (r) => <span data-testid="oi-value">{r.value === null || r.value === undefined ? '—' : formatCost(r.value)}</span>,
       sortValue: (r) => r.value ?? -1 },
+    ...(additive ? [{ id: 'action', header: 'Import Action', cell: (r: Row) => (
+      <span data-testid="oi-action">{r.action === 'add' && r.match ? `Add to ${r.match.document_number ?? 'the record of an earlier row'} → ${formatNumber(r.match.newQuantity)} ${r.match.unit}`
+        : r.action === 'keep' ? `Matches ${r.match?.document_number ?? 'an earlier row'}: no change` : r.action === 'new' ? 'New record' : '—'}</span>
+    ) }] : []),
     { id: 'result', header: 'Validation Status', cell: (r) => (r.serverError || r.status === 'error' ? <StatusBadge label="Rejected" tone="danger" /> : r.warnings.length ? <StatusBadge label="Accepted · warning" tone="warning" /> : <StatusBadge label="Accepted" tone="success" />) },
     {
       id: 'msg',
@@ -330,10 +374,11 @@ export default function OpeningStockImportPage() {
                 </div>
               ))}
             </CardContent>
-            {ignoredCost.length > 0 && <p data-testid="cost-ignored" className="mx-5 mb-3 text-sm text-muted-foreground">Column "{ignoredCost.join('", "')}" is ignored: the unit cost is the Product Master Cost of each product, fetched from the database.</p>}
+            {ignoredCost.length > 0 && <p data-testid="cost-ignored" className="mx-5 mb-3 text-sm text-muted-foreground">Column "{ignoredCost.join('", "')}" is ignored for new records: their unit cost is the Product Master Cost, fetched from the database.{fields.unit_cost && costCol !== null ? ` Column "${headers[costCol]}" is read only for rows added to existing opening stock.` : ''}</p>}
             {ignoredSource.length > 0 && <p data-testid="source-ignored" className="mx-5 mb-3 text-sm text-muted-foreground">Column "{ignoredSource[0]}" is not used for opening stock and will be ignored.</p>}
             {missing.length > 0 && <p className="mx-5 mb-5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">Map the required fields: {missing.join(', ')}.</p>}
           </Card>
+          <OpeningImportFieldsCard fields={fields} onChange={setFields} costColumn={costCol === null ? null : headers[costCol] || `column ${costCol + 1}`} disabled={busy !== null} />
           <div className="flex justify-end">
             <Button disabled={missing.length > 0 || busy !== null || storage.loading} onClick={() => void validate()}>
               {busy === 'validating' ? <Loader2 className="animate-spin" /> : <ScanSearch />} Validate rows
@@ -350,9 +395,12 @@ export default function OpeningStockImportPage() {
                 <div className="flex items-start gap-3">
                   <CheckCircle2 className="mt-0.5 size-5 text-available" />
                   <div>
-                    <p className="font-semibold">{canPost
-                      ? `${submitted.document} posted with ${formatNumber(submitted.lines)} line(s). Stock is updated.`
-                      : `${submitted.document} staged with ${formatNumber(submitted.lines)} line(s), awaiting approval`}</p>
+                    <p data-testid="oi-done" className="font-semibold">{[
+                      submitted.document && (canPost ? `${submitted.document} posted with ${formatNumber(submitted.lines)} new line(s).` : `${submitted.document} staged with ${formatNumber(submitted.lines)} line(s), awaiting approval.`),
+                      submitted.added > 0 && `Quantity added to existing opening stock on ${formatNumber(submitted.added)} row(s).`,
+                      submitted.kept > 0 && `${formatNumber(submitted.kept)} matched row(s) left unchanged.`,
+                      canPost && 'Stock is updated.',
+                    ].filter(Boolean).join(' ')}</p>
                     <p className="text-sm text-muted-foreground">{formatNumber(invalid.length)} rejected row(s) were not sent.{canPost ? ' Download the error report, correct them and import them again.' : ' Stock changes only when an approver posts the document.'}</p>
                   </div>
                 </div>
@@ -363,13 +411,42 @@ export default function OpeningStockImportPage() {
               </CardContent>
             </Card>
           )}
+          {additive && (
+            <div data-testid="oi-totals" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <KpiCard label="New records" value={formatNumber(valid.filter((r) => r.action === 'new').length)} icon={CheckCircle2} testId="oi-kpi-new" />
+              <KpiCard label="Existing records matched" value={formatNumber(matched.length)} icon={ScanSearch} testId="oi-kpi-matched" />
+              <KpiCard label="Rows adding quantity" value={formatNumber(adding.length)} icon={Upload} testId="oi-kpi-adding" />
+              <KpiCard label="Rows with pending cost" value={formatNumber(pendingCost)} icon={Info} testId="oi-kpi-pending" />
+              <div data-testid="oi-kpi-qty" className="rounded-xl border bg-card px-4 py-3 sm:col-span-2 xl:col-span-4">
+                <p className="text-xs font-medium text-muted-foreground">Total imported quantity (per unit, never combined)</p>
+                <p className="mt-1 flex flex-wrap gap-x-5 gap-y-1 text-lg font-semibold">{byUnit.length ? byUnit.map(([u, q]) => <span key={u}>{formatNumber(q)} {u}</span>) : '—'}</p>
+              </div>
+            </div>
+          )}
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <KpiCard label="Rows read" value={formatNumber(results.length)} icon={FileSpreadsheet} />
+            <KpiCard label="Excel rows" value={formatNumber(results.length)} icon={FileSpreadsheet} />
             <KpiCard label="Opening stock value (accepted)" value={formatCost(valid.reduce((sum, r) => sum + (r.value ?? 0), 0))} icon={CheckCircle2}
               hint={valid.some((r) => r.cost === null) ? `${formatNumber(valid.filter((r) => r.cost === null).length)} row(s) with a pending cost are not valued` : undefined} />
             <KpiCard label="Accepted" value={formatNumber(valid.length)} icon={CheckCircle2} accent="available" />
-            <KpiCard label="Rejected" value={formatNumber(invalid.length + results.filter((r) => r.serverError).length)} icon={Info} accent="shortage" />
+            <KpiCard label="Validation errors" value={formatNumber(invalid.length + results.filter((r) => r.serverError).length)} icon={Info} accent="shortage" />
           </div>
+          {matched.length > 0 && (
+            <DataTable
+              title="Existing opening stock matched"
+              columns={[
+                { id: 'row', header: 'Row', cell: (r: Row) => r.rowNumber, sortValue: (r: Row) => r.rowNumber },
+                { id: 'rec', header: 'Record', cell: (r: Row) => <span className="font-medium">{r.match?.document_number ?? 'Earlier row of this file'}</span>, searchValue: (r: Row) => `${r.sku} ${r.match?.document_number ?? ''}` },
+                { id: 'cmp', header: 'Existing vs Excel', cell: (r: Row) => (r.payload
+                  ? <MatchComparison row={r} fields={fields} location={locationName(r.payload.location_id)} />
+                  : <ul className="space-y-0.5 whitespace-normal text-xs text-red-700">{[...r.errors, ...(r.serverError ? [r.serverError] : [])].map((m) => <li key={m}>{m}</li>)}</ul>) },
+              ]}
+              data={matched}
+              getRowId={(r) => `m${r.rowNumber}`}
+              pageSize={10}
+              searchPlaceholder="Search SKU, record…"
+              emptyState={{ icon: Info, title: 'No matched rows', description: 'No row matches existing opening stock.' }}
+            />
+          )}
           <DataTable
             title="Row results"
             columns={columns}
@@ -400,7 +477,7 @@ export default function OpeningStockImportPage() {
         onOpenChange={setConfirm}
         title={canPost ? `Post ${valid.length} opening stock line(s)?` : `Stage ${valid.length} opening stock line(s)?`}
         description={canPost
-          ? `They will be added to stock as one opening-stock document. ${invalid.length} rejected row(s) are excluded. If any line cannot be posted, nothing is posted.`
+          ? `New records are posted as one opening-stock document${adding.length ? `; ${adding.length} row(s) add their quantity to existing opening stock (never replacing it)` : ''}. ${invalid.length} rejected row(s) are excluded. If any line cannot be posted, nothing is posted.`
           : `They will be submitted as one document awaiting approval. ${invalid.length} rejected row(s) are excluded. Stock does not change until an approver posts the document.`}
         confirmLabel={canPost ? 'Post opening stock' : 'Stage for approval'}
         onConfirm={() => void submit()}

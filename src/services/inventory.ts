@@ -639,6 +639,82 @@ export type OpeningSubmitResult =
   | { ok: true; opening_batch_id: string; document_number: string; line_count: number; duplicate?: boolean }
   | { ok: false; errors: { line_no: number; message: string }[]; valid_lines: number }
 
+/** An opening stock record the import can match (public.opening_stock_import_matches, migration 20261206090000). */
+export interface OpeningImportMatch {
+  opening_line_id: string
+  document_number: string
+  status: 'PENDING_APPROVAL' | 'POSTED'
+  product_id: string
+  location_id: string
+  batch_number: string | null
+  source_type: string
+  /** Quantity of the opening record itself (never changed). */
+  quantity: number
+  /** Quantity added to it by earlier imports (separate ledger entries). */
+  added_quantity: number
+  unit_cost: number | null
+  lot_id: string | null
+  /** Current cost of the stock lot (null = not valued). */
+  lot_cost: number | null
+  on_hand: number
+}
+
+/**
+ * Opening stock records of these products, for matching import rows. null when the database does not have the
+ * additive import yet (migration 20261206090000 not applied): the import then keeps rejecting existing records.
+ */
+export async function fetchOpeningImportMatches(productIds: string[]): Promise<OpeningImportMatch[] | null> {
+  const unique = [...new Set(productIds)]
+  const out: OpeningImportMatch[] = []
+  for (let i = 0; i < unique.length; i += 5000) {
+    const { data, error } = await (db().rpc as unknown as (f: string, a: Record<string, unknown>) => Promise<{ data: OpeningImportMatch[] | null; error: { code?: string; message?: string } | null }>)(
+      'opening_stock_import_matches', { p_product_ids: unique.slice(i, i + 5000) })
+    if (error) {
+      if (['PGRST202', '42883'].includes(error.code ?? '') || /opening_stock_import_matches/.test(error.message ?? '')) return null
+      throw error
+    }
+    for (const m of data ?? []) {
+      out.push({ ...m, quantity: Number(m.quantity), added_quantity: Number(m.added_quantity), on_hand: Number(m.on_hand),
+        unit_cost: m.unit_cost === null ? null : Number(m.unit_cost), lot_cost: m.lot_cost === null ? null : Number(m.lot_cost) })
+    }
+  }
+  return out
+}
+
+/** What the import changes on matched (existing) opening stock records. Quantity is always added, never replaced. */
+export interface OpeningImportFields {
+  quantity: boolean
+  unit_cost: boolean
+  remarks: boolean
+}
+
+export interface OpeningImportAddition {
+  line_no: number
+  document_number: string
+  opening_line_id: string
+  previous_quantity: number
+  added_quantity: number
+  new_quantity: number
+  unit_cost: number | null
+  cost_source: 'EXISTING_LOT_COST' | 'EXCEL_OVERRIDE' | 'PENDING'
+  transaction_number: string
+}
+
+export type OpeningImportResult =
+  | { ok: true; new_lines: number; opening_batch_id?: string; document_number?: string; line_count?: number; status?: string; additions: OpeningImportAddition[];
+      kept: { line_no: number; document_number: string }[]; duplicate?: boolean }
+  | { ok: false; errors: { line_no: number; message: string }[]; new_lines: number; added_lines: number }
+
+/**
+ * The Excel import (migration 20261206090000), one transaction: new records through the existing opening stock
+ * functions, matched records get the imported quantity added as a separate ledger entry. Nothing is posted when
+ * any row fails; a retry with the same key returns the first result.
+ */
+export const importOpeningStock = (lines: OpeningLinePayload[], fields: OpeningImportFields, post: boolean, fileName: string | null, key: string) =>
+  rpc<OpeningImportResult>('inventory_import_opening_stock', {
+    p_lines: lines as unknown as Json, p_fields: fields as unknown as Json, p_post: post, p_file_name: fileName, p_notes: null, p_idempotency_key: key,
+  })
+
 // Opening stock is submitted only through submitOpeningStockAtCost / postOpeningStockAtCost: the older functions accept
 // any unit cost and are not callable by users (migration 20261130090000).
 
