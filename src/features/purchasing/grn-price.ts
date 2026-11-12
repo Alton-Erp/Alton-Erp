@@ -326,3 +326,74 @@ export function productTrends(rows: VarianceRow[]): ProductTrend[] {
     }
   }).sort((a, b) => Math.abs(b.variance) - Math.abs(a.variance) || a.sku.localeCompare(b.sku))
 }
+
+// ---------------------------------------------------------------------------
+// GRN totals (both receipt screens) and receipts without a purchase order
+// ---------------------------------------------------------------------------
+export interface LineAmounts {
+  /** Accepted goods value excl. GST. */
+  taxable: number
+  cgst: number
+  sgst: number
+  igst: number
+  /** Payable incl. GST, exactly as the server stores it (goods_receipt_lines.line_value). */
+  total: number
+}
+
+/**
+ * A receipt line without a purchase order, as goods_receipt_direct_post values it (unchanged method):
+ * payable = round(accepted × unit cost × (1 + GST % / 100), 2). For display the GST in it is split into
+ * CGST + SGST (intra-state) or IGST (inter-state); the split never changes the payable.
+ */
+export function directLineAmounts(unitCost: number | string | null | undefined, gstRate: number | string | null | undefined,
+  accepted: number | string, interState: boolean): LineAmounts | null {
+  const c4 = toScaled(unitCost ?? null, 4)
+  const acc3 = toScaled(accepted, 3)
+  if (c4 === null || acc3 === null) return null
+  const g2 = toScaled(gstRate ?? 0, 2) ?? 0n
+  // acc (1e-3) × cost (1e-4) × (100 + gst) (1e-2 percent) → paise
+  const total = divRound(acc3 * c4 * (10_000n + g2), 10n ** 9n)
+  const taxable = divRound(acc3 * c4, 100_000n)
+  const tax = total - taxable
+  const half = divRound(tax, 2n)
+  return {
+    taxable: fromScaled(taxable, 2), total: fromScaled(total, 2),
+    cgst: interState ? 0 : fromScaled(half, 2), sgst: interState ? 0 : fromScaled(tax - half, 2), igst: interState ? fromScaled(tax, 2) : 0,
+  }
+}
+
+export interface GrnTotals extends LineAmounts {
+  gst: number
+  /** Accepted quantity of goods per unit (services and lines without a quantity excluded); units are never added together. */
+  quantities: { unit: string; quantity: number }[]
+  /** Lines whose value is unknown (no cost): left out of the amounts. */
+  unvalued: number
+}
+
+/** Totals of a GRN being entered: amounts in paise-exact sums, quantities per unit. */
+export function grnTotals(lines: { amounts: LineAmounts | null; unit: string | null | undefined; accepted: number | string; goods: boolean }[]): GrnTotals {
+  const sum = (f: (a: LineAmounts) => number) => fromScaled(lines.reduce((s, l) => s + (l.amounts ? toScaled(f(l.amounts), 2) ?? 0n : 0n), 0n), 2)
+  const byUnit = new Map<string, bigint>()
+  for (const l of lines) {
+    const q = toScaled(l.accepted, 3)
+    if (!l.goods || !l.unit || q === null || q <= 0n) continue
+    byUnit.set(l.unit, (byUnit.get(l.unit) ?? 0n) + q)
+  }
+  const t = { taxable: sum((a) => a.taxable), cgst: sum((a) => a.cgst), sgst: sum((a) => a.sgst), igst: sum((a) => a.igst), total: sum((a) => a.total) }
+  return {
+    ...t, gst: roundTo2(t.cgst + t.sgst + t.igst),
+    quantities: [...byUnit.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([unit, q]) => ({ unit, quantity: fromScaled(q, 3) })),
+    unvalued: lines.filter((l) => l.goods && !l.amounts && Number(l.accepted) > 0).length,
+  }
+}
+const roundTo2 = (v: number) => fromScaled(toScaled(v.toFixed(2), 2) ?? 0n, 2)
+
+/** HSN: 4, 6 or 8 digits (the Product Master rule); blank is allowed (the Product Master HSN is used). */
+export const HSN_PATTERN = /^(\d{4}|\d{6}|\d{8})$/
+
+/** Inter-state when the supplier's GST state differs from the company's (both known); otherwise intra-state. */
+export function isInterState(companyGstin: string | null | undefined, supplier: { gstin?: string | null; state_code?: string | null } | null | undefined): boolean {
+  const co = companyGstin?.slice(0, 2)
+  const sup = supplier?.gstin?.slice(0, 2) ?? supplier?.state_code ?? null
+  return Boolean(co && sup && co !== sup)
+}

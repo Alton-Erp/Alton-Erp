@@ -12,16 +12,18 @@ import { Textarea } from '@/components/ui/textarea'
 import { formatQty } from '@/features/inventory/inventory-model'
 import { money } from '@/features/billing/billing-model'
 import {
-  actualCostConfirmed, directionLabel, formatPrice, formatSignedPercent, formatSignedPrice, PRICE_REASONS, priceProblem, priceReasonText, priceVariance,
-  receiptPayable, splitPriceReason, taxLabel,
+  actualCostConfirmed, directionLabel, formatPrice, formatSignedPercent, formatSignedPrice, grnTotals, HSN_PATTERN, PRICE_REASONS, priceProblem, priceReasonText,
+  priceVariance, receiptPayable, splitPriceReason, taxLabel,
 } from '@/features/purchasing/grn-price'
+import { GrnSummary } from '@/features/purchasing/grn-summary'
+import { useAsync } from '@/hooks/use-async'
 import { isWholeUnit } from '@/features/inventory/whole-units'
 import { useStorage } from '@/features/inventory/use-storage'
 import { usePersistentFormDraft } from '@/hooks/use-persistent-form-draft'
 import { useRequestKey } from '@/hooks/use-request-key'
 import { describeDataError } from '@/lib/errors'
 import { toIsoDate } from '@/lib/format'
-import { checkActualCostSupport, correctGoodsReceipt, postGoodsReceipt, type ReceiptLineInput } from '@/services/purchasing'
+import { checkActualCostSupport, correctGoodsReceipt, fetchProductTaxInfo, postGoodsReceipt, type ReceiptLineInput } from '@/services/purchasing'
 import type { GoodsReceiptLineListRow, GoodsReceiptListRow, PurchaseOrderLineListRow, PurchaseOrderListRow } from '@/types/database-purchasing'
 
 interface Row {
@@ -41,6 +43,8 @@ interface Row {
   actual: string
   priceReason: string
   priceRemark: string
+  /** HSN typed on this line; null = not changed (the Product Master HSN, else the PO line HSN). */
+  hsn: string | null
 }
 
 const QTY = /^\d+(\.\d{1,3})?$/
@@ -95,7 +99,7 @@ export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, onPo
       rejected: g ? String(Number(g.rejected_quantity)) : '0', acceptedLocation: g?.accepted_location_id ?? '', rejectedLocation: g?.rejected_location_id ?? 'record',
       batch: g?.batch_number ?? '', mfg: g?.manufacturing_date ?? '', expiry: g?.expiry_date ?? '', serials: g?.serial_numbers ?? '',
       reason: g?.rejection_reason ?? '', overReason: g?.over_receipt_reason ?? '',
-      actual: String(Number(price)), priceReason: why.reason, priceRemark: why.remark,
+      actual: String(Number(price)), priceReason: why.reason, priceRemark: why.remark, hsn: null,
     }
   }))
   const [today] = useState(() => toIsoDate(new Date()))
@@ -126,6 +130,13 @@ export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, onPo
       }))
     },
   })
+  // Product Master HSN of the ordered products (the default HSN of each line).
+  const productIds = receivable.map((l) => l.product_id).filter((x): x is string => Boolean(x)).sort().join(',')
+  const taxInfo = useAsync(() => fetchProductTaxInfo(productIds ? productIds.split(',') : []), [productIds])
+  const masterHsn = (r: Row) => (r.line.product_id ? taxInfo.data?.get(r.line.product_id)?.hsn_code ?? null : null)
+  const shownHsn = (r: Row) => r.hsn ?? masterHsn(r) ?? r.line.hsn_sac ?? ''
+  /** The HSN sent with the line: only one the user changed (a blank or unchanged one is set on the server). */
+  const sentHsn = (r: Row) => (r.hsn === null || r.hsn.trim() === '' || r.hsn.trim() === (masterHsn(r) ?? '') ? null : r.hsn.trim())
   const update = (i: number, p: Partial<Row>) => setRows((rs) => rs.map((r, j) => {
     if (j !== i) return r
     const next = { ...r, ...p }
@@ -153,6 +164,11 @@ export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, onPo
       }
       if (Math.abs(acc + rej - rec) > 0.0005) problems.push(`${n}: accepted plus rejected must equal the quantity received.`)
       if (rej > 0 && !r.reason.trim()) problems.push(`${n}: enter the reason for the rejected / damaged quantity.`)
+      const hsn = sentHsn(r)
+      if (hsn && !HSN_PATTERN.test(hsn)) problems.push(`${n}: HSN must be 4, 6 or 8 digits.`)
+      else if (hsn && r.line.product_id && !has('products.update')) {
+        problems.push(`${n}: HSN ${hsn} differs from the Product Master HSN (${masterHsn(r) ?? 'none'}). Updating the Product Master needs permission to edit products: keep the Product Master HSN or ask a product editor.`)
+      }
       const priceIssue = priceProblem(r.line.unit_price, r.actual, r.priceReason, r.priceRemark, r.line, r.accepted || '0')
       if (priceIssue) problems.push(`${n}: ${priceIssue}`)
       if (r.line.line_type === 'GOODS' && acc > 0 && !(r.acceptedLocation || defaultLoc)) problems.push(`${n}: choose the storage location.`)
@@ -180,6 +196,7 @@ export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, onPo
         // Unchanged price: sent as the PO price with no reason (the server keeps the order line's cost).
         actual_unit_price: r.actual.trim() || null,
         price_variance_reason: priceVariance(r.line.unit_price, r.actual).changed ? priceReasonText(r.priceReason, r.priceRemark) : null,
+        hsn_code: sentHsn(r),
       }))
       const head = {
         receipt_date: header.receipt_date, supplier_document_number: header.supplier_document_number.trim() || null,
@@ -198,7 +215,8 @@ export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, onPo
       void draft.markSubmitted()
       if (priceChanged && !actualCostConfirmed(res)) { notConfirmed(res.receipt_number); return }
       request.renew()
-      onPosted(`${res.receipt_number} posted${res.transaction_numbers.length ? `: stock transactions ${res.transaction_numbers.join(', ')}` : ' (no stock postings)'}.${res.duplicate ? ' (This receipt had already been posted.)' : ''}`)
+      const hsnText = (res.hsn_updates ?? []).map((u) => `${u.sku} ${u.previous_hsn ?? 'none'} → ${u.new_hsn}`).join(', ')
+      onPosted(`${res.receipt_number} posted${res.transaction_numbers.length ? `: stock transactions ${res.transaction_numbers.join(', ')}` : ' (no stock postings)'}.${res.duplicate ? ' (This receipt had already been posted.)' : ''}${hsnText ? ` Product Master HSN updated: ${hsnText}.` : ''}`)
     } catch (e) {
       setError(describeDataError(e))
       setBusy(false)
@@ -212,6 +230,13 @@ export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, onPo
     setError(text)
     setBusy(false)
   }
+  // Live totals: the same amounts the server stores (receiptPayable), accepted quantity per unit.
+  const totals = grnTotals(rows.filter((r) => Number(r.received || 0) > 0).map((r) => {
+    const v = priceVariance(r.line.unit_price, r.actual)
+    const acc = (r.accepted || '0').trim()
+    const p = v.actual !== null && QTY.test(acc) ? receiptPayable(r.line, v.actual === v.poPrice ? (r.line.unit_price ?? 0) : r.actual.trim(), acc) : null
+    return { amounts: p && !p.error ? { taxable: p.taxable, cgst: p.cgst, sgst: p.sgst, igst: p.igst, total: p.payable } : null, unit: r.line.unit, accepted: acc, goods: r.line.line_type === 'GOODS' }
+  }))
   const close = () => (unconfirmed ? (onPostedWithWarning ?? (() => onClose()))(unconfirmed) : onClose())
 
   return (
@@ -257,8 +282,12 @@ export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, onPo
                   <div className="space-y-1"><Label htmlFor={id('rec')}>Received now</Label><Input id={id('rec')} inputMode="decimal" value={r.received} onChange={(e) => update(i, { received: e.target.value })} placeholder="0" /></div>
                   <div className="space-y-1"><Label htmlFor={id('acc')}>Accepted</Label><Input id={id('acc')} inputMode="decimal" value={r.accepted} onChange={(e) => update(i, { accepted: e.target.value })} /></div>
                   <div className="space-y-1"><Label htmlFor={id('rej')}>Rejected / damaged</Label><Input id={id('rej')} inputMode="decimal" value={r.rejected} onChange={(e) => update(i, { rejected: e.target.value })} /></div>
+                  <div className="space-y-1">
+                    <Label htmlFor={id('hsn')}>HSN code</Label>
+                    <Input id={id('hsn')} inputMode="numeric" maxLength={8} value={shownHsn(r)} onChange={(e) => update(i, { hsn: e.target.value.replace(/\s/g, '') })} />
+                  </div>
                   {goods && (
-                    <div className="space-y-1 sm:col-span-3">
+                    <div className="space-y-1 sm:col-span-2">
                       <Label htmlFor={id('loc')}>Store accepted goods in</Label>
                       <Select value={r.acceptedLocation || defaultLoc || undefined} onValueChange={(v) => update(i, { acceptedLocation: v })}>
                         <SelectTrigger id={id('loc')} className="w-full"><SelectValue placeholder={storageLocations.length ? 'Choose a location' : 'No storage location in this warehouse'} /></SelectTrigger>
@@ -267,6 +296,14 @@ export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, onPo
                     </div>
                   )}
                 </div>
+                {sentHsn(r) && (
+                  <p className={`mt-2 text-xs ${has('products.update') && HSN_PATTERN.test(sentHsn(r)!) ? 'text-amber-900' : 'text-red-700'}`} data-testid={`gr-hsn-note-${r.line.line_no}`}>
+                    {!HSN_PATTERN.test(sentHsn(r)!) ? 'HSN must be 4, 6 or 8 digits.'
+                      : !r.line.product_id ? 'Recorded on this receipt line.'
+                      : has('products.update') ? `Differs from the Product Master HSN (${masterHsn(r) ?? 'none'}): the Product Master HSN becomes ${sentHsn(r)} when this receipt is posted (recorded in the audit log).`
+                      : `Differs from the Product Master HSN (${masterHsn(r) ?? 'none'}). You cannot update the Product Master: keep its HSN or ask a product editor.`}
+                  </p>
+                )}
                 <PriceRow row={r} id={id} editable={goods} onChange={(p) => update(i, p)} />
                 {Number(r.rejected || 0) > 0 && (
                   <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -304,6 +341,7 @@ export function GoodsReceiptDialog({ po, lines: poLines, onClose, onPosted, onPo
             )
           })}
 
+          <GrnSummary totals={totals} />
           {error && <p role="alert" data-testid="gr-error" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</p>}
           <DialogFooter>
             {unconfirmed ? <Button type="button" onClick={close}>Close</Button> : <>
@@ -340,7 +378,7 @@ function PriceRow({ row: r, id, editable, onChange }: { row: Row; id: (f: string
         <div className="space-y-1"><p className="text-xs text-muted-foreground">Variance</p><p className={`text-sm font-medium tabular-nums ${tone}`}>{formatSignedPercent(v.percent)} <span className="block text-xs font-normal">{directionLabel(v.direction)}</span></p></div>
         <div className="space-y-1"><p className="text-xs text-muted-foreground">Discount · GST</p><p className="text-sm tabular-nums" data-testid={`gr-price-tax-${r.line.line_no}`}>{discount} · {taxLabel(r.line)}</p></div>
         <div className="space-y-1"><p className="text-xs text-muted-foreground">Accepted goods value</p><p className="text-sm font-medium tabular-nums" data-testid={`gr-price-value-${r.line.line_no}`}>{val ? money(val.taxable) : '—'}</p>
-          {val && <p className="text-xs text-muted-foreground" data-testid={`gr-price-payable-${r.line.line_no}`}>excl. GST · payable {money(val.payable)} incl. GST</p>}</div>
+          {val && <p className="text-xs text-muted-foreground" data-testid={`gr-price-payable-${r.line.line_no}`}>excl. GST · GST {money(Math.round((val.cgst + val.sgst + val.igst) * 100) / 100)} · payable {money(val.payable)} incl. GST</p>}</div>
       </div>
       {(v.error ?? val?.error) && <p className="mt-2 text-xs text-red-700">{v.error ?? val?.error}</p>}
       {v.changed && !v.error && (

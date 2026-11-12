@@ -2016,7 +2016,8 @@ const api = http.createServer((req, res) => {
         case 'purchase_receipt_post_refs':
         case 'purchase_receipt_post':
           return send(res, 200, { receipt_id: 'gr2', receipt_number: 'GRN-000002', po_status: 'PARTIALLY_RECEIVED', transaction_numbers: ['TXN-000091'],
-            ...(GRN_COST_CONFIRMED ? { actual_cost_supported: true } : {}) })
+            ...(GRN_COST_CONFIRMED ? { actual_cost_supported: true } : {}),
+            hsn_updates: (body.p_lines ?? []).filter((l) => l.hsn_code).map((l) => ({ product_id: 'p1', sku: 'MOCK-WC-1', previous_hsn: '6910', new_hsn: l.hsn_code })) })
         case 'goods_receipt_direct_post_refs':
         case 'goods_receipt_direct_post':
           return send(res, 200, { receipt_id: 'gr9', receipt_number: 'GRN-000009', transaction_numbers: ['TXN-000095'], unlinked: true,
@@ -4583,6 +4584,7 @@ await step('Total Stock valuation: unit cost and stock value columns, Not Valued
 
 await step('global search: records (product, sales order) and modules; choosing a record opens it', async () => {
   await goto('/')
+  await waitFor(`!!document.querySelector('input[aria-label="Search records and modules"]')`, 'header search')
   await fill('input[aria-label="Search records and modules"]', 'wc')
   await waitFor(bodyHasAll('MOCK-WC-1 — Mock Closet 1', 'SO-000001 — Acme Ltd'), 'record results')
   assert(rpcCalls('global_search').at(-1).body.p_term === 'wc', 'search term not sent')
@@ -4949,6 +4951,72 @@ await step('GRN actual purchase cost: a changed price is never posted to a datab
   }
 })
 
+await step('GRN totals and HSN: per-line HSN from the Product Master, live quantity / taxable / CGST / SGST / IGST / total, a changed HSN is sent and announced; the same on receipts without a PO', async () => {
+  // Against a PO: MOCK-WC-1 at ₹1,000 less 10%, 18% intra-state.
+  await goto('/purchase-orders/po3')
+  await waitFor(bodyHas('Record goods receipt'), 'order')
+  await click('button', 'Record goods receipt')
+  await waitFor(`document.querySelector('#gr-pol3a-hsn')?.value === '6910' && !!document.querySelector('[data-testid=grn-summary]')`, 'HSN from the Product Master and the summary')
+  await fill('#gr-pol3a-rec', '4')
+  const sum = (k) => `document.querySelector('[data-testid=grn-summary-${k}]')?.innerText`
+  await waitFor(`${sum('qty')}.includes('4 PCS') && ${sum('taxable')}.includes('3,600.00') && ${sum('cgst')}.includes('324.00') && ${sum('sgst')}.includes('324.00')
+    && ${sum('igst')}.includes('0.00') && ${sum('gst')}.includes('648.00') && ${sum('total')}.includes('4,248.00')`, 'live totals')
+  // A different actual cost updates the totals at once (₹1,250 less 10% = ₹1,125 × 4 = ₹4,500 + 18% = ₹5,310).
+  await fill('#gr-pol3a-actual', '1250')
+  await waitFor(`${sum('taxable')}.includes('4,500.00') && ${sum('total')}.includes('5,310.00')`, 'totals follow the actual cost')
+  await fill('#gr-pol3a-actual', '1000')
+  // HSN: invalid refused; a different one is announced and sent.
+  await fill('#gr-pol3a-hsn', '691')
+  await waitFor(`document.querySelector('[data-testid=gr-hsn-note-1]')?.innerText.includes('4, 6 or 8 digits')`, 'invalid HSN shown')
+  const before = poCalls('purchase_receipt_post_refs').length
+  await click('[role=dialog] button[type=submit]')
+  await waitFor(`document.querySelector('[data-testid=gr-error]')?.innerText.includes('HSN must be 4, 6 or 8 digits')`, 'invalid HSN refused')
+  assert(poCalls('purchase_receipt_post_refs').length === before, 'posted with an invalid HSN')
+  await fill('#gr-pol3a-hsn', '691010')
+  await waitFor(`document.querySelector('[data-testid=gr-hsn-note-1]')?.innerText.includes('the Product Master HSN becomes 691010 when this receipt is posted')`, 'Product Master update announced')
+  await screenshot('204-grn-totals-hsn')
+  await click('[role=dialog] button[type=submit]')
+  await waitFor(bodyHas('Product Master HSN updated: MOCK-WC-1 6910 → 691010'), 'posted, HSN update reported')
+  assert(poCalls('purchase_receipt_post_refs').at(-1).p_lines[0].hsn_code === '691010', JSON.stringify(poCalls('purchase_receipt_post_refs').at(-1).p_lines[0]))
+
+  // Unchanged HSN: nothing is sent (the server records the Product Master HSN).
+  await goto('/purchase-orders/po3')
+  await waitFor(bodyHas('Record goods receipt'), 'order')
+  await click('button', 'Record goods receipt')
+  await waitFor(`document.querySelector('#gr-pol3a-hsn')?.value === '6910'`, 'receipt dialog')
+  await fill('#gr-pol3a-rec', '1')
+  await click('[role=dialog] button[type=submit]')
+  await waitFor(bodyHas('GRN-000002 posted'), 'posted')
+  assert(poCalls('purchase_receipt_post_refs').at(-1).p_lines[0].hsn_code === null, 'an unchanged HSN was sent')
+
+  // Without a PO: entered cost and GST rate, amounts per line and in the summary, HSN from the Product Master.
+  await goto('/goods-receipts')
+  await waitFor(bodyHas('Receive without PO'), 'register')
+  await click('button', 'Receive without PO')
+  await waitFor(`!!document.querySelector('#dr-prod-0')`, 'direct receipt dialog')
+  await fill('#dr-prod-0', 'MOCK-WC-1')
+  await sleep(500)
+  await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('MOCK-WC-1'))`, 'product option')
+  await click('[role=option]', 'MOCK-WC-1')
+  await waitFor(`document.querySelector('input[id^="dr-hsn-"]')?.value === '6910'`, 'HSN from the Product Master')
+  await fill('input[id^="dr-rec-"]', '3')
+  await fill('input[id^="dr-cost-"]', '100')
+  await fill('input[id^="dr-gst-"]', '18')
+  await waitFor(`document.querySelector('[data-testid=dr-amounts-0]')?.innerText.includes('taxable ₹300.00') && document.querySelector('[data-testid=dr-amounts-0]')?.innerText.includes('total ₹354.00')
+    && ${sum('qty')}.includes('3 PCS') && ${sum('cgst')}.includes('27.00') && ${sum('sgst')}.includes('27.00') && ${sum('total')}.includes('354.00')`, 'direct amounts and totals')
+  await fill('input[id^="dr-hsn-"]', '73241000')
+  await waitFor(`document.querySelector('[data-testid=dr-hsn-note-0]')?.innerText.includes('becomes 73241000')`, 'HSN change announced')
+  await screenshot('205-direct-grn-totals-hsn')
+  await click('[role=dialog] button[type=submit]')
+  await waitFor(`location.pathname === '/goods-receipts/gr9'`, 'posted')
+  const d = poCalls('goods_receipt_direct_post_refs').at(-1).p_lines[0]
+  assert(d.hsn_code === '73241000' && d.unit_cost === '100' && d.gst_rate === '18', JSON.stringify(d))
+  // Detail and print show the HSN column.
+  await waitFor(`!!document.querySelector('[data-testid=grn-line-hsn]')`, 'GRN detail HSN column')
+  await goto('/goods-receipts/gr1/print')
+  await waitFor(`!!document.querySelector('[data-testid=grn-print-hsn]')`, 'print HSN column')
+})
+
 await step('GRN price variance report: KPIs exclude reversed GRNs, supplier-wise and product-wise views, line list with reasons', async () => {
   await goto('/goods-receipts')
   await waitFor(`!!document.querySelector('[data-testid=grn-price-variance]')`, 'price variance button')
@@ -5138,6 +5206,7 @@ await step('GRN register: receipts against orders and unlinked receipts, with KP
 })
 
 await step('GRN: receive without a PO shows the unlinked warning, validates and posts once', async () => {
+  const sentBefore = poCalls('goods_receipt_direct_post_refs').length
   await goto('/goods-receipts')
   await waitFor(bodyHas('Receive without PO'), 'register')
   await click('button', 'Receive without PO')
@@ -5145,7 +5214,7 @@ await step('GRN: receive without a PO shows the unlinked warning, validates and 
   assert(await evaluate(bodyHas('This is an unlinked receipt')), 'unlinked warning missing')
   await click('[role=dialog] button[type=submit]')
   await waitFor(bodyHas('Add at least one product received.'), 'validation')
-  assert(poCalls('goods_receipt_direct_post_refs').length === 0, 'invalid receipt sent')
+  assert(poCalls('goods_receipt_direct_post_refs').length === sentBefore, 'invalid receipt sent')
   await fill('#dr-prod-0', 'MOCK-WC-1')
   await press('#dr-prod-0')
   await waitFor(bodyHas('Mock Closet 1'), 'product chosen')
@@ -5515,6 +5584,8 @@ await step('ERP reset: Super Admin sees the warning, impact summary, kept data a
 await step('ERP reset: modal requires password and RESET ERP; wrong password shows the error, no success', async () => {
   await goto('/admin/erp-settings?tab=system')
   await waitFor(`location.pathname === '/admin/erp-settings' && ${bodyHas('Will be deleted (7 records)')}`, 'reset card')
+  // Let the other settings sections finish loading: the click is by position and the card moves while they do.
+  await sleep(800)
   await click('button', 'Reset ERP Data')
   // The confirmation label is a flex row, so its words are separate lines in innerText.
   await waitFor(`${bodyHasAll('Permanently Reset ERP Data?', 'Your password')} && document.querySelector('label[for=reset-confirm]').textContent === 'Type RESET ERP to confirm'

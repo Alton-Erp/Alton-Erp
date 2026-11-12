@@ -107,7 +107,7 @@ export default function GoodsReceiptDetailPage() {
         <CardHeader><div><CardTitle>Items received</CardTitle><CardDescription>Accepted goods were added to stock; rejected goods are never available stock.{r.notes ? ` Remarks: ${r.notes}` : ''}</CardDescription></div></CardHeader>
         <Table>
           <TableHeader><TableRow className="hover:bg-transparent">
-            <TableHead>Item</TableHead>
+            <TableHead>Item</TableHead><TableHead>HSN</TableHead>
             {!direct && <TableHead className="text-right">Ordered</TableHead>}
             <TableHead className="text-right">Received</TableHead><TableHead className="text-right">Accepted</TableHead><TableHead className="text-right">Rejected</TableHead>
             {!direct && <><TableHead className="text-right">Shortage now</TableHead><TableHead className="text-right">Excess</TableHead>
@@ -119,6 +119,7 @@ export default function GoodsReceiptDetailPage() {
             return (
               <TableRow key={l.id}>
                 <TableCell className="min-w-48 whitespace-normal"><div className="flex items-start gap-2">{l.product_id && <ProductThumb size="xs" src={lineImages.get(l.product_id)} alt={l.description} />}<div className="min-w-0"><p className="font-medium">{l.sku ? `${l.sku} — ` : ''}{l.description}</p>{l.po_line_no && <p className="text-xs text-muted-foreground">PO line {l.po_line_no}</p>}</div></div></TableCell>
+                <TableCell data-testid="grn-line-hsn">{l.hsn_code ?? <span className="text-muted-foreground" title="Posted before HSN was recorded on GRN lines">—</span>}</TableCell>
                 {!direct && <TableCell className="text-right tabular-nums">{l.ordered_quantity === null ? '—' : formatQty(l.ordered_quantity, l.unit)}</TableCell>}
                 <TableCell className="text-right tabular-nums">{formatQty(l.received_quantity, l.unit)}</TableCell>
                 <TableCell className="text-right tabular-nums">{formatQty(l.accepted_quantity)}</TableCell>

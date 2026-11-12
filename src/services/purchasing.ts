@@ -200,6 +200,8 @@ export interface ReceiptLineInput {
   actual_unit_price?: string | null
   /** Required when the actual price differs from the PO price. */
   price_variance_reason?: string | null
+  /** HSN for this line, sent only when changed (blank = the Product Master HSN, else the PO line HSN). */
+  hsn_code?: string | null
 }
 
 /**
@@ -233,7 +235,7 @@ export const postGoodsReceipt = (
   lines: ReceiptLineInput[],
   requestKey: string,
 ) =>
-  rpc<{ receipt_id: string; receipt_number: string; po_status: string; transaction_numbers: string[]; duplicate?: boolean; actual_cost_supported?: boolean }>('purchase_receipt_post_refs', {
+  rpc<{ receipt_id: string; receipt_number: string; po_status: string; transaction_numbers: string[]; duplicate?: boolean; actual_cost_supported?: boolean; hsn_updates?: HsnUpdate[] }>('purchase_receipt_post_refs', {
     p_po_id: poId, p_header: header, p_lines: lines, p_idempotency_key: requestKey,
   })
 
@@ -255,6 +257,26 @@ export interface DirectReceiptLineInput {
   expiry_date: string | null
   serial_numbers: string | null
   rejection_reason: string | null
+  /** HSN for this line (blank = the Product Master HSN). A different HSN updates the Product Master after posting. */
+  hsn_code?: string | null
+}
+
+/** HSN, standard cost and GST rate of products (defaults on the receipt screens). */
+export async function fetchProductTaxInfo(ids: string[]): Promise<Map<string, { hsn_code: string | null; standard_cost: number | null; gst_rate: number | null }>> {
+  const unique = [...new Set(ids.filter(Boolean))]
+  const map = new Map<string, { hsn_code: string | null; standard_cost: number | null; gst_rate: number | null }>()
+  if (unique.length === 0) return map
+  const { data, error } = await db().from('products').select('id, hsn_code, standard_cost, gst_rate').in('id', unique)
+  if (error) throw error
+  for (const p of data ?? []) map.set(p.id, { hsn_code: p.hsn_code, standard_cost: p.standard_cost === null ? null : Number(p.standard_cost), gst_rate: p.gst_rate === null ? null : Number(p.gst_rate) })
+  return map
+}
+
+/** GSTIN and state of a supplier (to show CGST + SGST or IGST). */
+export async function fetchSupplierTaxState(id: string): Promise<{ gstin: string | null; state_code: string | null } | null> {
+  const { data, error } = await db().from('suppliers').select('gstin, state_code').eq('id', id).maybeSingle()
+  if (error) throw error
+  return (data as { gstin: string | null; state_code: string | null } | null) ?? null
 }
 
 export interface DirectReceiptHeader {
@@ -268,7 +290,9 @@ export interface DirectReceiptHeader {
   supplier_challan_number: string | null
 }
 
-export type ReceiptResult = { receipt_id: string; receipt_number: string; po_status?: string; transaction_numbers: string[]; warnings?: string[]; unlinked?: boolean; duplicate?: boolean }
+/** A Product Master HSN changed by a GRN posting (migration 20261205090000). */
+export type HsnUpdate = { product_id: string; sku: string; previous_hsn: string | null; new_hsn: string }
+export type ReceiptResult = { receipt_id: string; receipt_number: string; po_status?: string; transaction_numbers: string[]; warnings?: string[]; unlinked?: boolean; duplicate?: boolean; hsn_updates?: HsnUpdate[] }
 
 /** Goods received without a purchase order (always flagged as unlinked). */
 export const postDirectGoodsReceipt = (header: DirectReceiptHeader, lines: DirectReceiptLineInput[], requestKey: string) =>

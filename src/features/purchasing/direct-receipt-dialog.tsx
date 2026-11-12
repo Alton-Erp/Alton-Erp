@@ -11,13 +11,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { ProductPicker } from '@/features/inventory/pickers'
 import { useStorage } from '@/features/inventory/use-storage'
 import { isWholeUnit } from '@/features/inventory/whole-units'
+import { money } from '@/features/billing/billing-model'
+import { directLineAmounts, grnTotals, HSN_PATTERN, isInterState } from '@/features/purchasing/grn-price'
+import { GrnSummary } from '@/features/purchasing/grn-summary'
 import { useAsync } from '@/hooks/use-async'
 import { usePersistentFormDraft } from '@/hooks/use-persistent-form-draft'
 import { useRequestKey } from '@/hooks/use-request-key'
 import { describeDataError } from '@/lib/errors'
 import { toIsoDate } from '@/lib/format'
 import type { ProductOption } from '@/services/inventory'
-import { correctGoodsReceipt, postDirectGoodsReceipt, type DirectReceiptLineInput } from '@/services/purchasing'
+import { correctGoodsReceipt, fetchProductTaxInfo, fetchSupplierTaxState, postDirectGoodsReceipt, type DirectReceiptLineInput } from '@/services/purchasing'
+import { fetchCompanyGstin } from '@/services/sales-v2'
 import { fetchSupplierOptions } from '@/services/suppliers'
 import type { GoodsReceiptLineListRow, GoodsReceiptListRow } from '@/types/database-purchasing'
 
@@ -36,9 +40,11 @@ interface Row {
   reason: string
   batch: string
   expiry: string
+  /** HSN typed on this line; null = not changed (the Product Master HSN). */
+  hsn?: string | null
 }
 
-const blank = (): Row => ({ key: crypto.randomUUID(), product: null, received: '', rejected: '0', cost: '', gst: '', location: '', rejectedLocation: 'record', reason: '', batch: '', expiry: '' })
+const blank = (): Row => ({ key: crypto.randomUUID(), product: null, received: '', rejected: '0', cost: '', gst: '', location: '', rejectedLocation: 'record', reason: '', batch: '', expiry: '', hsn: null })
 
 /**
  * Goods received without a purchase order. Always flagged as an unlinked
@@ -79,6 +85,27 @@ export function DirectReceiptDialog({ onClose, onPosted, correction }: {
   const defaultLoc = locations.find((o) => o.isDefault)?.id ?? locations[0]?.id ?? ''
   const update = (key: string, p: Partial<Row>) => setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...p } : r)))
   const { has } = usePermissions()
+  // Product Master HSN, standard cost and GST rate of the chosen products (the defaults the server also uses).
+  const productIds = rows.map((r) => r.product?.product_id).filter((x): x is string => Boolean(x)).sort().join(',')
+  const taxInfo = useAsync(() => fetchProductTaxInfo(productIds ? productIds.split(',') : []).catch(() => new Map()), [productIds])
+  const info = (r: Row) => (r.product ? taxInfo.data?.get(r.product.product_id) : undefined)
+  const masterHsn = (r: Row) => info(r)?.hsn_code ?? null
+  const shownHsn = (r: Row) => r.hsn ?? masterHsn(r) ?? ''
+  const sentHsn = (r: Row) => (r.hsn === null || r.hsn === undefined || r.hsn.trim() === '' || r.hsn.trim() === (masterHsn(r) ?? '') ? null : r.hsn.trim())
+  // CGST + SGST or IGST: the supplier's state against the company's (intra-state when either is unknown).
+  const companyGstin = useAsync(() => fetchCompanyGstin(), [])
+  const supplierTax = useAsync(() => (header.supplier_id ? fetchSupplierTaxState(header.supplier_id).catch(() => null) : Promise.resolve(null)), [header.supplier_id])
+  const interState = isInterState(companyGstin.data, supplierTax.data)
+  const amounts = (r: Row) => {
+    const acc = Math.max(0, Math.round((Number(r.received || 0) - Number(r.rejected || 0)) * 1000) / 1000)
+    const cost = r.cost.trim() || info(r)?.standard_cost
+    const gst = r.gst.trim() || info(r)?.gst_rate || 0
+    return { acc, value: cost === null || cost === undefined || cost === '' || !QTY.test(r.received.trim() || 'x') ? null : directLineAmounts(cost, gst, acc, interState) }
+  }
+  const totals = grnTotals(rows.filter((r) => r.product && Number(r.received || 0) > 0).map((r) => {
+    const a = amounts(r)
+    return { amounts: a.value, unit: r.product!.base_unit, accepted: a.acc, goods: true }
+  }))
   // Auto-saved working copy: restored when the dialog is opened again.
   const draft = usePersistentFormDraft({
     formKey: 'purchase.receipt', recordId: correction?.receipt.id ?? null, scope: correction ? 'direct-correction' : 'direct',
@@ -113,6 +140,9 @@ export function DirectReceiptDialog({ onClose, onPosted, correction }: {
       if (r.cost.trim() && !MONEY.test(r.cost.trim())) problems.push(`${n}: unit cost must be a number (up to 4 decimals).`)
       if (r.gst.trim() && (!/^\d+(\.\d{1,2})?$/.test(r.gst.trim()) || Number(r.gst) > 100)) problems.push(`${n}: GST rate must be 0 to 100.`)
       if (Number(r.received) - Number(rej) > 0 && !(r.location || defaultLoc)) problems.push(`${n}: choose the storage location.`)
+      const hsn = sentHsn(r)
+      if (hsn && !HSN_PATTERN.test(hsn)) problems.push(`${n}: HSN must be 4, 6 or 8 digits.`)
+      else if (hsn && !has('products.update')) problems.push(`${n}: HSN ${hsn} differs from the Product Master HSN (${masterHsn(r) ?? 'none'}). Updating the Product Master needs permission to edit products: keep the Product Master HSN or ask a product editor.`)
     })
     if (problems.length) { setError(problems.join(' ')); return }
     setBusy(true)
@@ -126,6 +156,7 @@ export function DirectReceiptDialog({ onClose, onPosted, correction }: {
           accepted_location_id: Number(acc) > 0 ? (r.location || defaultLoc) : null,
           rejected_location_id: Number(rej) > 0 && r.rejectedLocation !== 'record' ? r.rejectedLocation : null,
           batch_number: r.batch.trim() || null, manufacturing_date: null, expiry_date: r.expiry || null, serial_numbers: null, rejection_reason: r.reason.trim() || null,
+          hsn_code: sentHsn(r),
         }
       })
       const head = {
@@ -139,6 +170,7 @@ export function DirectReceiptDialog({ onClose, onPosted, correction }: {
       request.renew()
       void draft.markSubmitted()
       const extra = (res.warnings ?? []).filter((w) => !w.includes('not linked'))
+      for (const u of res.hsn_updates ?? []) extra.push(`Product Master HSN of ${u.sku} updated: ${u.previous_hsn ?? 'none'} → ${u.new_hsn}.`)
       onPosted(`${correction ? `${correction.receipt.receipt_number} reversed and corrected as ${res.receipt_number}` : `${res.receipt_number} posted without a purchase order`}.${extra.length ? ` Note: ${extra.join(' ')}` : ''}`, res.receipt_id)
     } catch (e) {
       setError(describeDataError(e))
@@ -194,7 +226,8 @@ export function DirectReceiptDialog({ onClose, onPosted, correction }: {
                 <div className="space-y-1"><Label htmlFor={`dr-rec-${r.key}`}>Received{r.product ? ` (${r.product.base_unit})` : ''}</Label><Input id={`dr-rec-${r.key}`} inputMode="decimal" value={r.received} onChange={(e) => update(r.key, { received: e.target.value })} /></div>
                 <div className="space-y-1"><Label htmlFor={`dr-rej-${r.key}`}>Rejected / damaged</Label><Input id={`dr-rej-${r.key}`} inputMode="decimal" value={r.rejected} onChange={(e) => update(r.key, { rejected: e.target.value })} /></div>
                 <div className="space-y-1"><Label htmlFor={`dr-cost-${r.key}`}>Unit cost (₹, excl. GST)</Label><Input id={`dr-cost-${r.key}`} inputMode="decimal" placeholder="Product's standard" value={r.cost} onChange={(e) => update(r.key, { cost: e.target.value })} /></div>
-                <div className="space-y-1"><Label htmlFor={`dr-gst-${r.key}`}>GST %</Label><Input id={`dr-gst-${r.key}`} inputMode="decimal" placeholder="Product's rate" value={r.gst} onChange={(e) => update(r.key, { gst: e.target.value })} /></div>
+                <div className="space-y-1"><Label htmlFor={`dr-gst-${r.key}`}>GST %</Label><Input id={`dr-gst-${r.key}`} inputMode="decimal" placeholder={info(r)?.gst_rate != null ? `${info(r)!.gst_rate} (product)` : "Product's rate"} value={r.gst} onChange={(e) => update(r.key, { gst: e.target.value })} /></div>
+                <div className="space-y-1"><Label htmlFor={`dr-hsn-${r.key}`}>HSN code</Label><Input id={`dr-hsn-${r.key}`} inputMode="numeric" maxLength={8} value={shownHsn(r)} onChange={(e) => update(r.key, { hsn: e.target.value.replace(/\s/g, '') })} /></div>
                 <div className="space-y-1 sm:col-span-2"><Label htmlFor={`dr-loc-${r.key}`}>Store accepted goods in</Label>
                   <Select value={r.location || defaultLoc || undefined} onValueChange={(v) => { if (v) update(r.key, { location: v }) }}>
                     <SelectTrigger id={`dr-loc-${r.key}`}><SelectValue placeholder={locations.length ? 'Choose a location' : 'No storage location in this warehouse'} /></SelectTrigger>
@@ -206,6 +239,23 @@ export function DirectReceiptDialog({ onClose, onPosted, correction }: {
                   <Button type="button" variant="ghost" size="sm" disabled={rows.length === 1} onClick={() => setRows((rs) => rs.filter((x) => x.key !== r.key))}><Trash2 /> Remove line</Button>
                 </div>
               </div>
+              {r.product && (() => {
+                const a = amounts(r)
+                return (
+                  <p className="mt-2 text-xs text-muted-foreground" data-testid={`dr-amounts-${i}`}>
+                    {a.value
+                      ? <>Accepted {a.acc} {r.product.base_unit} · taxable {money(a.value.taxable)} · GST {money(Math.round((a.value.cgst + a.value.sgst + a.value.igst) * 100) / 100)} · <span className="font-medium text-foreground">total {money(a.value.total)} incl. GST</span></>
+                      : 'No unit cost: the value of this line is unknown.'}
+                  </p>
+                )
+              })()}
+              {sentHsn(r) && (
+                <p className={`mt-1 text-xs ${has('products.update') && HSN_PATTERN.test(sentHsn(r)!) ? 'text-amber-900' : 'text-red-700'}`} data-testid={`dr-hsn-note-${i}`}>
+                  {!HSN_PATTERN.test(sentHsn(r)!) ? 'HSN must be 4, 6 or 8 digits.'
+                    : has('products.update') ? `Differs from the Product Master HSN (${masterHsn(r) ?? 'none'}): the Product Master HSN becomes ${sentHsn(r)} when this receipt is posted (recorded in the audit log).`
+                    : `Differs from the Product Master HSN (${masterHsn(r) ?? 'none'}). You cannot update the Product Master: keep its HSN or ask a product editor.`}
+                </p>
+              )}
               {Number(r.rejected || 0) > 0 && (
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
                   <div className="space-y-1"><Label htmlFor={`dr-reason-${r.key}`}>Rejection reason</Label><Input id={`dr-reason-${r.key}`} maxLength={500} value={r.reason} onChange={(e) => update(r.key, { reason: e.target.value })} /></div>
@@ -220,6 +270,7 @@ export function DirectReceiptDialog({ onClose, onPosted, correction }: {
             </fieldset>
           ))}
           <Button type="button" variant="outline" size="sm" onClick={() => setRows((rs) => [...rs, blank()])}><Plus /> Add product</Button>
+          <GrnSummary totals={totals} note={!header.supplier_id || !supplierTax.data ? 'No supplier GST state: GST is shown as CGST + SGST (intra-state).' : undefined} />
           {error && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</p>}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose} disabled={busy}>Cancel</Button>

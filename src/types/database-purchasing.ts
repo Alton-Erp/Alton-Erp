@@ -237,6 +237,8 @@ export type GoodsReceiptLineRow = {
   /** Actual purchase unit price entered on the GRN (before discount, excl. GST). */
   actual_unit_price?: number | null
   price_variance_reason?: string | null
+  /** HSN used on this line (snapshot at posting; null on GRNs posted before 20261205090000). */
+  hsn_code?: string | null
 }
 
 /** goods_receipt_price_variance: PO price vs actual purchase price per GRN line. */

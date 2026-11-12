@@ -68,21 +68,22 @@ export default function GrnPrintPage() {
         </section>
         <table className="relative mt-3 w-full border-collapse">
           <thead><tr className="border-y bg-gray-50 text-left">
-            <th className="p-1">#</th><th className="p-1">Item</th>{!direct && <th className="p-1 text-right">Ordered</th>}
+            <th className="p-1">#</th><th className="p-1">Item</th><th className="p-1">HSN</th>{!direct && <th className="p-1 text-right">Ordered</th>}
             <th className="p-1 text-right">Received</th><th className="p-1 text-right">Accepted</th><th className="p-1 text-right">Rejected</th>
-            <th className="p-1">Stored in</th><th className="p-1">Batch</th>{direct && <th className="p-1 text-right">Value (incl. GST)</th>}
+            <th className="p-1">Stored in</th><th className="p-1">Batch</th><th className="p-1 text-right">Value (incl. GST)</th>
           </tr></thead>
           <tbody>{lines.map((l, i) => (
             <tr key={l.id} className="print-avoid-break border-b align-top">
               <td className="p-1">{l.po_line_no ?? i + 1}</td>
               <td className="p-1">{l.sku ? `${l.sku} — ` : ''}{l.description}{Number(l.rejected_quantity) > 0 && l.rejection_reason && <span className="block text-[9px] text-gray-600">Rejected: {l.rejection_reason}</span>}</td>
+              <td className="p-1" data-testid="grn-print-hsn">{l.hsn_code ?? '—'}</td>
               {!direct && <td className="p-1 text-right">{l.ordered_quantity === null ? '—' : formatQty(l.ordered_quantity, l.unit)}</td>}
               <td className="p-1 text-right">{formatQty(l.received_quantity, l.unit)}</td>
               <td className="p-1 text-right">{formatQty(l.accepted_quantity)}</td>
               <td className="p-1 text-right">{formatQty(l.rejected_quantity)}</td>
               <td className="p-1">{l.accepted_location_code ?? '—'}</td>
               <td className="p-1">{l.batch_number ?? '—'}{l.expiry_date ? ` (exp ${formatDate(l.expiry_date)})` : ''}</td>
-              {direct && <td className="p-1 text-right">{l.line_value === null ? '—' : money(l.line_value, false)}</td>}
+              <td className="p-1 text-right">{l.line_value === null ? '—' : money(l.line_value, false)}</td>
             </tr>
           ))}</tbody>
         </table>
