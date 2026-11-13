@@ -18,6 +18,15 @@ export const DASHBOARD_DATE_RANGE_PRESETS: { value: DateRangePreset; label: stri
 ]
 
 /** Extended presets used by inventory pages. */
+/** Support Centre: Today, Yesterday, This Week, This Month, Custom Range. */
+export const SUPPORT_DATE_RANGE_PRESETS: { value: DateRangePreset; label: string }[] = [
+  { value: 'today', label: 'Today' },
+  { value: 'yesterday', label: 'Yesterday' },
+  { value: 'this_week', label: 'This Week' },
+  { value: 'this_month', label: 'This Month' },
+  { value: 'custom', label: 'Custom Range' },
+]
+
 export const EXTENDED_DATE_RANGE_PRESETS: { value: DateRangePreset; label: string }[] = [
   { value: 'today', label: 'Today' },
   { value: 'last_7_days', label: 'Last 7 Days' },
@@ -43,6 +52,10 @@ export function getPresetRange(
   switch (preset) {
     case 'today':
       return { preset, from: startOfDay(now), to: endOfDay(now) }
+    case 'yesterday': {
+      const y = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)
+      return { preset, from: startOfDay(y), to: endOfDay(y) }
+    }
     case 'this_week': {
       // Weeks start on Monday (Indian business convention).
       const back = (now.getDay() + 6) % 7

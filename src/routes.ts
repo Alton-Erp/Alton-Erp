@@ -48,6 +48,17 @@ export const PAGE_COMPONENTS: Record<NavKey, LazyExoticComponent<ComponentType>>
   'billing-tax': lazy(() => import('@/pages/billing/tax-summary-page')),
   'billing-reports': lazy(() => import('@/pages/billing/billing-reports-page')),
   'billing-settings': lazy(() => import('@/pages/billing/invoice-settings-page')),
+  'support-overview': lazy(() => import('@/pages/support/support-overview-page')),
+  'support-inbox': lazy(() => import('@/pages/support/support-inbox-page')),
+  'support-tickets': lazy(() => import('@/pages/support/support-tickets-page')),
+  'support-customers': lazy(() => import('@/pages/support/support-customers-page')),
+  'support-calls': lazy(() => import('@/pages/support/support-calls-page')),
+  'support-whatsapp': lazy(() => import('@/pages/support/support-whatsapp-page')),
+  'support-emails': lazy(() => import('@/pages/support/support-emails-page')),
+  'support-knowledge-base': lazy(() => import('@/pages/support/support-knowledge-base-page')),
+  'support-automation': lazy(() => import('@/pages/support/support-automation-page')),
+  'support-reports': lazy(() => import('@/pages/support/support-reports-page')),
+  'support-settings': lazy(() => import('@/pages/support/support-settings-page')),
   'ledger-dashboard': lazy(() => import('@/pages/ledger/ledger-dashboard-page')),
   ledger: lazy(() => import('@/pages/ledger-page')),
   'ledger-customers': lazy(() => import('@/pages/ledger/customer-ledger-page')),
@@ -66,6 +77,10 @@ export const NotFoundPage = lazy(() => import('@/pages/not-found-page'))
  * permission its route requires (null = any signed-in user); static paths win over `:productId`.
  */
 export const SUB_ROUTES: { path: string; permission: PermissionCode | null; component: LazyExoticComponent<ComponentType> }[] = [
+  { path: '/support/tickets/:ticketId', permission: 'support.view', component: lazy(() => import('@/pages/support/support-ticket-detail-page')) },
+  { path: '/support/customers/:customerId', permission: 'support.view', component: lazy(() => import('@/pages/support/support-customer-profile-page')) },
+  { path: '/support/calls/:callId', permission: 'support.view', component: lazy(() => import('@/pages/support/support-call-detail-page')) },
+  { path: '/support/workspace', permission: 'support.view', component: lazy(() => import('@/pages/support/support-workspace-page')) },
   { path: '/reports/view/:reportKey', permission: 'reports.read', component: lazy(() => import('@/pages/reports/report-view-page')) },
   // Records behind a dashboard figure; the page checks the figure's own permissions.
   { path: '/drilldown/:metric', permission: null, component: lazy(() => import('@/pages/drilldown-page')) },
@@ -125,6 +140,7 @@ export const REDIRECTS: { from: string; to: string }[] = [
   { from: '/sales', to: '/sales/dashboard' },
   { from: '/sales-orders', to: '/sales/orders' },
   { from: '/billing', to: '/billing/dashboard' },
+  { from: '/support', to: '/support/overview' },
   { from: '/payments', to: '/billing/payments' },
   { from: '/customers', to: '/ledger/customers' },
   { from: '/suppliers', to: '/ledger/suppliers' },

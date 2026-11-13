@@ -4,8 +4,19 @@ import {
   Ban,
   BellRing,
   BookUser,
+  BookOpen,
   Boxes,
   Building2,
+  ChartBar,
+  Contact,
+  Headset,
+  Inbox,
+  Mail,
+  MessageCircle,
+  PhoneCall,
+  Settings,
+  Ticket,
+  Workflow,
   CalendarRange,
   ChartColumn,
   ClipboardCheck,
@@ -41,7 +52,8 @@ import {
 import type { PermissionCode } from '@/auth/permissions'
 
 /**
- * Alton Manufacturing ERP V2 navigation: only the nine approved sections.
+ * Alton Manufacturing ERP V2 navigation: the nine approved sections plus the Support Centre
+ * (added at the owner's request, migration 20261210090000).
  * Every entry opens a working page backed by the V2 database functions.
  */
 export type NavKey =
@@ -96,6 +108,18 @@ export type NavKey =
   | 'ledger'
   | 'ledger-customers'
   | 'ledger-suppliers'
+  // 10. Support Centre
+  | 'support-overview'
+  | 'support-inbox'
+  | 'support-tickets'
+  | 'support-customers'
+  | 'support-calls'
+  | 'support-whatsapp'
+  | 'support-emails'
+  | 'support-knowledge-base'
+  | 'support-automation'
+  | 'support-reports'
+  | 'support-settings'
   // 9. Reports & Settings
   | 'reports'
   | 'admin-erp-settings'
@@ -114,7 +138,7 @@ export interface NavItem {
   keywords?: string[]
 }
 
-export type NavGroupId = 'overview' | 'products' | 'inventory' | 'purchase' | 'production' | 'sales' | 'billing' | 'ledger' | 'reports'
+export type NavGroupId = 'overview' | 'products' | 'inventory' | 'purchase' | 'production' | 'sales' | 'billing' | 'ledger' | 'support' | 'reports'
 
 export const NAV_GROUPS: { id: NavGroupId; label: string }[] = [
   { id: 'overview', label: 'Management Dashboard' },
@@ -125,6 +149,7 @@ export const NAV_GROUPS: { id: NavGroupId; label: string }[] = [
   { id: 'sales', label: 'Sales & Orders' },
   { id: 'billing', label: 'Billing & Invoicing' },
   { id: 'ledger', label: 'Ledger' },
+  { id: 'support', label: 'Support Centre' },
   { id: 'reports', label: 'Reports & Settings' },
 ]
 
@@ -532,6 +557,107 @@ export const NAV_ITEMS: NavItem[] = [
     keywords: ['supplier', 'vendor', 'payable', 'creditor', 'payment'],
   },
 
+  // 10. Support Centre
+  {
+    key: 'support-overview',
+    title: 'Support Overview',
+    path: '/support/overview',
+    icon: Headset,
+    group: 'support',
+    description: 'Tickets, calls, WhatsApp and email at a glance: open work, SLA, response times and satisfaction.',
+    keywords: ['support', 'helpdesk', 'customer service', 'sla', 'csat'],
+  },
+  {
+    key: 'support-inbox',
+    title: 'Unified Inbox',
+    path: '/support/inbox',
+    icon: Inbox,
+    group: 'support',
+    description: 'Phone, WhatsApp and email conversations in one place, with assignment, status, tags and notes.',
+    keywords: ['inbox', 'conversation', 'reply', 'assign'],
+  },
+  {
+    key: 'support-tickets',
+    title: 'Support Tickets',
+    path: '/support/tickets',
+    icon: Ticket,
+    group: 'support',
+    description: 'Support tickets with SLA, assignment, merging, reopening and export.',
+    keywords: ['ticket', 'complaint', 'case', 'sla'],
+  },
+  {
+    key: 'support-customers',
+    title: 'Support Customers',
+    path: '/support/customers',
+    icon: Contact,
+    group: 'support',
+    description: 'Customer profiles with their tickets, calls, emails, WhatsApp conversations and ERP history.',
+    keywords: ['customer', 'contact', 'profile'],
+  },
+  {
+    key: 'support-calls',
+    title: 'Calls',
+    path: '/support/calls',
+    icon: PhoneCall,
+    group: 'support',
+    description: 'Phone conversations: incoming, outgoing and missed calls.',
+    keywords: ['call', 'phone', 'missed call', 'telephony'],
+  },
+  {
+    key: 'support-whatsapp',
+    title: 'WhatsApp',
+    path: '/support/whatsapp',
+    icon: MessageCircle,
+    group: 'support',
+    description: 'WhatsApp conversations and the WhatsApp channel status.',
+    keywords: ['whatsapp', 'chat', 'message'],
+  },
+  {
+    key: 'support-emails',
+    title: 'Emails',
+    path: '/support/emails',
+    icon: Mail,
+    group: 'support',
+    description: 'Email conversations and the support mailbox status.',
+    keywords: ['email', 'mail', 'inbox'],
+  },
+  {
+    key: 'support-knowledge-base',
+    title: 'Knowledge Base',
+    path: '/support/knowledge-base',
+    icon: BookOpen,
+    group: 'support',
+    description: 'Answers and procedures for support agents.',
+    keywords: ['knowledge', 'faq', 'article', 'help'],
+  },
+  {
+    key: 'support-automation',
+    title: 'Support Automation',
+    path: '/support/automation',
+    icon: Workflow,
+    group: 'support',
+    description: 'Rules that set priority, department, agent or tags when tickets and conversations are created.',
+    keywords: ['automation', 'rule', 'routing'],
+  },
+  {
+    key: 'support-reports',
+    title: 'Support Reports',
+    path: '/support/reports',
+    icon: ChartBar,
+    group: 'support',
+    description: 'Ticket volume, SLA compliance, agent performance, calls and satisfaction, with Excel export.',
+    keywords: ['report', 'sla', 'agent performance', 'csat'],
+  },
+  {
+    key: 'support-settings',
+    title: 'Support Settings',
+    path: '/support/settings',
+    icon: Settings,
+    group: 'support',
+    description: 'Agents, SLA policies, tags and channel integrations.',
+    keywords: ['settings', 'agents', 'sla', 'tags', 'integrations', 'whatsapp', 'email'],
+  },
+
   // 9. Reports & Settings
   {
     key: 'reports',
@@ -629,6 +755,17 @@ export const NAV_PERMISSIONS: Record<NavKey, PermissionCode | null> = {
   ledger: 'ledger.read',
   'ledger-customers': 'ledger.read',
   'ledger-suppliers': 'ledger.read',
+  'support-overview': 'support.view',
+  'support-inbox': 'support.view',
+  'support-tickets': 'support.view',
+  'support-customers': 'support.view',
+  'support-calls': 'support.view',
+  'support-whatsapp': 'support.view',
+  'support-emails': 'support.view',
+  'support-knowledge-base': 'support.view',
+  'support-automation': 'support.view',
+  'support-reports': 'support.view_reports',
+  'support-settings': 'support.view',
   reports: 'reports.read',
   'admin-erp-settings': 'settings.manage',
   users: 'users.manage',

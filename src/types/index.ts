@@ -16,7 +16,7 @@ export type OrderStatus =
 
 export type SalesChannel = 'direct' | 'dealer' | 'marketplace' | 'project'
 
-export type DateRangePreset = 'today' | 'this_week' | 'last_7_days' | 'this_month' | 'last_month' | 'this_year' | 'previous_year' | 'custom'
+export type DateRangePreset = 'today' | 'yesterday' | 'this_week' | 'last_7_days' | 'this_month' | 'last_month' | 'this_year' | 'previous_year' | 'custom'
 
 export interface DateRangeValue {
   preset: DateRangePreset

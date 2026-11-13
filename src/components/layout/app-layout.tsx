@@ -9,6 +9,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { COMPANY } from '@/config/app'
 import { NAV_ITEMS, findNavItemByPath } from '@/config/navigation'
 import { ErpPreferencesProvider } from '@/features/management/erp-preferences-provider'
+import { IncomingCallPanel } from '@/features/support/phone-components'
 import { usePersistentState } from '@/hooks/use-persistent-state'
 import { installGlobalErrorReporting } from '@/lib/error-reporting'
 import { cn } from '@/lib/utils'
@@ -57,6 +58,7 @@ export function AppLayout() {
               </Suspense>
             </div>
           </main>
+          <IncomingCallPanel />
           <footer className="border-t bg-background px-4 py-3 text-xs text-muted-foreground sm:px-6 lg:px-8">
             {COMPANY.legalName} · {COMPANY.productName}
           </footer>

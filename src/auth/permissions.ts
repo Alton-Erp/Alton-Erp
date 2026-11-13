@@ -140,6 +140,14 @@ export const PERMISSIONS = [
   'amazon_ads.request',
   'amazon_ads.approve',
   'amazon_integration.manage',
+  // Support Centre (migration 20261210090000)
+  'support.view',
+  'support.manage_tickets',
+  'support.assign',
+  'support.reply',
+  'support.manage_integrations',
+  'support.view_reports',
+  'support.manage_settings',
 ] as const
 
 export type PermissionCode = (typeof PERMISSIONS)[number]
