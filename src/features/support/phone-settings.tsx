@@ -205,7 +205,11 @@ function ConfigForm({ cfg, onSaved }: { cfg: PhoneConfig['config']; onSaved: (te
       <Field label="Toll-free number" htmlFor="ph-toll"><Input id="ph-toll" value={v.toll_free_number} onChange={(e) => setV((x) => ({ ...x, toll_free_number: e.target.value }))} inputMode="tel" /></Field>
       <Field label="API base URL" htmlFor="ph-base" hint="The documentation shows both hosts; confirm yours with Acefone.">
         <Select value={v.api_base_url} onValueChange={(x) => setV((s) => ({ ...s, api_base_url: x }))}><SelectTrigger id="ph-base"><SelectValue /></SelectTrigger>
-          <SelectContent><SelectItem value="https://api.acefone.in">https://api.acefone.in</SelectItem><SelectItem value="https://api-acefone.com">https://api-acefone.com</SelectItem></SelectContent></Select>
+          <SelectContent>
+  <SelectItem value="https://api.acefone.in">https://api.acefone.in</SelectItem>
+  <SelectItem value="https://api.servetel.in">https://api.servetel.in</SelectItem>
+  <SelectItem value="https://api-acefone.com">https://api-acefone.com</SelectItem>
+</SelectContent></Select>
       </Field>
       <Field label="Click-to-Call mode" htmlFor="ph-mode" hint={v.click_to_call_mode === 'AGENT' ? 'Rings the agent first, then the customer (API token).' : 'Rings the customer first, then the destination tied to the Support API key.'}>
         <Select value={v.click_to_call_mode} onValueChange={(x) => setV((s) => ({ ...s, click_to_call_mode: x as 'AGENT' | 'SUPPORT' }))}><SelectTrigger id="ph-mode"><SelectValue /></SelectTrigger>

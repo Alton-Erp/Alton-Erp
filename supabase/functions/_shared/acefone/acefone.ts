@@ -14,8 +14,11 @@
 //   $recording_url. No signature or other security mechanism is documented, so each webhook URL carries a
 //   secret token that this code checks (and, optionally, an IP allowlist).
 
-export const ACEFONE_HOSTS = ['https://api.acefone.in', 'https://api-acefone.com'] as const
-
+export const ACEFONE_HOSTS = [
+  'https://api.acefone.in',
+  'https://api.servetel.in',
+  'https://api-acefone.com',
+] as const
 /** Event names used in the webhook URLs (one Acefone webhook per trigger). */
 export const WEBHOOK_EVENTS: Record<string, string> = {
   received: 'Call received on Server',
