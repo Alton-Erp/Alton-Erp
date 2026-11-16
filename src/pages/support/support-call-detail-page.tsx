@@ -8,6 +8,7 @@ import { LoadingState } from '@/components/common/loading-state'
 import { PageHeader } from '@/components/common/page-header'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { CallFollowUp } from '@/features/support/call-follow-up'
 import { CallStatusBadge } from '@/features/support/phone-components'
 import { InfoList } from '@/features/support/support-components'
 import { formatDuration } from '@/features/support/support-model'
@@ -89,6 +90,7 @@ export default function SupportCallDetailPage() {
               ))}</ol>
             </CardContent>
           </Card>
+          <CallFollowUp callId={c.id} conversationId={c.conversation_id} linkedTicketId={d.ticket?.id ?? null} timezone={tz ?? undefined} onChanged={q.reload} />
         </div>
       </div>
     </>

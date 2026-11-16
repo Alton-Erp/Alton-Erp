@@ -73,7 +73,8 @@ export const PRESENCE_META: Record<Presence, { label: string; dot: string }> = {
 export const CALL_STATUS_META: Record<string, { label: string; tone: Tone; hint: string }> = {
   INITIATED: { label: 'Initiated', tone: 'neutral', hint: 'Requested; Acefone has not reported progress yet.' },
   RINGING: { label: 'Ringing', tone: 'info', hint: 'Acefone reports the call is ringing or in the IVR.' },
-  CONNECTED: { label: 'Connected', tone: 'success', hint: 'Acefone reports both parties connected.' },
+  // Stored as CONNECTED; shown as Answered: only an Acefone answer event sets it (never the API accepting a request).
+  CONNECTED: { label: 'Answered', tone: 'success', hint: 'Acefone reported the call answered.' },
   COMPLETED: { label: 'Completed', tone: 'success', hint: 'The call was answered and has ended.' },
   MISSED: { label: 'Missed', tone: 'warning', hint: 'Nobody answered.' },
   FAILED: { label: 'Failed', tone: 'danger', hint: 'The call could not be placed.' },
@@ -211,6 +212,8 @@ export const PHONE_WEBHOOK_EVENTS: [string, string][] = [
   ['received', 'Call received on Server'], ['ivr', 'Call answered on IVR'], ['dialed_agent', 'Dialed on Agent'], ['agent_answered', 'Call answered by Agent'],
   ['agent_hangup_answered', 'Call answered by Agent (Hangup)'], ['agent_hangup_missed', 'Call missed by Agent (Hangup)'], ['hangup', 'Call hangup (Missed or Answered)'],
   ['customer_answered', 'Call answered by Customer (Click to Call)'], ['customer_missed', 'Call missed by Customer (Click to Call)'],
+  // Trigger names as listed in Acefone's webhook documentation; the "(updated)" hangup triggers replace the deprecated ones.
+  ['department', 'Call received on Department'], ['hangup_missed', 'Call hangup (Missed) (updated)'], ['hangup_answered', 'Call hangup (Answered) (updated)'],
 ]
 
 /** Webhook URL with a placeholder where the secret goes; the secret itself is never shown or sent to the browser. */
@@ -357,3 +360,21 @@ export function formatRemaining(minutes: number | null | undefined): string {
 }
 export const WEEKDAYS: [number, string][] = [[1, 'Mon'], [2, 'Tue'], [3, 'Wed'], [4, 'Thu'], [5, 'Fri'], [6, 'Sat'], [7, 'Sun']]
 export const PROVIDER_LABELS: Record<string, string> = { ACEFONE: 'Acefone / Servetel (phone)', GOOGLE_WORKSPACE: 'Google Workspace (email)', META_WHATSAPP: 'Meta WhatsApp Cloud API' }
+
+// ---- Acefone softphone (20261215090000) ------------------------------------------------
+/** ERP view of an agent's softphone. Acefone has no API for softphone registration, so "connected" is never claimed. */
+export const SOFTPHONE_STATE_META: Record<string, { label: string; tone: Tone; hint: string }> = {
+  NOT_CONFIGURED: { label: 'Not configured', tone: 'neutral', hint: 'No active Acefone extension is mapped to you. Ask an administrator (Support Settings → Phone).' },
+  DISCONNECTED: { label: 'Disconnected', tone: 'danger', hint: 'Acefone reports your agent as offline, blocked or disabled.' },
+  NOT_VERIFIED: { label: 'Not verified', tone: 'warning', hint: 'Acefone does not report softphone sign-in through its API. Check that your softphone shows you signed in to your extension.' },
+}
+export const ACEFONE_AGENT_STATUS: Record<string, string> = { ENABLED: 'Enabled', BLOCKED: 'Blocked', DISABLED: 'Disabled', BUSY: 'Busy', OFFLINE: 'Offline', UNKNOWN: 'Not found at Acefone' }
+export const SOFTPHONE_SETUP_LABELS: Record<string, string> = { NOT_STARTED: 'Not started', INSTRUCTIONS_SENT: 'Instructions sent', SET_UP: 'Set up' }
+/** Official AceConnect links from Acefone's documentation (docs.acefone.in/docs/aceconnect). */
+export const ACECONNECT_LINKS: [string, string][] = [
+  ['Web app', 'https://service.acefone.co.uk/login'],
+  ['Windows', 'https://d24qfs2eg7coe9.cloudfront.net/AceConnect_India_Setup_1.0.0.exe'],
+  ['macOS', 'https://d24qfs2eg7coe9.cloudfront.net/AceConnect-India-1.0.0.2.dmg'],
+  ['Android', 'https://play.google.com/store/apps/details?id=com.acefone.aceone.android&hl=en_IN'],
+  ['iPhone', 'https://apps.apple.com/in/app/aceconnect-by-acefone/id6499320360'],
+]

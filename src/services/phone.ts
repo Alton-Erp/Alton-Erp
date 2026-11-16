@@ -47,7 +47,7 @@ async function invoke<T>(fn: string, body: Record<string, unknown>): Promise<T> 
 export type CallStatus = 'INITIATED' | 'RINGING' | 'CONNECTED' | 'COMPLETED' | 'MISSED' | 'FAILED'
 export const FINAL_CALL_STATUSES: CallStatus[] = ['COMPLETED', 'MISSED', 'FAILED']
 
-export interface PhoneLine { id: string; agent_number: string; label: string | null; agent_name: string; presence: string; mine: boolean }
+export interface PhoneLine { id: string; agent_number: string; label: string | null; agent_name: string; presence: string; mine: boolean; display_caller_id?: string | null; provider_agent_status?: string | null }
 export const fetchCallLines = () => rpc<PhoneLine[]>('support_call_lines')
 
 export interface PlaceCall { customer_id?: string | null; ticket_id?: string | null; conversation_id?: string | null; number: string; line_id: string; idempotency_key: string }
@@ -61,7 +61,8 @@ export interface PhoneConfig {
     last_sync_status: string | null; last_test_at: string | null; last_test_result: string | null
   } | null
   account: { id: string; status: string; status_detail: string | null; last_checked_at: string | null } | null
-  lines: { id: string; agent_id: string; agent_name: string; presence: string; agent_active: boolean; user_id: string; agent_number: string; label: string | null; is_active: boolean }[]
+  lines: { id: string; agent_id: string; agent_name: string; presence: string; agent_active: boolean; user_id: string; agent_number: string; label: string | null; is_active: boolean
+    extension_id?: string | null; display_caller_id?: string | null; softphone_setup?: SoftphoneSetup; provider_agent_status?: string | null; provider_checked_at?: string | null }[]
   last_success_event_at: string | null
   events: { id: string; event_type: string; status: string | null; message: string | null; processing_result: string | null; processing_error: string | null
     replay_count: number; created_at: string; event: string | null }[] | null
@@ -73,7 +74,34 @@ export interface PhoneConfigSave {
 }
 export const savePhoneConfig = (p: PhoneConfigSave) => rpc<PhoneConfig>('support_phone_config_save', { p })
 export const disconnectPhone = (reason: string) => rpc<void>('support_phone_disconnect', { p_reason: reason })
-export const savePhoneLine = (id: string | null, p: { agent_id: string; agent_number: string; label: string | null; is_active: boolean }) => rpc<string>('support_phone_agent_save', { p_id: id, p })
+export type SoftphoneSetup = 'NOT_STARTED' | 'INSTRUCTIONS_SENT' | 'SET_UP'
+export const savePhoneLine = (id: string | null, p: { agent_id: string; agent_number: string; label: string | null; is_active: boolean; extension_id?: string | null
+  display_caller_id?: string | null; softphone_setup?: SoftphoneSetup }) => rpc<string>('support_phone_agent_save', { p_id: id, p })
+/** Reads Acefone's agent status (documented GET /v1/users) for the mapped lines — never the softphone registration. */
+export const syncAgentStatus = () => invoke<{ ok: boolean; matched: number; message: string }>('acefone-click-to-call', { action: 'agents' })
+export interface SoftphoneLine {
+  id: string; agent_number: string; extension_id: string | null; label: string | null; display_caller_id: string | null; softphone_setup: SoftphoneSetup; is_active: boolean
+  provider_agent_status: string | null; provider_checked_at: string | null; state: 'NOT_CONFIGURED' | 'DISCONNECTED' | 'NOT_VERIFIED'
+}
+export const fetchSoftphoneStatus = () => rpc<{ phone_configured: boolean; lines: SoftphoneLine[] }>('support_phone_softphone_status')
+export const addCallNote = (callId: string, body: string) => rpc<string>('support_call_note_add', { p_call: callId, p_body: body })
+export const linkCallTicket = (callId: string, ticketId: string) => rpc<void>('support_call_link_ticket', { p_call: callId, p_ticket: ticketId })
+export interface CallContext {
+  notes: { id: string; body: string; at: string; author: string | null }[]
+  previous_calls: { id: string; direction: 'INBOUND' | 'OUTBOUND'; status: CallStatus; at: string; talk_seconds: number | null; agent_name: string | null }[]
+  open_tickets: { id: string; ticket_number: string; subject: string; status: string }[]
+  conversations: { id: string; channel: string; subject: string | null; status: string; last_activity_at: string }[]
+}
+export const fetchCallContext = (callId: string) => rpc<CallContext>('support_call_context', { p_call: callId })
+export interface CallAnalytics {
+  from: string; to: string; group: 'day' | 'week' | 'month'
+  totals: { inbound: number; outbound: number; answered: number; missed: number; failed: number; unconfirmed_requests: number; avg_duration_seconds: number | null; avg_answer_seconds: number | null }
+  series: { period: string; inbound: number; outbound: number; answered: number; missed: number; failed: number }[]
+  agents: { agent: string; inbound: number; outbound: number; answered: number; missed: number; avg_duration_seconds: number | null }[]
+  customers: { customer_id: string | null; customer: string; calls: number; answered: number; missed: number; last_call_at: string }[]
+  states: Record<string, number>
+}
+export const fetchCallAnalytics = (from: string, to: string, group: 'day' | 'week' | 'month') => rpc<CallAnalytics>('support_call_analytics', { p_from: from, p_to: to, p_group: group })
 export const replayPhoneEvent = (id: string) => rpc<{ result: string; status?: string; changed?: boolean }>('support_acefone_replay', { p_event: id })
 export const fetchPhoneSecretStatus = () => invoke<{ configured: boolean; secrets: { api_token: boolean; support_api_key: boolean; webhook_secret: boolean } }>('acefone-click-to-call', { action: 'status' })
 export const testPhoneConnection = () => invoke<{ ok: boolean; message: string }>('acefone-click-to-call', { action: 'test' })
@@ -104,7 +132,7 @@ export interface CallDetail {
 }
 export const fetchCall = (id: string) => rpc<CallDetail>('support_call_detail', { p_id: id })
 export interface LiveCall {
-  id: string; direction: 'INBOUND' | 'OUTBOUND'; status: CallStatus; number: string | null; started_at: string; conversation_id: string | null; agent_name: string | null
+  id: string; direction: 'INBOUND' | 'OUTBOUND'; status: CallStatus; number: string | null; started_at: string; conversation_id: string | null; agent_name: string | null; assigned_agent?: string | null; for_me?: boolean
   customer: { id: string; customer_code: string; display_name: string; company_name: string | null } | null; candidates: number
   open_tickets: { id: string; ticket_number: string; subject: string; status: string }[]; previous_calls: number; previous_conversations: number
 }

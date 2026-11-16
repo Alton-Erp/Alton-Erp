@@ -1,4 +1,4 @@
-import { Loader2, Phone, PhoneCall, PhoneIncoming, UserPlus, X } from 'lucide-react'
+import { ExternalLink, Headphones, Loader2, Phone, PhoneCall, PhoneIncoming, UserPlus, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 
@@ -8,11 +8,12 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { CustomerFormDialog, TicketFormDialog } from '@/features/support/support-dialogs'
-import { CALL_STATUS_META, PRESENCE_META, type Presence } from '@/features/support/support-model'
+import { ACECONNECT_LINKS, ACEFONE_AGENT_STATUS, CALL_STATUS_META, PRESENCE_META, SOFTPHONE_SETUP_LABELS, SOFTPHONE_STATE_META, type Presence } from '@/features/support/support-model'
 import { useAsync } from '@/hooks/use-async'
 import { describeDataError } from '@/lib/errors'
 import { formatDateTime } from '@/lib/format'
-import { FINAL_CALL_STATUSES, PhoneServiceError, fetchCall, fetchCallLines, fetchLiveCalls, placeCall, type CallStatus, type LiveCall } from '@/services/phone'
+import { requireSupabase } from '@/lib/supabase'
+import { FINAL_CALL_STATUSES, PhoneServiceError, fetchCall, fetchCallLines, fetchLiveCalls, fetchSoftphoneStatus, placeCall, type CallStatus, type LiveCall } from '@/services/phone'
 import { linkConversationCustomer } from '@/services/support'
 
 export function CallStatusBadge({ status }: { status: CallStatus }) {
@@ -124,13 +125,31 @@ export function IncomingCallPanel() {
   useEffect(() => {
     if (!enabled) return
     let stop = false
+    let live = false
     const load = () => {
       if (document.visibilityState !== 'visible') return
       fetchLiveCalls().then((c) => { if (!stop) setCalls(Array.isArray(c) ? c : []) }, () => {})
     }
     load()
-    const t = setInterval(load, 5000)
-    return () => { stop = true; clearInterval(t) }
+    // Supabase Realtime: a change of any call of the company (RLS-filtered signal row, no numbers) reloads the
+    // permission-checked list at once. Polling stays as the fallback: 30 s while subscribed, 5 s otherwise.
+    let channel: ReturnType<ReturnType<typeof requireSupabase>['channel']> | null = null
+    try {
+      channel = requireSupabase().channel('support-call-signals')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'support_call_signals' }, () => load())
+        .subscribe((status) => { live = status === 'SUBSCRIBED' })
+    } catch {
+      channel = null
+    }
+    let last = Date.now()
+    const t = setInterval(() => {
+      if (Date.now() - last >= (live ? 30000 : 5000)) { last = Date.now(); load() }
+    }, 5000)
+    return () => {
+      stop = true
+      clearInterval(t)
+      if (channel) void requireSupabase().removeChannel(channel).catch(() => {})
+    }
   }, [enabled, tick])
   if (!enabled) return null
   const shown = calls.filter((c) => c.direction === 'INBOUND' && !dismissed.includes(c.id))
@@ -145,7 +164,9 @@ export function IncomingCallPanel() {
                 <button type="button" aria-label="Dismiss" className="text-muted-foreground hover:text-foreground" onClick={() => setDismissed((d) => [...d, c.id])}><X className="size-4" /></button>
               </div>
               <p className="text-sm text-muted-foreground">{c.number ?? 'Number withheld'} · {formatDateTime(c.started_at)}</p>
-              <div className="mt-1 flex items-center gap-2 text-xs"><CallStatusBadge status={c.status} />{c.agent_name && <span>Answered by {c.agent_name}</span>}</div>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs"><CallStatusBadge status={c.status} />
+                <span data-testid="incoming-agent">{c.assigned_agent ?? c.agent_name ? `Assigned agent: ${c.assigned_agent ?? c.agent_name}` : 'Not yet assigned to an agent'}</span></div>
+              {c.status === 'RINGING' && <p className="mt-1 text-xs text-muted-foreground" data-testid="incoming-answer-hint">Answer in your Acefone softphone (AceConnect). The ERP cannot answer calls.</p>}
               {c.customer ? (
                 <div className="mt-2 text-xs">
                   <p>{c.customer.customer_code}{c.customer.company_name ? ` · ${c.customer.company_name}` : ''} · {c.previous_conversations} conversation(s), {c.previous_calls} earlier call(s)</p>
@@ -167,6 +188,57 @@ export function IncomingCallPanel() {
         onSaved={(id) => { const conv = customerFor?.conversation_id; if (conv) void linkConversationCustomer(conv, id).then(() => setTick((n) => n + 1), () => {}) }} />
       <TicketFormDialog open={ticketFor !== null} onOpenChange={(o) => { if (!o) setTicketFor(null) }}
         conversation={ticketFor?.conversation_id ? { id: ticketFor.conversation_id, subject: 'Phone call' } : null} onCreated={() => setTick((n) => n + 1)} />
+    </>
+  )
+}
+
+/**
+ * The signed-in agent's softphone panel. It distinguishes the ERP notification, the Acefone softphone sign-in
+ * (which Acefone does not report by API — never shown as connected) and Acefone's own agent status.
+ */
+export function SoftphoneWidget() {
+  const q = useAsync(() => fetchSoftphoneStatus().catch(() => null), [])
+  const [open, setOpen] = useState(false)
+  if (!q.data) return null
+  const line = q.data.lines.find((l) => l.is_active) ?? null
+  const state = !q.data.phone_configured || !line ? 'NOT_CONFIGURED' : line.state
+  const meta = SOFTPHONE_STATE_META[state]
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)} className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs" data-testid="softphone-widget" data-state={state}
+        title={meta.hint}>
+        <Headphones className="size-3.5" />Softphone: <StatusBadge label={meta.label} tone={meta.tone} />
+      </button>
+      {open && (
+        <Dialog open onOpenChange={(o) => { if (!o) setOpen(false) }}>
+          <DialogContent className="max-w-lg" data-testid="softphone-dialog">
+            <DialogHeader><DialogTitle>Acefone softphone</DialogTitle>
+              <DialogDescription>Calls are answered and spoken in the Acefone softphone (AceConnect). The ERP shows who is calling and places Click-to-Call requests.</DialogDescription></DialogHeader>
+            <div className="space-y-3 text-sm">
+              <p className="flex items-center gap-2"><StatusBadge label={meta.label} tone={meta.tone} /><span className="text-muted-foreground">{meta.hint}</span></p>
+              {line ? (
+                <ul className="space-y-1">
+                  <li>Your extension: <strong>{line.agent_number}</strong>{line.extension_id ? ` (Acefone id ${line.extension_id})` : ''}{line.label ? ` · ${line.label}` : ''}</li>
+                  <li>Caller id shown to customers: {line.display_caller_id ?? 'account default'}</li>
+                  <li>Setup: {SOFTPHONE_SETUP_LABELS[line.softphone_setup] ?? line.softphone_setup}</li>
+                  <li>Acefone agent status: {line.provider_agent_status ? `${ACEFONE_AGENT_STATUS[line.provider_agent_status] ?? line.provider_agent_status}${line.provider_checked_at ? ` (as of ${formatDateTime(line.provider_checked_at)})` : ''}` : 'not read yet'}</li>
+                </ul>
+              ) : <p className="text-muted-foreground">No extension is mapped to you yet.</p>}
+              <ol className="list-decimal space-y-1 pl-5">
+                <li>Open AceConnect and sign in with the Acefone credentials of your extension (never entered in the ERP).</li>
+                <li>Keep it open while you work; after a network change, sign out and in again.</li>
+                <li>Incoming calls pop up here with the customer; answer them in AceConnect.</li>
+                <li>Click-to-Call rings your extension first, then the customer.</li>
+              </ol>
+              <div className="flex flex-wrap gap-2" data-testid="aceconnect-links">{ACECONNECT_LINKS.map(([label, url]) => (
+                <a key={url} href={url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-primary hover:underline">
+                  <ExternalLink className="size-3" />{label}</a>
+              ))}</div>
+            </div>
+            <DialogFooter><Button variant="outline" onClick={() => setOpen(false)}>Close</Button></DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </>
   )
 }

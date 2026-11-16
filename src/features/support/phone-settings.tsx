@@ -14,12 +14,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { Field, InfoList, IntegrationBadge } from '@/features/support/support-components'
-import { PHONE_WEBHOOK_EVENTS, PRESENCE_META, phoneWebhookUrl as webhookUrl, type Presence } from '@/features/support/support-model'
+import { ACEFONE_AGENT_STATUS, PHONE_WEBHOOK_EVENTS, PRESENCE_META, SOFTPHONE_SETUP_LABELS, phoneWebhookUrl as webhookUrl, type Presence } from '@/features/support/support-model'
 import { useAsync } from '@/hooks/use-async'
 import { describeDataError } from '@/lib/errors'
 import { formatDateTime } from '@/lib/format'
 import {
-  disconnectPhone, fetchPhoneConfig, fetchPhoneSecretStatus, replayPhoneEvent, savePhoneConfig, savePhoneLine, syncCallRecords, syncRecordings, testPhoneConnection,
+  disconnectPhone, fetchPhoneConfig, fetchPhoneSecretStatus, replayPhoneEvent, savePhoneConfig, savePhoneLine, syncAgentStatus, syncCallRecords, syncRecordings, testPhoneConnection,
+  type SoftphoneSetup,
   type PhoneConfig, type PhoneConfigSave,
 } from '@/services/phone'
 import { fetchAgents } from '@/services/support'
@@ -100,18 +101,28 @@ export function PhoneSettings() {
       {cfg && (
         <Card>
           <CardHeader className="flex flex-row items-start justify-between gap-2">
-            <div><CardTitle>Agent mapping</CardTitle><CardDescription>Which Acefone agent number, Agent ID (050…) or extension (060…) each support agent calls from.</CardDescription></div>
-            <Button size="sm" onClick={() => setLineOpen('new')}><Plus /> Add line</Button>
+            <div><CardTitle>Agent telephony settings</CardTitle><CardDescription>Each ERP agent's Acefone extension (060…), Agent ID (050…) or registered number. Extension passwords are never stored here: agents sign in to the Acefone softphone themselves.</CardDescription></div>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void run('agents', async () => (await syncAgentStatus()).message)}>
+                {busy === 'agents' ? <Loader2 className="animate-spin" /> : <RefreshCw />} Read agent status from Acefone</Button>
+              <Button size="sm" onClick={() => setLineOpen('new')}><Plus /> Add line</Button>
+            </div>
           </CardHeader>
           <CardContent>{d.lines.length === 0 ? <p className="text-sm text-muted-foreground">No lines mapped: agents cannot place calls yet.</p> : (
-            <Table data-testid="phone-lines"><TableHeader><TableRow className="hover:bg-transparent"><TableHead>Agent</TableHead><TableHead>Acefone number</TableHead><TableHead>Label</TableHead>
-              <TableHead>Presence</TableHead><TableHead>Status</TableHead><TableHead /></TableRow></TableHeader>
+            <div className="overflow-x-auto">
+            <Table data-testid="phone-lines"><TableHeader><TableRow className="hover:bg-transparent"><TableHead>ERP agent</TableHead><TableHead>Extension number</TableHead><TableHead>Acefone extension id</TableHead>
+              <TableHead>Display caller id</TableHead><TableHead>Availability</TableHead><TableHead>Softphone setup</TableHead><TableHead>Acefone agent status</TableHead><TableHead>Enabled</TableHead><TableHead /></TableRow></TableHeader>
               <TableBody>{d.lines.map((l) => (
-                <TableRow key={l.id}><TableCell className="font-medium">{l.agent_name}</TableCell><TableCell className="font-mono text-xs">{l.agent_number}</TableCell><TableCell>{l.label ?? '—'}</TableCell>
+                <TableRow key={l.id}><TableCell className="font-medium">{l.agent_name}{l.label ? <span className="block text-xs text-muted-foreground">{l.label}</span> : null}</TableCell>
+                  <TableCell className="font-mono text-xs">{l.agent_number}</TableCell><TableCell className="font-mono text-xs">{l.extension_id ?? '—'}</TableCell>
+                  <TableCell className="font-mono text-xs">{l.display_caller_id ?? 'Account default'}</TableCell>
                   <TableCell>{PRESENCE_META[l.presence as Presence]?.label ?? l.presence}</TableCell>
-                  <TableCell><StatusBadge label={l.is_active && l.agent_active ? 'Active' : 'Inactive'} tone={l.is_active && l.agent_active ? 'success' : 'neutral'} /></TableCell>
+                  <TableCell>{SOFTPHONE_SETUP_LABELS[l.softphone_setup ?? 'NOT_STARTED']}</TableCell>
+                  <TableCell className="text-xs" title="Reported by Acefone (GET /v1/users). Softphone sign-in is not reported by Acefone's API.">
+                    {l.provider_agent_status ? `${ACEFONE_AGENT_STATUS[l.provider_agent_status] ?? l.provider_agent_status}${l.provider_checked_at ? ` · ${formatDateTime(l.provider_checked_at)}` : ''}` : 'Not read'}</TableCell>
+                  <TableCell><StatusBadge label={l.is_active && l.agent_active ? 'Enabled' : 'Disabled'} tone={l.is_active && l.agent_active ? 'success' : 'neutral'} /></TableCell>
                   <TableCell><Button size="sm" variant="ghost" onClick={() => setLineOpen(l)}>Edit</Button></TableCell></TableRow>
-              ))}</TableBody></Table>)}</CardContent>
+              ))}</TableBody></Table></div>)}</CardContent>
         </Card>
       )}
 
@@ -231,14 +242,21 @@ function ConfigForm({ cfg, onSaved }: { cfg: PhoneConfig['config']; onSaved: (te
 function LineDialog({ line, onClose, onSaved }: { line: PhoneConfig['lines'][number] | 'new'; onClose: () => void; onSaved: () => void }) {
   const existing = line === 'new' ? null : line
   const agents = useAsync(fetchAgents, [])
-  const [v, setV] = useState(() => ({ agent_id: existing?.agent_id ?? '', agent_number: existing?.agent_number ?? '', label: existing?.label ?? '', is_active: existing?.is_active ?? true }))
+  const [v, setV] = useState(() => ({ agent_id: existing?.agent_id ?? '', agent_number: existing?.agent_number ?? '', label: existing?.label ?? '', is_active: existing?.is_active ?? true,
+    extension_id: existing?.extension_id ?? '', display_caller_id: existing?.display_caller_id ?? '', softphone_setup: (existing?.softphone_setup ?? 'NOT_STARTED') as SoftphoneSetup }))
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const save = async () => {
     if (!v.agent_id) { setError('Choose the agent.'); return }
     if (!/^\d{6,15}$/.test(v.agent_number.replace(/\D/g, ''))) { setError('Enter the Acefone agent number, Agent ID or extension (digits).'); return }
+    if (v.extension_id.trim() && !/^[0-9A-Za-z_-]{1,40}$/.test(v.extension_id.trim())) { setError('The Acefone extension id contains letters, digits, - or _ only.'); return }
+    if (v.display_caller_id.trim() && !/^\d{6,15}$/.test(v.display_caller_id.replace(/\D/g, ''))) { setError('The display caller id is 6 to 15 digits (a DID of your Acefone account).'); return }
     setBusy(true); setError(null)
-    try { await savePhoneLine(existing?.id ?? null, { agent_id: v.agent_id, agent_number: v.agent_number.replace(/\D/g, ''), label: v.label.trim() || null, is_active: v.is_active }); onSaved() }
+    try {
+      await savePhoneLine(existing?.id ?? null, { agent_id: v.agent_id, agent_number: v.agent_number.replace(/\D/g, ''), label: v.label.trim() || null, is_active: v.is_active,
+        extension_id: v.extension_id.trim() || null, display_caller_id: v.display_caller_id.replace(/\D/g, '') || null, softphone_setup: v.softphone_setup })
+      onSaved()
+    }
     catch (e) { setError(describeDataError(e)) } finally { setBusy(false) }
   }
   return (
@@ -251,8 +269,14 @@ function LineDialog({ line, onClose, onSaved }: { line: PhoneConfig['lines'][num
               <SelectContent>{(agents.data ?? []).map((a) => <SelectItem key={a.id} value={a.id}>{a.display_name}</SelectItem>)}</SelectContent></Select>
           </Field>
           <Field label="Acefone agent number / Agent ID / extension" htmlFor="ln-number"><Input id="ln-number" value={v.agent_number} onChange={(e) => setV((s) => ({ ...s, agent_number: e.target.value }))} inputMode="numeric" /></Field>
+          <Field label="Acefone extension id (optional)" htmlFor="ln-ext" hint="The agent's id in Acefone, used to match the status Acefone reports."><Input id="ln-ext" value={v.extension_id} onChange={(e) => setV((s) => ({ ...s, extension_id: e.target.value }))} /></Field>
+          <Field label="Display caller id (optional)" htmlFor="ln-cid" hint="A DID of your Acefone account shown to customers on this agent's Click-to-Call; empty = account default."><Input id="ln-cid" value={v.display_caller_id} inputMode="numeric" onChange={(e) => setV((s) => ({ ...s, display_caller_id: e.target.value }))} /></Field>
+          <Field label="Softphone setup" htmlFor="ln-setup">
+            <Select value={v.softphone_setup} onValueChange={(x) => setV((s) => ({ ...s, softphone_setup: x as SoftphoneSetup }))}><SelectTrigger id="ln-setup"><SelectValue /></SelectTrigger>
+              <SelectContent>{Object.entries(SOFTPHONE_SETUP_LABELS).map(([k, l]) => <SelectItem key={k} value={k}>{l}</SelectItem>)}</SelectContent></Select>
+          </Field>
           <Field label="Label" htmlFor="ln-label"><Input id="ln-label" value={v.label} onChange={(e) => setV((s) => ({ ...s, label: e.target.value }))} maxLength={80} /></Field>
-          <label className="flex items-center gap-2 text-sm"><Checkbox checked={v.is_active} onCheckedChange={(x) => setV((s) => ({ ...s, is_active: x === true }))} />Active</label>
+          <label className="flex items-center gap-2 text-sm"><Checkbox checked={v.is_active} onCheckedChange={(x) => setV((s) => ({ ...s, is_active: x === true }))} />Enabled</label>
           {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
           <DialogFooter><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={busy}>{busy && <Loader2 className="animate-spin" />}Save line</Button></DialogFooter>
         </form>
