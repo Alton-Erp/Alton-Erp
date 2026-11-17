@@ -9,6 +9,7 @@ import { DataTable, type DataTableColumn } from '@/components/common/data-table'
 import { FilterTabs } from '@/components/common/filter-tabs'
 import { PageHeader } from '@/components/common/page-header'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { formatQty } from '@/features/inventory/inventory-model'
 import {
@@ -26,6 +27,7 @@ import { fetchBomItemsFor, fetchBoms } from '@/services/production'
 import { fetchSupplierOptions } from '@/services/suppliers'
 import type { BomListRow, BomStatus } from '@/types/database-production'
 import { useUrlEnum } from '@/hooks/use-url-state'
+import { latestBomPerProduct } from '@/features/production/bom-bulk-model'
 import { ApprovalsTab } from '@/features/production/bom-bulk/approvals-tab'
 import { BulkEditorTab } from '@/features/production/bom-bulk/bulk-editor-tab'
 import { ImportExportTab } from '@/features/production/bom-bulk/import-export-tab'
@@ -67,7 +69,10 @@ function BomMasterTab({ tabs }: { tabs: ReactNode }) {
       setRecalc(null)
     }
   }
-  const rows = all
+  const [versions, setVersions] = useUrlEnum<'latest' | 'all'>('versions', ['latest', 'all'], 'latest')
+  // One row per finished product unless all versions are asked for (or one product's versions are shown).
+  const showAll = versions === 'all' || !!productFilter
+  const rows = (showAll ? all : latestBomPerProduct(all))
     .filter((b) => !productFilter || b.finished_product_id === productFilter)
     .filter((b) => typeFilter === 'all' || b.product_type === typeFilter)
     .filter((b) => groupFilter === 'all' || (groupFilter === 'none' ? !b.group_head : b.group_head === groupFilter))
@@ -189,7 +194,7 @@ function BomMasterTab({ tabs }: { tabs: ReactNode }) {
       )}
       <DataTable
         title="Bills of materials"
-        description="One BOM code per product; every change is a new version. Only the active, currently effective version is used for new orders. Planning fields come from the finished product. Costs in INR; hover a cost heading for how it is calculated."
+        description="One row per product: its latest approved version (or its latest version if none is approved). Tick “Show all versions” to see earlier versions. Only the active, currently effective version is used for new orders. Planning fields come from the finished product. Costs in INR; hover a cost heading for how it is calculated."
         columns={columns}
         data={rows}
         getRowId={(b) => b.id}
@@ -221,6 +226,12 @@ function BomMasterTab({ tabs }: { tabs: ReactNode }) {
                 {types.map((t) => <SelectItem key={t} value={t}>{PRODUCT_TYPE_LABELS[t as ProductType] ?? t}</SelectItem>)}
               </SelectContent>
             </Select>
+            {!productFilter && (
+              <label className="flex items-center gap-2 text-sm whitespace-nowrap" data-testid="bom-all-versions">
+                <Checkbox checked={versions === 'all'} onCheckedChange={(v) => setVersions(v === true ? 'all' : 'latest')} aria-label="Show all versions" />
+                Show all versions
+              </label>
+            )}
             <Select value={groupFilter} onValueChange={setGroupFilter}>
               <SelectTrigger className="w-44" aria-label="Group head filter"><SelectValue /></SelectTrigger>
               <SelectContent>
