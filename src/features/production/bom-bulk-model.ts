@@ -357,3 +357,20 @@ export function unusedAfterChange(d: BatchDetail): string[] {
     .filter((c) => c.roles.includes('REMOVED') && c.current_boms_after === 0 && ((c.available ?? 0) > 0 || (c.open_po_quantity ?? 0) > 0))
     .map((c) => `${c.sku}: ${c.available !== null ? `${trimNum(Number(c.available))} ${c.unit} available` : 'stock not visible'}${c.open_po_quantity ? `, ${trimNum(Number(c.open_po_quantity))} ${c.unit} on open purchase orders` : ''} — no current BOM will use it.`)
 }
+
+/**
+ * One BOM per finished product for the BOM Master list: the latest approved version (the one in use or
+ * scheduled), else the latest version of any status. Earlier versions stay available under "Show all versions".
+ */
+export function latestBomPerProduct<T extends { finished_product_id: string; version: number; status: string }>(rows: T[]): T[] {
+  const best = new Map<string, T>()
+  for (const r of rows) {
+    const cur = best.get(r.finished_product_id)
+    const rank = (x: T) => [x.status === 'APPROVED' ? 1 : 0, x.version] as const
+    if (!cur) { best.set(r.finished_product_id, r); continue }
+    const [a1, a2] = rank(r)
+    const [b1, b2] = rank(cur)
+    if (a1 > b1 || (a1 === b1 && a2 > b2)) best.set(r.finished_product_id, r)
+  }
+  return rows.filter((r) => best.get(r.finished_product_id) === r)
+}

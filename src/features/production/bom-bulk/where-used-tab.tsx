@@ -1,4 +1,4 @@
-import { Download, Loader2, Pencil, Replace, Trash2 } from 'lucide-react'
+import { Download, Loader2, Replace, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
@@ -64,7 +64,7 @@ export function WhereUsedTab() {
       setExporting(false)
     }
   }
-  const startBulk = (op: 'REPLACE' | 'DELETE' | 'EDIT') => navigate(`/production/boms?tab=editor&op=${op}&component=${componentId}`)
+  const startBulk = (op: 'REPLACE' | 'DELETE') => navigate(`/production/boms?tab=editor&op=${op}&component=${componentId}`)
 
   return (
     <div className="space-y-4" data-testid="where-used">
@@ -99,7 +99,6 @@ export function WhereUsedTab() {
                 </Button>
                 <PermissionGate anyOf={['production_bom.create', 'production_bom.update']}>
                   <Button variant="outline" disabled={!result?.stats.current_boms} onClick={() => startBulk('REPLACE')}><Replace /> Replace</Button>
-                  <Button variant="outline" disabled={!result?.stats.current_boms} onClick={() => startBulk('EDIT')}><Pencil /> Edit</Button>
                   <Button variant="outline" disabled={!result?.stats.current_boms} onClick={() => startBulk('DELETE')}><Trash2 /> Delete</Button>
                 </PermissionGate>
               </div>

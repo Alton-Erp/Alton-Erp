@@ -673,6 +673,212 @@ const EXCL_GST = (scope) => {
     by_party: { 'pty-sup1': { receivable_excl_gst: 0, receivable_status: 'SETTLED', payable_excl_gst: 3780, payable_status: 'EXACT' } },
     top_customers: [{ party_id: 'pty-cu1', invoiced: 1900 }], top_suppliers: [{ party_id: 'pty-sup1', received: 3780 }] }
 }
+// Support Centre (migration 20261210090000): no channel is connected; WhatsApp has an account awaiting its server-side check.
+// Acefone telephony (20261211090000). Statuses change only when the mock "provider" reports them.
+const PHONE_CALLS = [
+  { id: 'call1', direction: 'INBOUND', status: 'MISSED', customer_id: 'scu1', customer_name: 'Ravi Kumar', customer_number: '+919876543210', caller_number: '+919876543210',
+    destination_number: '18001234567', agent_name: null, ticket_id: null, ticket_number: null, started_at: '2026-11-12T09:00:00Z', ended_at: '2026-11-12T09:00:25Z',
+    ring_seconds: 25, talk_seconds: 0, disposition: 'Missed', has_recording: false, created_at: '2026-11-12T09:00:00Z' },
+  { id: 'call2', direction: 'OUTBOUND', status: 'COMPLETED', customer_id: 'scu1', customer_name: 'Ravi Kumar', customer_number: '+919876543210', caller_number: '0501234567',
+    destination_number: '+919876543210', agent_name: 'Smoke Agent', ticket_id: 'st1', ticket_number: 'TKT-000001', started_at: '2026-11-12T10:00:00Z', ended_at: '2026-11-12T10:04:10Z',
+    ring_seconds: 8, talk_seconds: 242, disposition: 'Answered', has_recording: true, created_at: '2026-11-12T10:00:00Z' },
+]
+let PHONE_LIVE = []
+const PHONE_CONFIG = {
+  config: { channel_account_id: 'sca-phone', provider: 'ACEFONE', toll_free_number: '1800 123 4567', api_base_url: 'https://api.acefone.in', click_to_call_mode: 'AGENT', default_caller_id: null,
+    api_token_secret: 'ACEFONE_API_TOKEN', support_api_key_secret: 'ACEFONE_C2C_SUPPORT_API_KEY', webhook_secret_name: 'ACEFONE_WEBHOOK_SECRET', webhook_allowed_ips: [],
+    recording_retrieval: false, recording_retention_days: 90, is_enabled: true, disconnected_at: null, last_event_at: '2026-11-12T10:04:10Z', last_sync_at: null,
+    last_sync_status: null, last_test_at: null, last_test_result: null },
+  account: { id: 'sca-phone', status: 'SETUP_REQUIRED', status_detail: 'Waiting for the first verified event.', last_checked_at: null },
+  lines: [{ id: 'pl1', agent_id: 'sag1', agent_name: 'Smoke Agent', presence: 'AVAILABLE', agent_active: true, user_id: 'mgr', agent_number: '0501234567', label: 'Desk', is_active: true,
+    extension_id: '7001', display_caller_id: '08069411111', softphone_setup: 'INSTRUCTIONS_SENT', provider_agent_status: 'ENABLED', provider_checked_at: NOW }],
+  last_success_event_at: '2026-11-12T10:04:10Z',
+  events: [{ id: 'pev1', event_type: 'WEBHOOK', status: null, message: null, processing_result: 'ERROR', processing_error: 'simulated', replay_count: 0, created_at: '2026-11-12T10:04:10Z', event: 'hangup' }],
+}
+const PHONE_DETAIL = (id) => {
+  const c = PHONE_CALLS.find((x) => x.id === id)
+  if (!c) return null
+  const out = c.direction === 'OUTBOUND'
+  return { call: { ...c, idem: undefined, conversation_id: 'sc1', agent_number: '0501234567', customer_number_e164: c.customer_number, caller_id_used: null, click_to_call_mode: out ? 'AGENT' : null,
+      provider_ref_id: out ? 'REF-1' : null, provider_call_id: 'AC-1', provider_uuid: null, request_state: out ? 'ACCEPTED' : null, request_message: null,
+      hangup_cause: null, answered_at: c.talk_seconds ? c.started_at : null, duration_seconds: (c.ring_seconds ?? 0) + (c.talk_seconds ?? 0) },
+    customer: { id: 'scu1', customer_code: 'SC-000001', display_name: 'Ravi Kumar' }, ticket: c.ticket_id ? { id: 'st1', ticket_number: 'TKT-000001', subject: 'Cracked basin', status: 'OPEN' } : null,
+    agent: c.agent_name ? { id: 'sag1', display_name: c.agent_name } : null, initiated_by: out ? 'Smoke Tester' : null,
+    recording: c.has_recording ? { state: 'AT_PROVIDER' } : { state: 'NONE' },
+    events: [{ event_name: out ? 'click_to_call' : 'received', from: null, to: out ? 'INITIATED' : 'RINGING', occurred_at: c.started_at, at: c.created_at }] }
+}
+// Google Workspace Gmail (20261212090000). "Sent" only when the mock Gmail accepted the message.
+const GMAIL = { connected: false, sendOutcome: 'PENDING', sendCalls: [], startCalls: 0 }
+const GMAIL_CONFIG = () => ({
+  config: { channel_account_id: 'sca-mail', provider: 'GOOGLE_WORKSPACE', mailbox_address: 'support@alton.example', display_name: 'Alton Support', signature: 'Alton Support Team',
+    pubsub_topic: 'projects/alton-erp-123/topics/gmail-support', push_enabled: true, mailbox_modify_enabled: false, initial_sync_days: 7, max_attachment_mb: 10,
+    connected_address: GMAIL.connected ? 'support@alton.example' : null, granted_scopes: GMAIL.connected ? ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.send'] : [],
+    last_history_id: '100', watch_expiration: GMAIL.connected ? '2026-11-20T10:00:00Z' : null, watch_renewed_at: null, watch_status: null, last_push_at: null,
+    last_sync_at: GMAIL.connected ? NOW : null, last_sync_status: GMAIL.connected ? 'Mailbox history synchronised: 1 new.' : null, last_full_sync_at: null,
+    is_enabled: GMAIL.connected, connected_at: GMAIL.connected ? NOW : null, disconnected_at: null },
+  account: { id: 'sca-mail', status: GMAIL.connected ? 'CONNECTED' : 'SETUP_REQUIRED', status_detail: GMAIL.connected ? 'Connected as support@alton.example.' : 'Not connected yet: use Connect Google Workspace.', last_checked_at: NOW, connected_at: null },
+  has_credentials: GMAIL.connected,
+  requested_scopes: ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.send'],
+  counts: { received: 1, sent: 0, pending: 0, failed: 0 },
+  events: [{ id: '55555555-5555-4555-8555-555555555555', event_type: 'WEBHOOK', status: null, message: 'Gmail push notification', processing_result: 'ERROR', processing_error: 'Gmail API unavailable',
+    replay_count: 0, created_at: NOW, history_id: '120' }],
+})
+const GMAIL_THREAD = [
+  { id: 'em1', message_id: 'm-em1', direction: 'INBOUND', from_address: 'ravi@customer.example', from_name: 'Ravi Kumar', to: [{ email: 'support@alton.example', name: 'Support' }],
+    cc: [{ email: 'boss@customer.example', name: null }], bcc: [], reply_to: null, subject: 'Cracked basin', body_text: 'The basin arrived cracked. Photo attached.',
+    has_html: true, html_truncated: false, at: NOW, send_state: null, send_error: null, gmail_message_id: 'aaaa000001', gmail_thread_id: 'thr000001',
+    rfc_message_id: '<aaaa000001@customer.example>', in_reply_to: null, unread: true, author: null,
+    attachments: [{ id: 'att-em1', file_name: 'photo.jpg', content_type: 'image/jpeg', size_bytes: 20480, inline: false, storage_path: `${COMPANY_ID}/email/em1/1-photo.jpg`, restricted: false }],
+    skipped_attachments: [{ filename: 'setup.exe', state: 'BLOCKED', reason: '.exe files are not stored (executable or script).' }] },
+]
+// Meta WhatsApp Cloud API (20261213090000). Pending until the (mock) Meta status webhook says otherwise.
+const WA = { state: 'MIGRATION_REQUIRED', enabled: false, windowOpen: true, sendCalls: [], templateCalls: [], checklist: [] }
+const WA_ITEMS = [['number_path_confirmed', true], ['cloud_api_eligibility', true], ['migration_completed', true], ['coexistence_approved', false], ['previous_routing_retired', true],
+  ['system_user_token', true], ['webhook_subscribed', true], ['templates_reviewed', false]]
+const WA_CONFIG = () => ({
+  config: { channel_account_id: 'sca-wa', business_portfolio_id: '1234567890', waba_id: '102030405060', phone_number_id: '109876543210', display_phone_number: '+9118001234567',
+    app_id: '555666777888', graph_api_version: 'v27.0', number_path: 'BSP', setup_state: WA.state, integration_enabled: WA.enabled, enabled_at: null,
+    webhook_verified_at: null, webhook_signed_event_at: null, last_webhook_at: null, last_inbound_at: null, last_outbound_success_at: null, last_test_at: NOW, last_test_ok: true,
+    last_test_result: 'Connected: Alton +91 1800 123 4567 on the Cloud API.', phone_info: {}, templates_synced_at: NOW, last_error: null, last_error_at: null },
+  account: { id: 'sca-wa', status: WA.enabled ? 'CONNECTED' : 'SETUP_REQUIRED', status_detail: 'The number must be migrated to the Cloud API through Meta\'s supported path first.', last_checked_at: NOW },
+  checklist_items: WA_ITEMS.map(([key, required]) => ({ key, label: `Checklist item ${key}`, required, done: WA.checklist.includes(key), note: null, by: WA.checklist.includes(key) ? 'Smoke Tester' : null,
+    at: WA.checklist.includes(key) ? NOW : null })),
+  templates: [{ id: 'wt1', name: 'order_update', language: 'en', category: 'UTILITY', status: 'APPROVED' }, { id: 'wt2', name: 'promo_offer', language: 'en', category: 'MARKETING', status: 'PENDING' }],
+  counts: { received: 2, sent: 1, pending: 0, failed: 1, media_pending: 1 },
+  events: [{ id: 'we1', field: 'messages', result: 'HELD', error: 'Integration not switched on.', counts: {}, replay_count: 0, received_at: NOW, processed_at: NOW, purged: false }],
+})
+const WA_TEMPLATES = [{ id: 'wt1', name: 'order_update', language: 'en', category: 'UTILITY', status: 'APPROVED', parameter_format: 'POSITIONAL',
+  components: [{ type: 'BODY', text: 'Hi {{1}}, your order {{2}} is on its way.' }] }]
+const WA_THREAD = () => ({
+  contact: { wa_id: '919876543210', user_id: null, profile_name: 'Ravi Kumar', last_inbound_at: NOW },
+  window_open: WA.windowOpen, window_closes_at: WA.windowOpen ? new Date(Date.now() + 5 * 3600000).toISOString() : null, can_send: WA.enabled,
+  messages: [
+    { id: 'wm1', message_id: 'swm1', direction: 'INBOUND', type: 'text', body: 'The basin arrived cracked', at: NOW, status: 'RECEIVED', status_at: NOW, error_code: null, error_title: null,
+      error_detail: null, media_state: 'NONE', media_error: null, media_filename: null, media_mime: null, location: null, context_wa_message_id: null, wa_message_id: 'wamid.IN1',
+      template_name: null, author: null, attachment: null },
+    { id: 'wm2', message_id: 'swm2', direction: 'INBOUND', type: 'image', body: 'Crack photo', at: NOW, status: 'RECEIVED', status_at: NOW, error_code: null, error_title: null,
+      error_detail: null, media_state: 'PENDING', media_error: null, media_filename: null, media_mime: 'image/jpeg', location: null, context_wa_message_id: null, wa_message_id: 'wamid.IMG1',
+      template_name: null, author: null, attachment: null },
+    { id: 'wm3', message_id: 'swm3', direction: 'OUTBOUND', type: 'text', body: 'We are sending a replacement.', at: NOW, status: 'READ', status_at: NOW, error_code: null, error_title: null,
+      error_detail: null, media_state: 'NONE', media_error: null, media_filename: null, media_mime: null, location: null, context_wa_message_id: 'wamid.IN1', wa_message_id: 'wamid.OUT1',
+      template_name: null, author: 'Smoke Tester', attachment: null },
+    { id: 'wm4', message_id: 'swm4', direction: 'OUTBOUND', type: 'text', body: 'Are you there?', at: NOW, status: 'FAILED', status_at: NOW, error_code: 131026, error_title: 'Message undeliverable',
+      error_detail: 'Receiver is incapable of receiving this message', media_state: 'NONE', media_error: null, media_filename: null, media_mime: null, location: null,
+      context_wa_message_id: null, wa_message_id: 'wamid.OUT2', template_name: null, author: 'Smoke Tester', attachment: null },
+    { id: 'wm5', message_id: 'swm5', direction: 'INBOUND', type: 'location', body: '[Location] Site, Mumbai', at: NOW, status: 'RECEIVED', status_at: NOW, error_code: null, error_title: null,
+      error_detail: null, media_state: 'NONE', media_error: null, media_filename: null, media_mime: null, location: { latitude: 19.07, longitude: 72.87, name: 'Site', address: 'Mumbai' },
+      context_wa_message_id: null, wa_message_id: 'wamid.LOC1', template_name: null, author: null, attachment: null }],
+})
+// Unified support (20261214090000)
+const UNI = { rulesSaves: [], calendarSaves: [], healthTests: 0 }
+const UNI_SETTINGS = () => ({
+  rules: { ticket_mode: 'AGENT_REQUEST_ONLY', new_conversation_priority: 'NORMAL', missed_call_enabled: false, missed_call_priority: 'HIGH', email_keywords_enabled: false,
+    email_keywords: [], email_match_body: false, whatsapp_keywords_enabled: false, whatsapp_keywords: [], keyword_priority: 'NORMAL', reopen_on_reply_enabled: true,
+    escalate_on_breach_enabled: false, escalate_priorities: ['URGENT'], sla_warning_percent: 80 },
+  calendar: { enabled: false, timezone: 'Asia/Kolkata', working_days: [1, 2, 3, 4, 5, 6], start_time: '09:30:00', end_time: '18:30:00', pause_when_waiting_customer: true },
+  holidays: [{ id: 'h1', date: '2026-11-16', name: 'Test holiday' }],
+  levels: [{ level: 1, after_minutes: 0, priorities: [], notify_assignee: true, notify_managers: true, reassign_agent_id: null, set_department: 'Escalations', raise_priority: false, is_active: true }],
+  assignment: [{ id: 'ar1', name: 'Urgent to quality', channel: null, priority: 'URGENT', department: 'Quality', agent_id: 'sag1', run_order: 100, is_active: true }],
+  can_edit: has('support.manage_settings'),
+})
+const UNI_HEALTH = () => [
+  { provider: 'ACEFONE', channel: 'PHONE', configured: true, status: 'SETUP_REQUIRED', status_detail: 'Not tested yet.', verified_by_test_at: null, last_sync_at: null, last_sync_status: null,
+    last_webhook_at: NOW, last_outbound_at: null, failed_events_7d: 1, retry_queue: 1, expired_credentials: false, errors: [{ at: NOW, message: 'Signature rejected' }], test_action: 'acefone-click-to-call' },
+  { provider: 'GOOGLE_WORKSPACE', channel: 'EMAIL', configured: true, status: 'REAUTHORIZATION_REQUIRED', status_detail: 'Google no longer accepts the authorisation.', verified_by_test_at: null,
+    last_sync_at: NOW, last_sync_status: 'ok', last_webhook_at: NOW, last_outbound_at: NOW, failed_events_7d: 0, retry_queue: 2, expired_credentials: true, errors: [], test_action: 'google-oauth-start' },
+  { provider: 'META_WHATSAPP', channel: 'WHATSAPP', configured: true, status: 'CONNECTED', status_detail: 'Connected to the WhatsApp Cloud API.', setup_state: 'CONNECTED', enabled: true,
+    verified_by_test_at: NOW, last_sync_at: NOW, last_sync_status: 'ok', last_webhook_at: NOW, last_outbound_at: NOW, failed_events_7d: 0, retry_queue: 0, expired_credentials: false, errors: [], test_action: 'whatsapp-sync-status' },
+]
+const UNI_REPORTS = (from, to) => ({ from, to, channel_volume: [{ day: TODAY, phone: 2, whatsapp: 3, email: 1 }], channel_totals: { phone: 2, whatsapp: 3, email: 1 },
+  calls: { inbound: 2, answered: 1, missed: 1, answer_rate: 50, missed_rate: 50, avg_talk_seconds: 95 },
+  response_times: { email: { turns: 1, answered: 1, avg_minutes: 42, median_minutes: 42, within_1h_percent: 100 }, whatsapp: { turns: 3, answered: 2, avg_minutes: 6.5, median_minutes: 5, within_1h_percent: 100 } },
+  tickets: { created: 4, closed: 2, closure_rate: 50, resolved_in_period: 2, open_now: 2, reopened: 1, by_channel: { whatsapp: 2, email: 1, phone: 1 } },
+  agents: [{ agent: 'Smoke Agent', open_tickets: 1, open_conversations: 2, resolved: 2, replies: 7 }],
+  sla: { tickets: 4, first_response_met: 3, first_response_breached: 1, resolution_met: 2, resolution_breached: 1, compliance_percent: 75, escalations: 1 },
+  csat: { responses: 1, average: 5, distribution: { 5: 1 } } })
+const UNI_TICKET_SLA = { policy: { name: 'Urgent', first_response_minutes: 15, resolution_minutes: 240 }, status: 'OVERDUE', business_hours: true, paused: false, paused_since: null, paused_minutes: 30,
+  first_response: { due_at: NOW, done_at: null, breached_at: NOW, breached: true, remaining_minutes: -45 },
+  resolution: { due_at: NOW, done_at: null, breached_at: null, breached: false, remaining_minutes: 150 },
+  history: [{ kind: 'WARNING', target: 'FIRST_RESPONSE', level: 0, at: NOW, details: {} }, { kind: 'BREACH', target: 'FIRST_RESPONSE', level: 0, at: NOW, details: {} },
+    { kind: 'ESCALATION', target: 'FIRST_RESPONSE', level: 1, at: NOW, details: {} }] }
+// Acefone softphone / agent telephony (20261215090000)
+const SOFT = { notes: [], links: [], agentsReads: 0 }
+const SOFTPHONE_STATUS = () => ({ phone_configured: true, lines: [{ id: 'pl1', agent_number: '0601234567', extension_id: '7001', label: 'Desk', display_caller_id: '08069411111',
+  softphone_setup: 'INSTRUCTIONS_SENT', is_active: true, provider_agent_status: 'ENABLED', provider_checked_at: NOW, state: 'NOT_VERIFIED' }] })
+const CALL_CONTEXT = () => ({ notes: SOFT.notes.map((b, i) => ({ id: `n${i}`, body: b, at: NOW, author: 'Smoke Tester' })),
+  previous_calls: [{ id: 'call1', direction: 'INBOUND', status: 'MISSED', at: NOW, talk_seconds: 0, agent_name: null }],
+  open_tickets: [{ id: 'st1', ticket_number: 'TKT-000001', subject: 'Cracked basin', status: 'OPEN' }],
+  conversations: [{ id: 'sc1', channel: 'PHONE', subject: 'Cracked basin', status: 'OPEN', last_activity_at: NOW }] })
+const CALL_ANALYTICS = (from, to, group) => ({ from, to, group,
+  totals: { inbound: 5, outbound: 3, answered: 4, missed: 2, failed: 1, unconfirmed_requests: 1, avg_duration_seconds: 125, avg_answer_seconds: 9 },
+  series: [{ period: TODAY, inbound: 5, outbound: 3, answered: 4, missed: 2, failed: 1 }],
+  agents: [{ agent: 'Smoke Agent', inbound: 3, outbound: 3, answered: 4, missed: 1, avg_duration_seconds: 125 }],
+  customers: [{ customer_id: 'scu1', customer: 'Ravi Kumar', calls: 4, answered: 3, missed: 1, last_call_at: NOW }, { customer_id: null, customer: 'Unknown caller', calls: 2, answered: 0, missed: 1, last_call_at: NOW }],
+  states: { COMPLETED: 4, MISSED: 2, FAILED: 1, REQUESTED: 1 } })
+// Bulk BOM management (20261218090000)
+const BULK = { batches: [], saves: [], published: 0 }
+const BULK_COMPS = {
+  'cmp-old': { product_id: 'cmp-old', sku: 'RM-GLAZE-01', product_name: 'Glaze white (old)', base_unit: 'KG', product_type: 'RAW_MATERIAL', status: 'ACTIVE', barcode: 'GLZ0001', ean: null, model_number: 'GZ-1', supplier_model_number: null, bom_lines: 3 },
+  'cmp-new': { product_id: 'cmp-new', sku: 'RM-GLAZE-02', product_name: 'Glaze white (new)', base_unit: 'KG', product_type: 'RAW_MATERIAL', status: 'ACTIVE', barcode: null, ean: null, model_number: null, supplier_model_number: null, bom_lines: 0 },
+  'cmp-box': { product_id: 'cmp-box', sku: 'PK-BOX-01', product_name: 'Carton box', base_unit: 'PCS', product_type: 'PACKAGING_MATERIAL', status: 'ACTIVE', barcode: null, ean: null, model_number: null, supplier_model_number: null, bom_lines: 0 },
+}
+const BULK_BOMS = [1, 2, 3].map((i) => ({ bom_id: `bb${i}`, bom_code: `BOM-00010${i}`, version: 1, status: 'APPROVED', lifecycle: 'ACTIVE', is_current: true, effective_from: TODAY, effective_to: null,
+  output_quantity: 1, output_unit: 'PCS', finished_product_id: `fgb${i}`, sku: `FG-BASIN-${i}`, product_name: `Basin ${i}`, product_type: 'FINISHED_GOOD', finished_status: 'ACTIVE', line_no: 1,
+  component_product_id: 'cmp-old', component_sku: 'RM-GLAZE-01', component_name: 'Glaze white (old)', quantity: i + 0.5, unit: 'KG', inventory_unit: 'KG', unit_matches: true,
+  wastage_percentage: 2, notes: null, source_type: 'PURCHASED', quantity_per_unit: i + 0.5 }))
+const bulkDetail = (b) => ({ batch: b, lines: b.lines, events: b.events,
+  impact: b.status === 'PUBLISHED' ? null : { production_orders: [{ production_order_id: 'po-x', production_order_number: 'PRD-000001', status: 'APPROVED', sku: 'FG-BASIN-1', product_name: 'Basin 1', bom_code: 'BOM-000101', bom_version: 1, planned_quantity: 10, unit: 'PCS', planned_start_date: TODAY, released: true, effect: 'Keeps v1 and its material plan; not changed.' }],
+    production_orders_visible: true, stock_visible: true, purchases_visible: true, effective_from: b.effective_from, note: 'Publishing never changes stock, purchase orders, consumption or existing production orders.',
+    components: [{ product_id: 'cmp-old', sku: 'RM-GLAZE-01', product_name: 'Glaze white (old)', unit: 'KG', roles: 'REMOVED', boms_in_batch: 3, current_boms: 3, current_boms_after: 0, on_hand: 40, reserved: 0, available: 40, open_po_quantity: 25, open_po_count: 1, consumed_90_days: 12, open_order_requirement: 5 },
+      { product_id: 'cmp-new', sku: 'RM-GLAZE-02', product_name: 'Glaze white (new)', unit: 'KG', roles: 'ADDED', boms_in_batch: 3, current_boms: 0, current_boms_after: 0, on_hand: 0, reserved: 0, available: 0, open_po_quantity: 0, open_po_count: 0, consumed_90_days: 0, open_order_requirement: 0 }] },
+  permissions: { can_edit: ['DRAFT', 'REJECTED'].includes(b.status), can_approve: b.status === 'PENDING_APPROVAL', can_publish: b.status === 'APPROVED', self_approval_blocked: false } })
+const bulkEvent = (b, action, note = null) => { b.events.push({ action, acted_at: NOW, note, details: {}, actor_name: 'Smoke Tester' }); b.row_version++ }
+const SUPPORT_CHANNELS = [{ channel: 'PHONE', status: 'NOT_CONNECTED', accounts: 0 }, { channel: 'WHATSAPP', status: 'SETUP_REQUIRED', accounts: 1 }, { channel: 'EMAIL', status: 'NOT_CONNECTED', accounts: 0 }]
+const supportConv = (id, channel, over = {}) => ({ id, channel, subject: null, status: 'OPEN', priority: 'NORMAL', customer_id: null, customer_name: 'Ravi Kumar', phone: '+91 98765 43210',
+  email: null, last_message_preview: 'Basin arrived cracked', last_activity_at: NOW, unread_count: 0, assigned_agent_id: null, assigned_agent: null, ticket_id: null, ticket_number: null, tags: [], ...over })
+const SUPPORT_INBOX = [
+  supportConv('sc1', 'WHATSAPP', { subject: 'Cracked basin', unread_count: 2, assigned_agent_id: 'sag1', assigned_agent: 'Smoke Agent', ticket_id: 'st1', ticket_number: 'ALT-SUP-000001',
+    customer_id: 'scu1', tags: [{ id: 'stag1', name: 'Damage', color: 'danger' }] }),
+  supportConv('sc2', 'PHONE', { customer_name: '+91 90000 11111', phone: '+91 90000 11111', last_message_preview: 'Missed call', status: 'PENDING' }),
+]
+const supportTicket = (id, n, over = {}) => ({ id, ticket_number: `ALT-SUP-${String(n).padStart(6, '0')}`, subject: 'Cracked basin on delivery', customer_id: 'scu1', customer_name: 'Ravi Kumar',
+  customer_phone: '+91 98765 43210', customer_email: null, channel: 'WHATSAPP', category: 'Damage', subcategory: null, priority: 'URGENT', status: 'OPEN', department: 'Quality',
+  assigned_agent_id: 'sag1', assigned_agent: 'Smoke Agent', created_at: NOW, first_response_at: null, due_at: NOW, resolved_at: null, closed_at: null, sla_status: 'AT_RISK',
+  merged_into: null, related_type: null, related_reference: null, csat_rating: null, reopen_count: 0, ...over })
+const SUPPORT_TICKETS = [supportTicket('st1', 1), supportTicket('st2', 2, { subject: 'Invoice copy', priority: 'LOW', status: 'RESOLVED', sla_status: 'MET', resolved_at: NOW, channel: 'EMAIL', category: null, csat_rating: 5 })]
+const SUPPORT_OVERVIEW = (from, to) => ({ from, to, today: TODAY, generated_at: NOW,
+  kpis: { total_tickets: 2, open_tickets: 1, unassigned_tickets: 0, pending_customer: 0, resolved_tickets: 1, overdue_tickets: 0, calls_today: 1, missed_calls: 1,
+    whatsapp_conversations: 1, incoming_emails: 0, avg_first_response_minutes: 42, avg_resolution_minutes: 200, csat_average: 5, csat_responses: 1 },
+  by_channel: [{ channel: 'WHATSAPP', tickets: 1 }, { channel: 'EMAIL', tickets: 1 }], by_status: [{ status: 'OPEN', tickets: 1 }, { status: 'RESOLVED', tickets: 1 }],
+  daily: [{ day: TODAY, created: 2, resolved: 1 }], sla: { met: 1, breached: 0, no_sla: 0 }, resolution_buckets: [{ bucket: '1–4 hours', tickets: 1 }],
+  agents: [{ agent_id: 'sag1', name: 'Smoke Agent', presence: 'AVAILABLE', is_active: true, assigned_open: 1, resolved: 1, avg_resolution_minutes: 200, sla_met: 1, sla_breached: 0, open_conversations: 1 }],
+  channels: SUPPORT_CHANNELS })
+const SUPPORT_CONVERSATION = (id) => {
+  const r = SUPPORT_INBOX.find((x) => x.id === id) ?? SUPPORT_INBOX[0]
+  return { conversation: { id: r.id, channel: r.channel, subject: r.subject, status: r.status, priority: r.priority, customer_id: r.customer_id, ticket_id: r.ticket_id,
+      contact_name: null, contact_phone: r.phone, contact_email: null, assigned_agent_id: r.assigned_agent_id, unread_count: r.unread_count, last_activity_at: NOW, created_at: NOW },
+    channel_status: SUPPORT_CHANNELS.find((c) => c.channel === r.channel).status,
+    customer: r.customer_id ? { id: 'scu1', customer_code: 'SC-000001', display_name: 'Ravi Kumar', phones: ['+91 98765 43210'], emails: [] } : null,
+    candidates: r.customer_id ? [] : [{ id: 'scu1', customer_code: 'SC-000001', display_name: 'Ravi Kumar', matched_on: ['phone'] }, { id: 'scu2', customer_code: 'SC-000002', display_name: 'Ravi Kumar (shop)', matched_on: ['phone'] }],
+    ticket: r.ticket_id ? { id: 'st1', ticket_number: 'ALT-SUP-000001', subject: 'Cracked basin on delivery', status: 'OPEN', priority: 'URGENT', sla_status: 'AT_RISK' } : null,
+    agent: r.assigned_agent_id ? { id: 'sag1', display_name: 'Smoke Agent' } : null, tags: r.tags,
+    timeline: [
+      { type: r.channel === 'PHONE' ? 'call' : 'message', id: 'm1', at: NOW, direction: 'INBOUND', source: 'MANUAL', body: r.channel === 'PHONE' ? null : 'The basin arrived cracked.',
+        call_status: r.channel === 'PHONE' ? 'MISSED' : null, duration_seconds: null, delivery_status: null, author: 'Smoke Tester' },
+      { type: 'note', id: 'n1', at: NOW, body: 'Checked stock for a replacement', author: 'Smoke Tester' },
+      { type: 'attachment', id: 'a1', at: NOW, file_name: 'call.mp3', is_recording: true, is_sensitive: true, storage_path: null, restricted: true },
+    ] }
+}
+const SUPPORT_TICKET_DETAIL = (id) => {
+  const t = SUPPORT_TICKETS.find((x) => x.id === id) ?? supportTicket(id, 9, { subject: 'New smoke ticket', status: 'NEW' })
+  return { ticket: { ...t, description: 'The basin arrived cracked.', first_response_due_at: NOW, csat_comment: null, related_id: null, merged_into: null, merged_from: [],
+      merged_into_ticket_id: null, updated_at: NOW },
+    customer: { id: 'scu1', customer_code: 'SC-000001', display_name: 'Ravi Kumar' }, agent: { id: 'sag1', display_name: 'Smoke Agent' },
+    sla_policy: { name: 'Urgent', first_response_minutes: 15, resolution_minutes: 240 },
+    conversations: [{ id: 'sc1', channel: 'WHATSAPP', subject: 'Cracked basin', status: 'OPEN', last_message_preview: 'Basin arrived cracked', last_activity_at: NOW }],
+    events: [{ id: 'e1', event_type: 'CREATED', from: null, to: 'NEW', details: {}, at: NOW, author: 'Smoke Tester' }],
+    notes: [], attachments: [] }
+}
 // Inventory by category rows of the mock inventory overview (a step varies the count and the names).
 let CATEGORY_ROWS = null
 const ERP_DEFAULTS = {
@@ -1347,6 +1553,75 @@ const api = http.createServer((req, res) => {
     if (url.pathname === '/rest/v1/erp_reset_runs') {
       return has('system.reset_data') ? send(res, 200, forceRuns) : send(res, 200, [])
     }
+    if (url.pathname === '/functions/v1/acefone-click-to-call') {
+      if (!currentUser) return send(res, 401, { error: 'Sign in again.' })
+      if (body?.action === 'status') return has('support.manage_integrations') ? send(res, 200, { configured: true, secrets: { api_token: true, support_api_key: false, webhook_secret: true } })
+        : send(res, 403, { error: 'You are not allowed to manage integrations.' })
+      if (body?.action === 'test') return send(res, 200, { ok: true, message: 'Acefone answered: 1 call record readable.' })
+      if (body?.action === 'agents') { SOFT.agentsReads++; return has('support.manage_integrations') ? send(res, 200, { ok: true, matched: 1, message: '3 Acefone users read. 1 lines matched.' }) : send(res, 403, { error: 'requires support.manage_integrations' }) }
+      if (body?.action === 'call') {
+        if (!has('support.reply')) return send(res, 403, { error: 'You are not allowed to place calls.' })
+        const same = PHONE_CALLS.find((c) => c.idem === body.idempotency_key)
+        if (same) return send(res, 200, { call_id: same.id, status: same.status, duplicate: true })
+        const id = `call${PHONE_CALLS.length + 1}`
+        PHONE_CALLS.unshift({ id, idem: body.idempotency_key, direction: 'OUTBOUND', status: 'INITIATED', customer_id: body.customer_id ?? null, customer_name: 'Ravi Kumar', customer_number: body.number,
+          caller_number: '0501234567', destination_number: body.number, agent_name: 'Smoke Agent', ticket_id: null, ticket_number: null, started_at: null, ended_at: null,
+          ring_seconds: null, talk_seconds: null, disposition: null, has_recording: false, created_at: new Date().toISOString() })
+        // The provider only accepted the request: the call stays Initiated until a webhook reports progress.
+        return send(res, 200, { call_id: id, status: 'INITIATED', request_state: 'ACCEPTED' })
+      }
+      return send(res, 400, { error: 'Unknown action.' })
+    }
+    if (url.pathname === '/functions/v1/acefone-sync-cdr') return send(res, 200, { results: [{ ok: true, records: 0, message: 'No new call records.' }] })
+    if (url.pathname === '/functions/v1/acefone-recording-sync') return send(res, 200, { results: [{ skipped: 'Recording retrieval is off.' }] })
+    if (url.pathname === '/functions/v1/google-oauth-start') {
+      if (!currentUser) return send(res, 401, { error: 'Sign in first.' })
+      if (!has('support.manage_integrations')) return send(res, 403, { error: 'requires support.manage_integrations' })
+      if (body?.action === 'status') return send(res, 200, { secrets: { client_id: true, client_secret: true, redirect_uri: true, encryption_key: true, app_url: true, push_token: true, push_oidc: false, cron_secret: true },
+        problems: [], redirect_uri: 'http://127.0.0.1:54321/functions/v1/google-oauth-callback', webhook_url: 'http://127.0.0.1:54321/functions/v1/google-gmail-webhook?token=<GMAIL_PUSH_TOKEN>' })
+      if (body?.action === 'start') {
+        // The mock "Google" authorises immediately and the callback sends the browser back to the ERP.
+        GMAIL.startCalls++
+        GMAIL.connected = true
+        return send(res, 200, { url: '/support/settings?tab=email&gmail=connected' })
+      }
+      if (body?.action === 'test') return send(res, 200, { ok: true, message: 'Connected: Gmail answered for support@alton.example.' })
+      if (body?.action === 'disconnect') { GMAIL.connected = false; return send(res, 200, { ok: true, revoked: true }) }
+      return send(res, 400, { error: 'Unknown action.' })
+    }
+    if (url.pathname === '/functions/v1/google-gmail-send') {
+      if (!currentUser || !has('support.reply')) return send(res, 403, { error: 'requires support.reply' })
+      GMAIL.sendCalls.push(body)
+      const state = GMAIL.sendOutcome
+      return send(res, 200, { email_id: `out-${GMAIL.sendCalls.length}`, conversation_id: 'sc-mail', send_state: state,
+        message: state === 'SENT' ? 'Sent: Gmail accepted the message.' : state === 'FAILED' ? 'Gmail refused the message: Invalid To header' : 'Gmail did not confirm the message. It shows as Pending until the next mailbox sync confirms it.' })
+    }
+    if (url.pathname === '/functions/v1/google-gmail-sync') {
+      return send(res, 200, { results: [{ ok: true, kind: body?.action === 'replay' ? 'REPLAY' : 'HISTORY', stored: 0, duplicates: 1, confirmed: 0, failed: 0, remaining: 0,
+        message: body?.action === 'replay' ? 'Mailbox history synchronised: 0 new, 1 already stored.' : 'Mailbox history synchronised: 1 new.' }] })
+    }
+    if (url.pathname === '/functions/v1/whatsapp-webhook-verify') {
+      if (!has('support.manage_integrations')) return send(res, 403, { error: 'requires support.manage_integrations' })
+      return send(res, 200, { secrets: { access_token: true, app_secret: true, verify_token: false, cron_secret: true },
+        callback_url: 'http://127.0.0.1:54321/functions/v1/whatsapp-webhook?account=sca-wa', subscription: { checked: true, subscribed: true, message: 'The app is subscribed to this WhatsApp Business Account.' } })
+    }
+    if (url.pathname === '/functions/v1/whatsapp-sync-status') {
+      if (!has('support.manage_integrations')) return send(res, 403, { error: 'requires support.manage_integrations' })
+      return send(res, 200, { results: [{ account: 'sca-wa', test: { ok: true, message: 'Connected: Alton +91 1800 123 4567 on the Cloud API, quality GREEN.' },
+        templates: { ok: true, message: '2 templates synchronised.' } }] })
+    }
+    if (url.pathname === '/functions/v1/whatsapp-send-message') {
+      if (!has('support.reply')) return send(res, 403, { error: 'requires support.reply' })
+      WA.sendCalls.push(body)
+      if (!WA.windowOpen) return send(res, 400, { error: 'The 24-hour customer service window is closed. Only an approved template can be sent now.' })
+      return send(res, 200, { id: `wout${WA.sendCalls.length}`, conversation_id: 'sc-wa', status: 'PENDING', message: 'Accepted by Meta. The status changes to Sent, Delivered or Read when Meta reports it.' })
+    }
+    if (url.pathname === '/functions/v1/whatsapp-send-template') {
+      if (!has('support.reply')) return send(res, 403, { error: 'requires support.reply' })
+      WA.templateCalls.push(body)
+      return send(res, 200, { id: `wtpl${WA.templateCalls.length}`, conversation_id: 'sc-wa', status: 'PENDING', message: 'Accepted by Meta. The status changes to Sent, Delivered or Read when Meta reports it.' })
+    }
+    if (url.pathname === '/functions/v1/whatsapp-media-download') return send(res, 200, { results: [{ id: 'wm2', state: 'STORED' }] })
     if (url.pathname.startsWith('/functions/v1/amazon-')) {
       return send(res, 412, { error: 'Selling Partner API credentials are not configured.', variables: [{ name: 'AMAZON_SPAPI_LWA_CLIENT_ID', set: false }, { name: 'AMAZON_COMPANY_CODE', set: false }] })
     }
@@ -1747,6 +2022,242 @@ const api = http.createServer((req, res) => {
           return send(res, 200, MGMT_OVERVIEW(body.p_from, body.p_to))
         case 'module_dashboard':
           return send(res, 200, MODULE_DASHBOARDS[body.p_module] ?? null)
+        case 'support_channel_status':
+          return send(res, 200, SUPPORT_CHANNELS)
+        case 'support_overview':
+          return send(res, 200, SUPPORT_OVERVIEW(body.p_from, body.p_to))
+        case 'support_reports':
+          return send(res, 200, { ...SUPPORT_OVERVIEW(body.p_from, body.p_to), by_category: [{ category: 'Damage', tickets: 1 }], by_priority: [{ priority: 'URGENT', tickets: 1 }],
+            calls: { inbound: 1, outbound: 0, answered: 0, missed: 1, avg_duration_seconds: null }, messages: { whatsapp_inbound: 1, whatsapp_outbound: 0, email_inbound: 0, email_outbound: 0 },
+            csat: [{ rating: 5, tickets: 1 }], reopened: 0 })
+        case 'support_inbox': {
+          const rows = SUPPORT_INBOX.filter((r) => (!body.p_channel || r.channel === body.p_channel) && (body.p_view === 'ALL' || body.p_view === r.channel || body.p_view === r.status
+            || (body.p_view === 'UNASSIGNED' && !r.assigned_agent_id) || (body.p_view === 'MINE' && r.assigned_agent_id === 'sag1'))
+            && (!body.p_search || JSON.stringify(r).toLowerCase().includes(String(body.p_search).toLowerCase())))
+          return send(res, 200, { total: rows.length, me: 'sag1', rows, counts: { ALL: 2, UNASSIGNED: 1, MINE: 1, OPEN: 1, PENDING: 1, UNREAD: 2 } })
+        }
+        case 'bom_component_search': {
+          const t = String(body.p_term ?? '').toLowerCase()
+          return send(res, 200, Object.values(BULK_COMPS).filter((c) => `${c.sku} ${c.product_name} ${c.barcode ?? ''} ${c.model_number ?? ''}`.toLowerCase().includes(t)))
+        }
+        case 'bom_where_used': {
+          const comp = BULK_COMPS[body.p_component]
+          if (!comp) return send(res, 400, { code: 'P0001', message: 'Component not found in your company.' })
+          const all = body.p_component === 'cmp-old' ? BULK_BOMS : []
+          const f = body.p_filters ?? {}
+          const rows = all.filter((r) => !f.search || `${r.sku} ${r.product_name}`.toLowerCase().includes(String(f.search).toLowerCase()))
+          return send(res, 200, { component: comp, total: rows.length, rows: rows.slice(body.p_offset ?? 0, (body.p_offset ?? 0) + (body.p_limit ?? 50)),
+            stats: { current_boms: rows.length, products: rows.length, total_quantity_current: rows.reduce((a, r) => a + r.quantity, 0), unit_mismatches: 0 } })
+        }
+        case 'bom_bulk_current_boms':
+          return send(res, 200, BULK_BOMS.map((r) => ({ bom_id: r.bom_id, bom_code: r.bom_code, version: r.version, lifecycle: 'ACTIVE', effective_from: TODAY, finished_product_id: r.finished_product_id, sku: r.sku, product_name: r.product_name, product_type: r.product_type, item_count: 2 })))
+        case 'bom_bulk_resolve_skus': {
+          const known = { 'fg-basin-1': { product_id: 'fgb1', sku: 'FG-BASIN-1', current_bom_id: 'bb1' }, 'pk-box-01': { product_id: 'cmp-box', sku: 'PK-BOX-01', current_bom_id: null } }
+          return send(res, 200, (body.p_skus ?? []).map((x) => String(x).toLowerCase()).filter((k) => known[k]).map((k) => ({ sku_key: k, ...known[k], product_name: known[k].sku,
+            base_unit: 'PCS', product_type: k.startsWith('fg') ? 'FINISHED_GOOD' : 'PACKAGING_MATERIAL', status: 'ACTIVE', current_bom_code: known[k].current_bom_id ? 'BOM-000101' : null, current_version: known[k].current_bom_id ? 1 : null })))
+        }
+        case 'bom_change_batch_save': {
+          if (!has('production_bom.create') && !has('production_bom.update')) return send(res, 403, { code: '42501', message: 'requires production_bom.create or production_bom.update' })
+          BULK.saves.push(body)
+          const h = body.p_header
+          const n = BULK.batches.length + 1
+          const lines = body.p_lines.map((l, i) => {
+            const src = BULK_BOMS.find((r) => r.bom_id === l.bom_id || r.finished_product_id === l.finished_product_id) ?? BULK_BOMS[0]
+            const nc = BULK_COMPS[l.new_component_product_id]
+            const q = h.operation === 'DELETE' ? null : l.quantity ? Number(l.quantity) : src.quantity * Number(l.factor ?? 1)
+            return { id: `bl${n}-${i}`, line_no: i + 1, action: h.operation, source_bom_id: src.bom_id, bom_code: src.bom_code, source_version: 1, finished_product_id: src.finished_product_id,
+              finished_sku: src.sku, finished_name: src.product_name, component_product_id: l.component_product_id, component_sku: BULK_COMPS[l.component_product_id]?.sku ?? null,
+              component_name: BULK_COMPS[l.component_product_id]?.product_name ?? null, new_component_product_id: nc?.product_id ?? null, new_component_sku: nc?.sku ?? null,
+              new_component_name: nc?.product_name ?? null, restore_from_bom_id: null, input: l, old_quantity: h.operation === 'ADD' ? null : src.quantity, new_quantity: q,
+              old_unit: h.operation === 'ADD' ? null : 'KG', new_unit: h.operation === 'DELETE' ? null : (nc?.base_unit ?? BULK_COMPS[l.component_product_id]?.base_unit ?? 'KG'),
+              old_wastage: h.operation === 'ADD' ? null : 2, new_wastage: h.operation === 'DELETE' ? null : Number(l.wastage_percentage ?? 2), old_notes: null, new_notes: null,
+              validation_errors: [], warnings: [], result_bom_id: null, result_version: null }
+          })
+          const b = { id: `bcb${n}`, batch_number: `BCB-00000${n}`, operation: h.operation, status: 'DRAFT', title: h.title ?? null, reason: h.reason, effective_from: h.effective_from,
+            merge_duplicates: !!h.merge_duplicates, restores_batch_id: null, summary: { boms: new Set(lines.map((l) => l.source_bom_id)).size, boms_valid: lines.length, lines: lines.length, lines_with_errors: 0, lines_with_warnings: 0, products_with_errors: [] },
+            row_version: 1, last_error: null, created_at: NOW, created_by_name: 'Smoke Tester', submitted_at: null, approved_at: null, approval_note: null, rejected_at: null, rejection_reason: null, published_at: null,
+            lines, events: [] }
+          bulkEvent(b, 'CREATED', h.reason)
+          BULK.batches.push(b)
+          return send(res, 200, bulkDetail(b))
+        }
+        case 'bom_change_batch_get':
+        case 'bom_change_batch_validate': {
+          const b = BULK.batches.find((x) => x.id === body.p_batch_id)
+          return b ? send(res, 200, bulkDetail(b)) : send(res, 400, { code: 'P0001', message: 'Change batch not found in your company.' })
+        }
+        case 'bom_change_batch_action': {
+          const b = BULK.batches.find((x) => x.id === body.p_batch_id)
+          const next = { SUBMIT: 'PENDING_APPROVAL', APPROVE: 'APPROVED', REJECT: 'REJECTED', WITHDRAW: 'DRAFT', CANCEL: 'CANCELLED' }[body.p_action]
+          if (!b || !next) return send(res, 400, { code: 'P0001', message: 'Unknown action.' })
+          if (body.p_expected_version !== null && body.p_expected_version !== b.row_version) return send(res, 409, { code: '40001', message: 'This batch was changed by someone else. Reload it and try again.' })
+          b.status = next
+          if (next === 'PENDING_APPROVAL') b.submitted_at = NOW
+          if (next === 'APPROVED') { b.approved_at = NOW; b.approved_by_name = 'Smoke Tester' }
+          bulkEvent(b, { SUBMIT: 'SUBMITTED', APPROVE: 'APPROVED', REJECT: 'REJECTED', WITHDRAW: 'WITHDRAWN', CANCEL: 'CANCELLED' }[body.p_action], body.p_note)
+          return send(res, 200, bulkDetail(b))
+        }
+        case 'bom_change_batch_publish': {
+          const b = BULK.batches.find((x) => x.id === body.p_batch_id)
+          if (!b || b.status !== 'APPROVED') return send(res, 400, { code: 'P0001', message: 'Only an approved batch can be published.' })
+          BULK.published++
+          b.status = 'PUBLISHED'
+          b.published_at = NOW
+          b.lines.forEach((l) => { l.result_bom_id = `${l.source_bom_id}-v2`; l.result_version = 2 })
+          bulkEvent(b, 'PUBLISHED')
+          return send(res, 200, { ok: true, revisions: b.lines.map((l) => ({ bom_code: l.bom_code, from_version: 1, to_version: 2, bom_id: l.result_bom_id })), batch: bulkDetail(b) })
+        }
+        case 'bom_change_batches_list': {
+          const counts = {}
+          for (const b of BULK.batches) counts[b.status] = (counts[b.status] ?? 0) + 1
+          const rows = BULK.batches.filter((b) => !body.p_status || b.status === body.p_status).map((b) => ({ id: b.id, batch_number: b.batch_number, operation: b.operation, status: b.status, title: b.title,
+            reason: b.reason, effective_from: b.effective_from, summary: b.summary, created_at: b.created_at, created_by_name: 'Smoke Tester', submitted_at: b.submitted_at, approved_at: b.approved_at,
+            published_at: b.published_at, approved_by_name: b.approved_by_name ?? null, stale: false, last_error: null }))
+          return send(res, 200, { total: rows.length, counts, rows })
+        }
+        case 'bom_revision_log': {
+          const rows = BULK.batches.filter((b) => b.status === 'PUBLISHED').flatMap((b) => b.lines.map((l) => ({ bom_id: l.result_bom_id, bom_code: l.bom_code, version: 2, status: 'APPROVED', lifecycle: 'ACTIVE',
+            effective_from: b.effective_from, effective_to: null, finished_product_id: l.finished_product_id, sku: l.finished_sku, product_name: l.finished_name,
+            change_reason: `${b.batch_number} Replace: ${b.reason}`, review_note: null, created_at: NOW, approved_at: NOW, created_by_name: 'Smoke Tester', approved_by_name: 'Smoke Tester',
+            previous_bom_id: l.source_bom_id, item_count: 2, batch_id: b.id, batch_number: b.batch_number, batch_operation: b.operation })))
+          return send(res, 200, { total: rows.length, rows })
+        }
+        case 'support_phone_softphone_status':
+          return send(res, 200, SOFTPHONE_STATUS())
+        case 'support_call_context':
+          return send(res, 200, CALL_CONTEXT())
+        case 'support_call_note_add':
+          SOFT.notes.push(body.p_body)
+          return send(res, 200, `note${SOFT.notes.length}`)
+        case 'support_call_link_ticket':
+          SOFT.links.push([body.p_call, body.p_ticket])
+          return send(res, 200, null)
+        case 'support_call_analytics':
+          return has('support.view_reports') ? send(res, 200, CALL_ANALYTICS(body.p_from, body.p_to, body.p_group)) : send(res, 403, { code: '42501', message: 'requires support.view_reports' })
+        case 'support_call_lines':
+          return send(res, 200, has('support.reply') ? [{ id: 'pl1', agent_number: '0501234567', label: 'Desk', agent_name: 'Smoke Agent', presence: 'AVAILABLE', mine: true }] : [])
+        case 'support_call_list': {
+          const f = body.p ?? {}
+          const rows = PHONE_CALLS.filter((c) => (!f.direction || c.direction === f.direction) && (!f.status || c.status === f.status)
+            && (!f.search || JSON.stringify(c).toLowerCase().includes(String(f.search).toLowerCase()))).map((c) => ({ ...c, idem: undefined }))
+          return send(res, 200, { total: rows.length, rows: rows.slice(f.offset ?? 0, (f.offset ?? 0) + (f.limit ?? 25)) })
+        }
+        case 'support_call_detail':
+          return send(res, 200, PHONE_DETAIL(body.p_id))
+        case 'support_live_calls':
+          return send(res, 200, has('support.reply') ? PHONE_LIVE : [])
+        case 'support_phone_config_get':
+          return has('support.manage_integrations') ? send(res, 200, PHONE_CONFIG) : send(res, 403, { code: '42501', message: 'You are not allowed to perform this action (requires support.manage_integrations).' })
+        case 'support_phone_config_save':
+          if (body.p && ('api_token' in body.p || 'status' in body.p)) return send(res, 400, { code: 'P0001', message: 'Secrets are not accepted here.' })
+          Object.assign(PHONE_CONFIG.config, body.p)
+          return send(res, 200, PHONE_CONFIG)
+        case 'support_phone_agent_save':
+          return send(res, 200, 'pl1')
+        case 'support_acefone_replay':
+          PHONE_CONFIG.events[0].processing_result = 'PROCESSED'
+          PHONE_CONFIG.events[0].replay_count++
+          return send(res, 200, { result: 'PROCESSED', changed: false })
+        case 'support_phone_disconnect':
+          PHONE_CONFIG.config.is_enabled = false
+          PHONE_CONFIG.config.disconnected_at = new Date().toISOString()
+          return send(res, 200, null)
+        case 'support_email_config_get':
+          return has('support.manage_integrations') ? send(res, 200, GMAIL_CONFIG()) : send(res, 403, { code: '42501', message: 'You are not allowed to perform this action (requires support.manage_integrations).' })
+        case 'support_email_config_save':
+          if (body.p && ('refresh_token' in body.p || 'status' in body.p || 'password' in body.p)) return send(res, 400, { code: 'P0001', message: 'Passwords, tokens and secrets are never saved here.' })
+          return send(res, 200, GMAIL_CONFIG())
+        case 'support_email_templates_list':
+          return send(res, 200, [{ id: 'tpl1', name: 'Replacement', subject: 'Your replacement', body: 'We are sending a replacement today.', is_active: true, updated_at: NOW }])
+        case 'support_email_compose_context':
+          return send(res, 200, { configured: true, status: GMAIL.connected ? 'CONNECTED' : 'SETUP_REQUIRED', can_send: GMAIL.connected && has('support.reply'), mailbox: 'support@alton.example',
+            display_name: 'Alton Support', signature: 'Alton Support Team', mailbox_modify: false, max_attachment_mb: 10,
+            templates: [{ id: 'tpl1', name: 'Replacement', subject: 'Your replacement', body: 'We are sending a replacement today.' }] })
+        case 'support_email_thread':
+          return send(res, 200, body.p_conversation === 'sc-mail' ? GMAIL_THREAD : [])
+        case 'support_email_html':
+          return send(res, 200, '<p>The basin arrived <b>cracked</b>.</p><a href="https://example.com" target="_blank" rel="noopener noreferrer nofollow">order</a>')
+        case 'support_whatsapp_config_get':
+          return has('support.manage_integrations') ? send(res, 200, WA_CONFIG()) : send(res, 403, { code: '42501', message: 'You are not allowed to perform this action (requires support.manage_integrations).' })
+        case 'support_whatsapp_config_save':
+          if (body.p && ['access_token', 'app_secret', 'verify_token', 'setup_state'].some((k) => k in body.p)) return send(res, 400, { code: 'P0001', message: 'Secrets are never saved here.' })
+          return send(res, 200, WA_CONFIG())
+        case 'support_whatsapp_checklist_set':
+          if (body.p_done && !WA.checklist.includes(body.p_key)) WA.checklist.push(body.p_key)
+          return send(res, 200, WA_CONFIG())
+        case 'support_whatsapp_set_enabled':
+          if (body.p_enabled && WA.state !== 'CONNECTED') return send(res, 400, { code: 'P0001', message: 'WhatsApp cannot be switched on yet: the setup state is migration required.' })
+          WA.enabled = Boolean(body.p_enabled)
+          return send(res, 200, WA_CONFIG())
+        case 'support_whatsapp_event_replay':
+          return send(res, 200, { result: 'PROCESSED', messages: 1 })
+        case 'support_whatsapp_status_context':
+          return send(res, 200, { setup_state: WA.state, enabled: WA.enabled, display_phone_number: '+9118001234567', can_send: WA.enabled && has('support.reply') })
+        case 'support_whatsapp_thread':
+          return send(res, 200, body.p_conversation === 'sc-wa' ? WA_THREAD() : null)
+        case 'support_whatsapp_templates_list':
+          return send(res, 200, WA_TEMPLATES)
+        case 'support_automation_settings_get':
+          return has('support.view') ? send(res, 200, UNI_SETTINGS()) : send(res, 403, { code: '42501', message: 'requires support.view' })
+        case 'support_ticket_rules_save':
+          if (!has('support.manage_settings')) return send(res, 403, { code: '42501', message: 'requires support.manage_settings' })
+          UNI.rulesSaves.push(body.p)
+          return send(res, 200, UNI_SETTINGS())
+        case 'support_business_calendar_save':
+          UNI.calendarSaves.push(body.p)
+          return send(res, 200, UNI_SETTINGS())
+        case 'support_holiday_save': case 'support_escalation_level_save': case 'support_assignment_rule_save':
+          return send(res, 200, UNI_SETTINGS())
+        case 'support_sla_run_now':
+          return send(res, 200, { warnings: 1, breaches: 1, escalations: 0 })
+        case 'support_ticket_sla':
+          return send(res, 200, UNI_TICKET_SLA)
+        case 'support_reports_unified':
+          return has('support.view_reports') ? send(res, 200, UNI_REPORTS(body.p_from, body.p_to)) : send(res, 403, { code: '42501', message: 'requires support.view_reports' })
+        case 'support_integration_health':
+          return has('support.manage_integrations') ? send(res, 200, UNI_HEALTH()) : send(res, 403, { code: '42501', message: 'requires support.manage_integrations' })
+        case 'support_conversation_detail':
+          return send(res, 200, SUPPORT_CONVERSATION(body.p_id))
+        case 'support_conversation_create':
+          return send(res, 200, { id: 'sc2', message_id: 'm9', customer_id: null, match: 'AMBIGUOUS', candidates: [{ id: 'scu1', matched_on: ['phone'] }, { id: 'scu2', matched_on: ['phone'] }] })
+        case 'support_message_add':
+          if (body.p?.mode === 'REPLY') return send(res, 400, { code: 'P0001', message: 'Cannot reply through Whatsapp : the channel is setup required.', details: null, hint: null })
+          return send(res, 200, { id: 'm10', delivery_status: null })
+        case 'support_note_add':
+          return send(res, 200, 'n9')
+        case 'support_conversation_update': case 'support_conversation_assign': case 'support_conversation_set_tags': case 'support_conversation_mark_read':
+        case 'support_conversation_link_customer': case 'support_ticket_update': case 'support_ticket_assign': case 'support_ticket_merge': case 'support_ticket_reopen':
+        case 'support_ticket_link_conversation': case 'support_agent_set_presence':
+          return send(res, 200, null)
+        case 'support_ticket_list': {
+          const f = body.p ?? {}
+          const rows = SUPPORT_TICKETS.filter((t) => (!f.status || t.status === f.status) && (!f.statuses || f.statuses.includes(t.status)) && (!f.search || JSON.stringify(t).toLowerCase().includes(String(f.search).toLowerCase())))
+          return send(res, 200, { total: rows.length, rows })
+        }
+        case 'support_ticket_detail':
+          return send(res, 200, SUPPORT_TICKET_DETAIL(body.p_id))
+        case 'support_ticket_create':
+          return send(res, 200, { id: 'st9', ticket_number: 'ALT-SUP-000009' })
+        case 'support_customer_list':
+          return send(res, 200, { total: 1, rows: [{ id: 'scu1', customer_code: 'SC-000001', display_name: 'Ravi Kumar', company_name: null, phones: ['+91 98765 43210'], emails: [],
+            erp_customer_id: 'cu1', erp_customer_code: 'ACME', open_tickets: 1, conversations: 1, last_activity_at: NOW }] })
+        case 'support_customer_profile':
+          return send(res, 200, { customer: { id: 'scu1', customer_code: 'SC-000001', display_name: 'Ravi Kumar', company_name: null, phones: ['+91 98765 43210'], emails: [], address: null,
+              erp_customer_id: 'cu1', notes: null, created_at: NOW },
+            erp_customer: { id: 'cu1', customer_code: 'ACME', customer_name: 'Acme Ltd', contact_email: null, gstin: null, billing_address: null, status: 'ACTIVE' },
+            tickets: SUPPORT_TICKETS.map((t) => ({ id: t.id, ticket_number: t.ticket_number, subject: t.subject, status: t.status, priority: t.priority, channel: t.channel, created_at: t.created_at, sla_status: t.sla_status })),
+            conversations: [{ id: 'sc1', channel: 'WHATSAPP', subject: 'Cracked basin', status: 'OPEN', last_message_preview: 'Basin arrived cracked', last_activity_at: NOW }],
+            calls: [{ id: 'm1', conversation_id: 'sc2', direction: 'INBOUND', call_status: 'MISSED', duration_seconds: null, occurred_at: NOW, summary: null, source: 'MANUAL' }],
+            emails: [], notes: [], orders: [{ id: 'so1', number: 'SO-000001', order_date: TODAY, status: 'CONFIRMED', value: 118000 }], invoices: null })
+        case 'support_agent_workspace':
+          return send(res, 200, { agent: { id: 'sag1', user_id: MANAGER_ID, display_name: 'Smoke Agent', department: null, presence: 'AVAILABLE', is_active: true, max_open_conversations: 25 },
+            workload: { open_conversations: 1, unread: 2, open_tickets: 1, overdue_tickets: 0, capacity: 25 },
+            conversations: [{ id: 'sc1', channel: 'WHATSAPP', subject: 'Cracked basin', status: 'OPEN', priority: 'URGENT', customer_name: 'Ravi Kumar', unread_count: 2, last_activity_at: NOW }],
+            tickets: [{ id: 'st1', ticket_number: 'ALT-SUP-000001', subject: 'Cracked basin on delivery', status: 'OPEN', priority: 'URGENT', due_at: NOW, sla_status: 'AT_RISK' }],
+            performance: { resolved: 1, avg_resolution_minutes: 200, avg_first_response_minutes: 42, sla_met: 1, sla_breached: 0, csat_avg: 5 },
+            activity: [{ id: 'al1', action: 'tickets.insert', entity_type: 'tickets', entity_id: 'st1', details: {}, at: NOW }] })
+        case 'support_channel_account_save':
+          return send(res, 200, { id: 'sca2', channel: body.p?.channel ?? 'EMAIL', display_name: body.p?.display_name, status: 'SETUP_REQUIRED' })
         case 'gst_exclusive_dashboard':
           return send(res, 200, EXCL_GST(body.p_scope))
         case 'erp_settings_get':
@@ -4031,7 +4542,7 @@ await step('Charts: Inventory by Category with 5, 15, 30, 50 and 100 categories,
 })
 
 await step('Cost intelligence: BOM list cost columns (INR, dash for non-approved, sortable, tooltips, Recalculate); Product Master Cost Intelligence section, sourcing suggestion and Cost History', async () => {
-  await goto('/production/boms?status=ALL')
+  await goto('/production/boms?status=ALL&versions=all')
   await waitFor(`!!document.querySelector('[data-testid=bom-cost-bom1]')`, 'BOM cost column')
   const heads = await evaluate(`[...document.querySelectorAll('th')].map((h) => h.innerText.trim().toLowerCase())`)
   for (const h of ['bom cost / unit', 'product master cost', 'cost difference', 'cost updated']) assert(heads.includes(h), `missing column ${h}: ${heads.join(', ')}`)
@@ -4102,7 +4613,8 @@ await step('BOM import: reachable from the BOM list; template and upload are off
 })
 
 await step('BOM planning & classification: list columns, filters, sort and Excel export with the six fields', async () => {
-  await goto('/production/boms')
+  // Both versions of the mock product are exported, so the list shows all versions (default: one row per product).
+  await goto('/production/boms?versions=all')
   await waitFor(bodyHasAllCI('Product type', 'Group head', 'Lead time', 'Min. stock days', 'Sanitaryware', '12 d', '15 d'), 'planning columns')
   assert(await evaluate(`Boolean(document.querySelector('[aria-label="Product type filter"]')) && Boolean(document.querySelector('[aria-label="Group head filter"]'))`), 'filters missing')
   for (const f of readdirSync(downloadDir)) rmSync(path.join(downloadDir, f), { force: true })
@@ -5010,6 +5522,7 @@ await step('navigation: every sidebar link opens a page (no 404, no crash)', asy
   assert(broken.length === 0, `broken links: ${broken.join(', ')}`)
   // Exactly the eight approved modules in the sidebar.
   await goto('/')
+  await waitFor(`document.querySelectorAll('aside nav > div button[aria-expanded], aside nav > div p').length >= 9`, 'sidebar groups')
   const groups = await evaluate(`[...document.querySelectorAll('aside nav > div')].map((d) => (d.querySelector('button[aria-expanded], p')?.innerText ?? '').trim().toLowerCase())`)
   assert(groups.join('|') === ['Management Dashboard', 'Product Master & BOM', 'Inventory Management', 'Purchase & GRN', 'Production & Outsourcing', 'Sales & Orders', 'Billing & Invoicing', 'Ledger', 'Reports & Settings'].join('|').toLowerCase(), groups.join('|'))
   assert(!(await evaluate(bodyHas('Not built'))), '"Not built" label shown')
@@ -7183,6 +7696,627 @@ await step('Password reset 7: on a phone the six boxes fit without horizontal sc
   await signOut()
   await login('manager@test.invalid')
   await waitFor(`location.pathname === '/'`, 'normal sign-in still works')
+})
+
+await step('Support Centre: navigation, overview, inbox (honest channel status, log a call, notes, restricted recording), tickets (validation, create, detail), customers, channel pages, settings, reports, workspace; denied without support access', async () => {
+  Object.assign(tables, {
+    support_agents: [{ id: 'sag1', company_id: COMPANY_ID, user_id: MANAGER_ID, display_name: 'Smoke Agent', department: 'Customer care', presence: 'AVAILABLE', is_active: true, max_open_conversations: 25 }],
+    support_tags: [{ id: 'stag1', company_id: COMPANY_ID, name: 'Damage', color: 'danger' }],
+    support_sla_policies: [{ id: 'ssla1', company_id: COMPANY_ID, name: 'Urgent', priority: 'URGENT', first_response_minutes: 15, resolution_minutes: 240, is_active: true }],
+    support_channel_accounts: [{ id: 'sca1', company_id: COMPANY_ID, channel: 'WHATSAPP', display_name: 'Alton WhatsApp', identifier: '+91 90000 00000', provider: 'WhatsApp Cloud API',
+      credentials_ref: 'WHATSAPP_CLOUD_TOKEN', status: 'SETUP_REQUIRED', status_detail: null, last_checked_at: null, connected_at: null, is_active: true }],
+    support_integration_events: [{ id: 'sie1', company_id: COMPANY_ID, channel_account_id: 'sca1', event_type: 'ACCOUNT_CREATED', status: 'SETUP_REQUIRED', message: 'Account created from the app', created_at: NOW }],
+    support_automation_rules: [{ id: 'sar1', company_id: COMPANY_ID, name: 'Breakage is urgent', trigger: 'TICKET_CREATED', conditions: { subject_contains: 'cracked' }, actions: { set_priority: 'URGENT' },
+      run_order: 100, is_active: true, run_count: 3, last_run_at: NOW }],
+    support_kb_articles: [{ id: 'skb1', company_id: COMPANY_ID, title: 'Replacing a damaged basin', body: 'Ask for photos, then raise a replacement.', category: 'Damage', tags: ['damage'], status: 'PUBLISHED', updated_at: NOW }],
+  })
+  const SUPPORT_PERMS = ['support.view', 'support.manage_tickets', 'support.assign', 'support.reply', 'support.manage_integrations', 'support.view_reports', 'support.manage_settings']
+  USERS['manager@test.invalid'].permissions.push(...SUPPORT_PERMS)
+  try {
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+
+    // Navigation: the new section with its eleven pages.
+    await goto('/support/overview')
+    await waitFor(bodyHasAll('Support Overview', 'Total tickets', 'Open tickets', 'Unassigned tickets', 'Pending customer responses', 'Resolved tickets', 'Overdue SLA tickets',
+      'Today’s incoming calls', 'Missed calls', 'WhatsApp conversations', 'Incoming emails', 'Average first response', 'Average resolution time', 'Customer satisfaction'), 'overview figures')
+    const links = await evaluate(`[...document.querySelectorAll('aside a[href^="/support/"]')].map((a) => a.getAttribute('href'))`)
+    assert(links.length === 11, `support links: ${links}`)
+    await waitFor(bodyHasAll('Tickets by channel', 'Ticket status', 'Daily ticket volume', 'Agent performance', 'SLA compliance', 'Resolution time'), 'overview charts')
+    // Channel status exactly as the server reports it: nothing shown as Connected.
+    assert(await evaluate(`document.querySelector('[data-testid=channel-WHATSAPP]').dataset.status === 'SETUP_REQUIRED' && document.querySelector('[data-testid=channel-PHONE]').dataset.status === 'NOT_CONNECTED'`), 'channel status')
+    assert(!(await evaluate(`[...document.querySelectorAll('[data-testid=channel-status] [data-status]')].some((e) => e.innerText.trim() === 'Connected')`)), 'a channel is shown as connected')
+    for (const label of ['Today', 'Yesterday', 'This Week', 'This Month']) await click('[aria-label="Date range"] button', label)
+    for (let i = 0; i < 30 && rpcCalls('support_overview').at(-1)?.body.p_from !== `${TODAY.slice(0, 7)}-01`; i++) await sleep(100)
+    await screenshot('220-support-overview')
+
+    // Inbox: list, conversation, reply blocked (not connected), log activity, internal note, restricted recording.
+    await goto('/support/inbox')
+    await waitFor(`!!document.querySelector('[data-testid=conversation-sc1]')`, 'inbox list')
+    assert(await evaluate(bodyHasAll('All', 'Phone', 'WhatsApp', 'Email', 'Unassigned', 'My conversations', 'Open', 'Pending', 'Resolved')), 'inbox filters')
+    await click('[aria-label="Inbox filter"] button', 'Unassigned')
+    for (let i = 0; i < 30 && rpcCalls('support_inbox').at(-1)?.body.p_view !== 'UNASSIGNED'; i++) await sleep(100)
+    assert(rpcCalls('support_inbox').at(-1).body.p_view === 'UNASSIGNED', 'filter sent to the server')
+    await click('[aria-label="Inbox filter"] button', 'All')
+    await fill('input[aria-label="Search conversations"]', 'cracked')
+    for (let i = 0; i < 30 && rpcCalls('support_inbox').at(-1)?.body.p_search !== 'cracked'; i++) await sleep(100)
+    assert(rpcCalls('support_inbox').at(-1).body.p_search === 'cracked', 'search runs on the server')
+    await click('[data-testid=conversation-sc1]')
+    await waitFor(`!!document.querySelector('[data-testid=conversation-pane]') && !!document.querySelector('[data-testid=timeline]')`, 'conversation')
+    assert(await evaluate(`document.querySelector('[data-testid=pane-channel-status]').dataset.status === 'SETUP_REQUIRED'`), 'pane channel status')
+    // Opens on Log activity because WhatsApp cannot send yet; the Reply tab explains why.
+    await click('[data-testid=composer] button', 'Reply')
+    await waitFor(`document.querySelector('[data-testid=reply-blocked]')?.innerText.includes('setup required')`, 'reply blocked while not connected')
+    assert(await evaluate(bodyHasAll('logged manually', 'Internal note', 'Call recording — restricted', 'ALT-SUP-000001', 'Ravi Kumar')), 'timeline and links')
+    assert(rpcCalls('support_conversation_mark_read').length > 0, 'unread conversation marked read')
+    await click('[data-testid=composer] button', 'Log activity')
+    await fill('textarea[aria-label="Message"]', 'Told the customer a replacement is on the way')
+    await click('[data-testid=composer-send]')
+    for (let i = 0; i < 30 && !rpcCalls('support_message_add').length; i++) await sleep(100)
+    assert(rpcCalls('support_message_add').at(-1).body.p.mode === 'LOG', 'logged, not sent')
+    await click('[data-testid=composer] button', 'Internal note')
+    await fill('textarea[aria-label="Internal note"]', 'Replacement booked')
+    await click('[data-testid=composer-send]')
+    for (let i = 0; i < 30 && !rpcCalls('support_note_add').length; i++) await sleep(100)
+    assert(rpcCalls('support_note_add').at(-1).body.p_target === 'CONVERSATION', 'note added')
+    await screenshot('221-support-inbox')
+
+    // Ambiguous customer: both candidates offered, nothing merged.
+    await fill('input[aria-label="Search conversations"]', '')
+    await waitFor(`!!document.querySelector('[data-testid=conversation-sc2]')`, 'full list again')
+    await click('[data-testid=conversation-sc2]')
+    await waitFor(`document.querySelector('[data-testid=unlinked-customer]')?.innerText.includes('Several customers match')`, 'ambiguous match')
+    // Log a conversation: validation, then the call.
+    await click('[data-testid=log-conversation]')
+    await waitFor(bodyHas('Log a conversation'), 'log dialog')
+    await click('[role=dialog] button[type=submit]', 'Log conversation')
+    await waitFor(bodyHas('Choose the customer, or enter their phone number or email address.'), 'log validation')
+    await fill('#lg-phone', '+91 98765 43210')
+    await click('[role=dialog] button[type=submit]', 'Log conversation')
+    await waitFor(`document.querySelector('[data-testid=inbox-notice]')?.innerText.includes('2 customers share this phone')`, 'logged, ambiguous match explained')
+    assert(rpcCalls('support_conversation_create').at(-1).body.p.call_status === 'ANSWERED', 'call logged')
+
+    // Tickets: filters, validation, create, detail.
+    await goto('/support/tickets')
+    await waitFor(`!!document.querySelector('[data-testid=tickets-table]') && ${bodyHas('ALT-SUP-000001')}`, 'tickets')
+    await choose('[aria-label="Statuses"]', 'Resolved')
+    for (let i = 0; i < 30 && rpcCalls('support_ticket_list').at(-1)?.body.p.status !== 'RESOLVED'; i++) await sleep(100)
+    assert(rpcCalls('support_ticket_list').at(-1).body.p.status === 'RESOLVED', 'status filter sent')
+    await click('[data-testid=new-ticket]')
+    await waitFor(bodyHas('New ticket'), 'ticket dialog')
+    await click('[role=dialog] button[type=submit]', 'Create ticket')
+    await waitFor(bodyHasAll('Enter a subject (at least 3 characters).', 'Choose the customer or enter their phone number or email address.'), 'ticket validation')
+    await fill('#tk-subject', 'Tap leaking')
+    await fill('#tk-email', 'anita@shah.example')
+    await click('[role=dialog] button[type=submit]', 'Create ticket')
+    await waitFor(`location.pathname === '/support/tickets/st9'`, 'opens the new ticket')
+    await waitFor(bodyHasAll('ALT-SUP-000009', 'Work on this ticket', 'Activity history', 'Internal notes', 'Attachments'), 'ticket detail')
+    await screenshot('222-support-ticket')
+
+    // Customers and profile.
+    await goto('/support/customers')
+    await waitFor(`!!document.querySelector('[data-testid=customers-table]')`, 'customers')
+    await goto('/support/customers/scu1')
+    await waitFor(bodyHasAll('Contact details', 'ERP customer', 'Acme Ltd', 'Tickets', 'Calls', 'Sales orders', 'SO-000001'), 'customer profile')
+
+    // Channel pages ask the server for their channel only.
+    for (const [path, channel] of [['/support/calls?tab=conversations', 'PHONE'], ['/support/whatsapp', 'WHATSAPP'], ['/support/emails', 'EMAIL']]) {
+      await goto(path)
+      for (let i = 0; i < 30 && rpcCalls('support_inbox').at(-1)?.body.p_channel !== channel; i++) await sleep(100)
+      assert(rpcCalls('support_inbox').at(-1).body.p_channel === channel, `${path} channel`)
+    }
+
+    // Settings: channel accounts show the server's status; the form has no status field.
+    await goto('/support/settings?tab=channels')
+    await waitFor(`!!document.querySelector('[data-testid=channel-accounts]') && ${bodyHas('Setup Required')}`, 'channel accounts')
+    await click('button', 'Add channel account')
+    await waitFor(bodyHas('Saving never connects the channel'), 'account dialog')
+    assert(!(await evaluate(`[...document.querySelectorAll('[role=dialog] label')].some((l) => /status/i.test(l.innerText))`)), 'status editable')
+    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' })
+    for (const page of ['/support/knowledge-base', '/support/automation', '/support/reports', '/support/workspace']) {
+      await goto(page)
+      await waitFor(bodyHasAll(...({ '/support/knowledge-base': ['Replacing a damaged basin'], '/support/automation': ['Breakage is urgent', 'subject contains'],
+        '/support/reports': ['Agent performance', 'Export Excel'], '/support/workspace': ['My conversations', 'My tickets', 'My activity'] })[page]), page)
+    }
+    await screenshot('223-support-workspace')
+    // Phone width: no horizontal scroll on the inbox.
+    await setViewport(390, 844)
+    await goto('/support/inbox')
+    await waitFor(`!!document.querySelector('[data-testid=inbox-list]')`, 'mobile inbox')
+    assert(await noHorizontalScroll(), 'mobile inbox scrolls horizontally')
+    await cdp('Emulation.clearDeviceMetricsOverride')
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !SUPPORT_PERMS.includes(x))
+  }
+  // A role without support access sees no section and is refused.
+  await signOut().catch(() => {})
+  await login('viewer@test.invalid')
+  await waitFor(`location.pathname !== '/login'`, 'viewer signed in')
+  await goto('/support/inbox')
+  await waitFor(bodyHas('Access denied'), 'support refused without support.view')
+  assert(!(await evaluate(`!!document.querySelector('aside a[href^="/support/"]')`)), 'support section shown without access')
+})
+
+await step('Support telephony (Acefone): call button shows Initiated (never Connected), one request per dialog, incoming-call panel, call log and detail, Phone settings without secret values', async () => {
+  const PHONE_PERMS = ['support.view', 'support.manage_tickets', 'support.assign', 'support.reply', 'support.manage_integrations', 'support.view_reports', 'support.manage_settings']
+  USERS['manager@test.invalid'].permissions.push(...PHONE_PERMS)
+  const fnCalls = (action) => requests.filter((r) => r.path === '/functions/v1/acefone-click-to-call' && r.body?.action === action)
+  try {
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+
+    // Outgoing: the call button beside the customer's number.
+    await goto('/support/customers/scu1')
+    await waitFor(`!!document.querySelector('[data-testid=call-button]')`, 'call button on the profile')
+    const before = fnCalls('call').length
+    await click('[data-testid=call-button]', 'Call')
+    await waitFor(`!!document.querySelector('[data-testid=place-call]') && ${bodyHas('Desk')}`, 'call dialog with the agent line')
+    await evaluate(`(() => { const b = document.querySelector('[data-testid=place-call]'); b.click(); b.click(); b.click() })()`)
+    await waitFor(`document.querySelector('[data-testid=call-progress] [data-status]')?.dataset.status === 'INITIATED'`, 'status Initiated after the request is accepted')
+    await sleep(3500) // one poll of the call status
+    assert(fnCalls('call').length - before === 1, `repeated clicks placed ${fnCalls('call').length - before} requests`)
+    const req = fnCalls('call').at(-1).body
+    assert(req.idempotency_key && req.line_id === 'pl1' && req.number === '+91 98765 43210' && req.customer_id === 'scu1', `call request: ${JSON.stringify(req)}`)
+    assert(await evaluate(`document.querySelector('[data-testid=call-progress] [data-status]').dataset.status === 'INITIATED'`), 'status changed without a provider event')
+    assert(!(await evaluate(`document.querySelector('[role=dialog]').innerText.includes('Connected')`)), 'Connected shown although only the request was accepted')
+    await screenshot('230-support-call-initiated')
+    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' })
+
+    // Incoming: the panel shows the matched customer, open tickets and previous interactions.
+    PHONE_LIVE = [{ id: 'call9', direction: 'INBOUND', status: 'RINGING', number: '+919876543210', started_at: NOW, conversation_id: 'sc1', agent_name: null,
+      customer: { id: 'scu1', customer_code: 'SC-000001', display_name: 'Ravi Kumar', company_name: null }, candidates: 1,
+      open_tickets: [{ id: 'st1', ticket_number: 'TKT-000001', subject: 'Cracked basin', status: 'OPEN' }], previous_calls: 2, previous_conversations: 3 },
+      { id: 'call10', direction: 'INBOUND', status: 'RINGING', number: '+919811111111', started_at: NOW, conversation_id: 'sc2', agent_name: null, customer: null, candidates: 0,
+        open_tickets: [], previous_calls: 0, previous_conversations: 0 }]
+    await goto('/support/overview')
+    await waitFor(`!!document.querySelector('[data-testid=incoming-call9]')`, 'incoming call panel')
+    const panel = await evaluate(`document.querySelector('[data-testid=incoming-calls]').innerText`)
+    for (const t of ['Ravi Kumar', 'SC-000001', 'TKT-000001', '3 conversation(s), 2 earlier call(s)', 'Unknown caller', 'No customer has this number.', 'New customer', 'New ticket'])
+      assert(panel.includes(t), `incoming panel missing "${t}"`)
+    await screenshot('231-support-incoming-call')
+    PHONE_LIVE = []
+
+    // Call log and detail.
+    await goto('/support/calls')
+    await waitFor(`!!document.querySelector('[data-testid=call-log]')`, 'call log')
+    assert(await evaluate(bodyHasAll('Incoming', 'Outgoing', 'Missed', 'Completed', 'TKT-000001')), 'call log rows')
+    await goto('/support/calls/call2')
+    await waitFor(`!!document.querySelector('[data-testid=call-detail]')`, 'call detail')
+    assert(await evaluate(bodyHasAll('Ring duration', 'Talk duration', 'Acefone reference (ref_id)', 'REF-1', 'TKT-000001', 'Ravi Kumar', 'Status history')), 'call detail fields')
+    assert(await evaluate(`document.querySelector('[data-testid=call-recording]').innerText.includes('copied here only when recording retrieval is enabled')`), 'recording state')
+    assert(!(await evaluate(`document.body.innerHTML.includes('recording_url') || document.body.innerHTML.includes('token=')`)), 'a recording link was shown')
+
+    // Settings > Phone: secret status only, never a value; webhook URLs carry a placeholder.
+    await goto('/support/settings?tab=phone')
+    await waitFor(`!!document.querySelector('[data-testid=phone-settings]') && !!document.querySelector('[data-testid=secret-api_token]')`, 'phone settings')
+    await waitFor(`document.querySelector('[data-testid=secret-api_token]').innerText.includes('Configured') && document.querySelector('[data-testid=secret-support_api_key]').innerText.includes('Not set')`, 'secret status')
+    assert(await evaluate(bodyHasAll('Acefone / Servetel', 'Toll-free number', 'API base URL', 'Click-to-Call mode', 'Agent telephony settings', '0501234567', 'Last successful event', 'Last call-record sync', 'Test connection', 'Replace secret', 'Disconnect')), 'phone settings fields')
+    assert(await evaluate(`[...document.querySelectorAll('[data-testid=webhook-urls] code')].every((c) => c.innerText.includes('token=<ACEFONE_WEBHOOK_SECRET>') && c.innerText.includes('account=sca-phone'))`), 'webhook URL placeholder')
+    assert(!(await evaluate(`[...document.querySelectorAll('input')].some((i) => i.type === 'password' || /token|secret|key/i.test(i.id))`)), 'a secret input is on the page')
+    await click('[data-testid=secret-api_token] button', 'Replace secret')
+    await waitFor(bodyHas('npx supabase secrets set ACEFONE_API_TOKEN=<new value>'), 'replace instructions')
+    await click('[role=dialog] button', 'Done')
+    await click('button', 'Test connection')
+    await waitFor(`document.querySelector('[data-testid=phone-notice]')?.innerText.includes('1 call record readable')`, 'test connection')
+    await click('[data-testid=phone-events] button', 'Replay')
+    await waitFor(`document.querySelector('[data-testid=phone-notice]')?.innerText.includes('Replayed: processed')`, 'replay')
+    await screenshot('232-support-phone-settings')
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PHONE_PERMS.includes(x))
+  }
+  // Without integration access the Phone tab is absent.
+  await signOut().catch(() => {})
+  await login('viewer@test.invalid')
+  await waitFor(`location.pathname !== '/login'`, 'viewer signed in')
+  await goto('/support/settings?tab=phone')
+  await sleep(800)
+  assert(!(await evaluate(`!!document.querySelector('[data-testid=phone-settings]')`)), 'phone settings shown without access')
+})
+
+await step('Support email (Gmail): Settings > Email connect / status without secrets, error return, email thread with sanitised view and attachments, reply threading, Pending / Failed / Sent never faked, one send per dialog', async () => {
+  const PERMS = ['support.view', 'support.manage_tickets', 'support.assign', 'support.reply', 'support.manage_integrations', 'support.view_reports', 'support.manage_settings']
+  USERS['manager@test.invalid'].permissions.push(...PERMS)
+  const mailConv = supportConv('sc-mail', 'EMAIL', { subject: 'Cracked basin', customer_id: 'scu1', last_message_preview: 'The basin arrived cracked.' })
+  SUPPORT_INBOX.push(mailConv)
+  const emailChannel = SUPPORT_CHANNELS.find((c) => c.channel === 'EMAIL')
+  const before = emailChannel.status
+  try {
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+
+    // Settings > Email: provider, mailbox, server secret status (never values), redirect URI and push endpoint with a placeholder.
+    GMAIL.connected = false
+    await goto('/support/settings?tab=email')
+    await waitFor(`!!document.querySelector('[data-testid=email-settings]') && !!document.querySelector('[data-testid=gsecret-client_secret]')`, 'email settings')
+    await waitFor(`document.querySelector('[data-testid=gsecret-client_secret]').innerText.includes('Configured') && document.querySelector('[data-testid=gsecret-push_oidc]').innerText.includes('Not set')`, 'secret status')
+    assert(await evaluate(bodyHasAll('Email: Google Workspace (Gmail)', 'Shared support mailbox', 'Connect Google Workspace', 'GOOGLE_OAUTH_CLIENT_SECRET', 'Authorised redirect URI', 'Pub/Sub push endpoint', 'gmail.readonly, gmail.send')), 'email settings content')
+    assert(await evaluate(`document.querySelector('[data-testid=email-status] [data-status], [data-testid=email-status]')?.innerText.includes('Setup Required')`), 'not connected before OAuth')
+    assert(await evaluate(`[...document.querySelectorAll('[data-testid=google-urls] code')].some((c) => c.innerText.includes('token=<GMAIL_PUSH_TOKEN>'))`), 'push URL placeholder')
+    assert(!(await evaluate(`[...document.querySelectorAll('input')].some((i) => i.type === 'password' || /secret|token|password/i.test(i.id))`)), 'a password / secret input is on the page')
+    await screenshot('240-support-email-settings')
+
+    // Connect: the server builds the Google URL; the (mock) callback sends the browser back with gmail=connected.
+    await click('[data-testid=connect-google]', 'Connect Google Workspace')
+    await waitFor(`document.querySelector('[data-testid=email-notice]')?.innerText.includes('Google Workspace connected')`, 'connected notice')
+    await waitFor(`!location.search.includes('gmail=')`, 'return parameters removed')
+    assert(GMAIL.startCalls === 1, 'start called')
+    await waitFor(bodyHas('Connected as support@alton.example.'), 'connected status from the server')
+    await click('[data-testid=email-events] button', 'Replay')
+    await waitFor(`document.querySelector('[data-testid=email-notice]')?.innerText.includes('Replayed')`, 'replay')
+    // An error return explains the reason.
+    await goto('/support/settings?tab=email&gmail=error&reason=wrong_mailbox')
+    await waitFor(`document.querySelector('[data-testid=email-notice]')?.innerText.includes('another Google account than the support mailbox')`, 'error reason')
+
+    // Email conversation: thread with headers, attachments (blocked one listed), sanitised formatted view in a sandbox.
+    emailChannel.status = 'CONNECTED'
+    await goto('/support/emails?c=sc-mail')
+    await waitFor(`!!document.querySelector('[data-testid=email-em1]')`, 'email thread')
+    assert(await evaluate(bodyHasAll('Cracked basin', 'Ravi Kumar <ravi@customer.example>', 'Cc: boss@customer.example', 'photo.jpg', 'setup.exe: not stored (blocked type)')), 'email card content')
+    await click('[data-testid=email-toggle-format]', 'Formatted view')
+    await waitFor(`!!document.querySelector('[data-testid=email-html-frame]')`, 'formatted frame')
+    const frame = await evaluate(`(() => { const f = document.querySelector('[data-testid=email-html-frame]'); return { sandbox: f.getAttribute('sandbox'), doc: f.getAttribute('srcdoc') } })()`)
+    assert(frame.sandbox === 'allow-popups allow-popups-to-escape-sandbox' && !frame.sandbox.includes('allow-scripts') && !frame.sandbox.includes('allow-same-origin'), `sandbox: ${frame.sandbox}`)
+    assert(frame.doc.includes("default-src 'none'") && frame.doc.includes('<b>cracked</b>') && !/<script/i.test(frame.doc), 'frame content')
+    await screenshot('241-support-email-thread')
+
+    // Reply: recipients from the email, subject kept for threading; the result is Pending until Gmail confirms.
+    GMAIL.sendOutcome = 'PENDING'
+    const sendsBefore = GMAIL.sendCalls.length
+    await click('[data-testid=email-em1] button', 'Reply all')
+    await waitFor(`!!document.querySelector('[data-testid=email-compose]') && document.querySelector('#em-to')?.value === 'ravi@customer.example'`, 'reply dialog')
+    assert(await evaluate(`document.querySelector('#em-cc').value === 'boss@customer.example' && document.querySelector('#em-subject').value === 'Re: Cracked basin' && document.querySelector('#em-subject').disabled`), 'reply all recipients and subject')
+    await fill('#em-body', 'We are sending a replacement.')
+    await evaluate(`(() => { const b = document.querySelector('[data-testid=email-send]'); b.click(); b.click(); b.click() })()`)
+    await waitFor(`document.querySelector('[data-testid=email-send-result]')?.dataset.state === 'PENDING'`, 'pending result')
+    await sleep(500)
+    assert(GMAIL.sendCalls.length - sendsBefore === 1, `repeated clicks sent ${GMAIL.sendCalls.length - sendsBefore} requests`)
+    const req = GMAIL.sendCalls.at(-1)
+    assert(req.mode === 'REPLY_ALL' && req.reply_to_email_id === 'em1' && req.include_signature === true && /^[0-9a-f-]{36}$/.test(req.idempotency_key) && req.subject === undefined, `send request: ${JSON.stringify(req)}`)
+    assert(!(await evaluate(`document.querySelector('[data-testid=email-compose]').innerText.includes('Sent: Gmail accepted')`)), 'shown as sent')
+    await screenshot('242-support-email-pending')
+    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' })
+
+    // New email from the Emails page: Failed is shown as Failed (with Try again), then Sent only when Gmail accepted.
+    GMAIL.sendOutcome = 'FAILED'
+    await click('[data-testid=new-email]', 'New email')
+    await waitFor(`!!document.querySelector('[data-testid=email-compose]') && !!document.querySelector('#em-to')`, 'new email dialog')
+    await fill('#em-to', 'not-an-address')
+    await fill('#em-subject', 'Your replacement')
+    await fill('#em-body', 'Dispatched today.')
+    await click('[data-testid=email-send]', 'Send')
+    await waitFor(bodyHas('Not an email address: not-an-address'), 'recipient validation')
+    await fill('#em-to', 'ravi@customer.example')
+    await click('[data-testid=email-send]', 'Send')
+    await waitFor(`document.querySelector('[data-testid=email-send-result]')?.dataset.state === 'FAILED'`, 'failed result')
+    assert(await evaluate(bodyHasAll('Gmail refused the message', 'Try again')), 'failure shown')
+    GMAIL.sendOutcome = 'SENT'
+    await click('[data-testid=email-compose] button', 'Try again')
+    const keyBefore = GMAIL.sendCalls.at(-1).idempotency_key
+    await click('[data-testid=email-send]', 'Send')
+    await waitFor(`document.querySelector('[data-testid=email-send-result]')?.dataset.state === 'SENT'`, 'sent result')
+    assert(GMAIL.sendCalls.at(-1).idempotency_key !== keyBefore && GMAIL.sendCalls.at(-1).mode === 'NEW', 'try again uses a new request key')
+    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' })
+
+    // Not connected: composing is refused with the reason, nothing is sent.
+    GMAIL.connected = false
+    const n = GMAIL.sendCalls.length
+    await click('[data-testid=new-email]', 'New email')
+    await waitFor(`!!document.querySelector('[data-testid=email-blocked]')`, 'blocked when not connected')
+    assert(GMAIL.sendCalls.length === n, 'sent while not connected')
+    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' })
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+    SUPPORT_INBOX.splice(SUPPORT_INBOX.indexOf(mailConv), 1)
+    emailChannel.status = before
+    GMAIL.connected = false
+  }
+})
+
+await step('Support WhatsApp (Meta Cloud API): Settings > WhatsApp preflight and checklist block activation, secrets never shown, statuses only from Meta, 24-hour window, approved templates only, one send per click', async () => {
+  const PERMS = ['support.view', 'support.manage_tickets', 'support.assign', 'support.reply', 'support.manage_integrations', 'support.view_reports', 'support.manage_settings']
+  USERS['manager@test.invalid'].permissions.push(...PERMS)
+  const waConv = supportConv('sc-wa', 'WHATSAPP', { subject: null, customer_id: 'scu1', last_message_preview: 'The basin arrived cracked' })
+  SUPPORT_INBOX.push(waConv)
+  const waChannel = SUPPORT_CHANNELS.find((c) => c.channel === 'WHATSAPP')
+  const before = waChannel.status
+  try {
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+
+    // Settings: the number goes through a provider (current Zoho Bigin connection) → Migration Required; switching on is blocked.
+    WA.state = 'MIGRATION_REQUIRED'; WA.enabled = false
+    await goto('/support/settings?tab=whatsapp')
+    await waitFor(`!!document.querySelector('[data-testid=wa-settings]') && !!document.querySelector('[data-testid=wa-secret-verify_token]')`, 'whatsapp settings')
+    assert(await evaluate(`document.querySelector('[data-testid=wa-setup]').dataset.state === 'MIGRATION_REQUIRED' && document.querySelector('[data-testid=wa-enable]').disabled`), 'activation not blocked')
+    assert(await evaluate(bodyHasAll('Meta Business Portfolio ID', 'WhatsApp Business Account ID', 'Phone Number ID', 'Display phone number', 'App ID', 'Graph API version',
+      'Last inbound message', 'Last successful outbound message', 'Last webhook event', 'Test connection', 'WHATSAPP_APP_SECRET', 'WHATSAPP_ACCESS_TOKEN', 'Onboarding checklist',
+      'Connected through a Business Solution Provider')), 'whatsapp settings content')
+    await waitFor(`document.querySelector('[data-testid=wa-secret-verify_token]').innerText.includes('Not set') && document.querySelector('[data-testid=wa-secret-app_secret]').innerText.includes('Configured')`, 'secret status')
+    assert(await evaluate(`document.querySelector('[data-testid=wa-webhook] code').innerText.includes('whatsapp-webhook?account=sca-wa')`), 'callback URL')
+    assert(!(await evaluate(`[...document.querySelectorAll('input')].some((i) => i.type === 'password' || /secret|token/i.test(i.id))`)), 'a secret input is on the page')
+    await fill('[data-testid=wa-check-migration_completed] input', 'Meta case 123, 2026-11-13')
+    await click('[data-testid=wa-check-migration_completed] button[role=checkbox]')
+    for (let i = 0; i < 30 && !requests.some((r) => r.path === '/rest/v1/rpc/support_whatsapp_checklist_set'); i++) await sleep(100)
+    const ck = requests.filter((r) => r.path === '/rest/v1/rpc/support_whatsapp_checklist_set').at(-1)
+    assert(ck && ck.body.p_key === 'migration_completed' && ck.body.p_done === true && ck.body.p_note === 'Meta case 123, 2026-11-13', `checklist request: ${JSON.stringify(ck?.body)}`)
+    await click('button', 'Test connection')
+    await waitFor(`document.querySelector('[data-testid=wa-settings-notice]')?.innerText.includes('on the Cloud API')`, 'test connection')
+    await screenshot('250-support-whatsapp-settings')
+
+    // Ready (Connected) → switch on.
+    WA.state = 'CONNECTED'
+    await goto('/support/settings?tab=whatsapp')
+    await waitFor(`document.querySelector('[data-testid=wa-enable]') && !document.querySelector('[data-testid=wa-enable]').disabled`, 'enable available')
+    await click('[data-testid=wa-enable]')
+    await waitFor(`document.querySelector('[data-testid=wa-settings-notice]')?.innerText.includes('switched on')`, 'switched on')
+    assert(WA.enabled, 'not enabled')
+
+    // Conversation: statuses from Meta, failed reason, media to download, location, window open.
+    waChannel.status = 'CONNECTED'
+    WA.windowOpen = true
+    await goto('/support/whatsapp?c=sc-wa')
+    await waitFor(`!!document.querySelector('[data-testid=wa-panel]') && !!document.querySelector('[data-testid=wa-wm4]')`, 'whatsapp panel')
+    assert(await evaluate(`document.querySelector('[data-testid=wa-wm3] [data-testid=wa-status]').dataset.status === 'READ' && document.querySelector('[data-testid=wa-wm4] [data-testid=wa-status]').dataset.status === 'FAILED'`), 'statuses')
+    assert(await evaluate(bodyHasAll('Message undeliverable (131026)', 'Media not downloaded yet.', 'Site, Mumbai', 'Customer service window open')), 'panel content')
+    assert(await evaluate(`document.querySelector('[data-testid=wa-window]').dataset.open === 'true'`), 'window flag')
+    // Send text: three fast clicks, one request; shown as Pending (accepted by Meta), not Sent.
+    const n0 = WA.sendCalls.length
+    await fill('[data-testid=wa-composer] textarea', 'A replacement leaves today.')
+    await evaluate(`(() => { const b = document.querySelector('[data-testid=wa-send]'); b.click(); b.click(); b.click() })()`)
+    await waitFor(`document.querySelector('[data-testid=wa-notice]')?.innerText.includes('Accepted by Meta')`, 'accepted notice')
+    await sleep(400)
+    assert(WA.sendCalls.length - n0 === 1, `repeated clicks sent ${WA.sendCalls.length - n0} requests`)
+    const req = WA.sendCalls.at(-1)
+    assert(req.kind === 'TEXT' && req.conversation_id === 'sc-wa' && req.text === 'A replacement leaves today.' && /^[0-9a-f-]{36}$/.test(req.idempotency_key), `send request: ${JSON.stringify(req)}`)
+    assert(!(await evaluate(`document.querySelector('[data-testid=wa-notice]').innerText.includes('Sent:')`)), 'shown as sent')
+    await screenshot('251-support-whatsapp-conversation')
+
+    // Window closed: no free-form composer, only an approved template.
+    WA.windowOpen = false
+    await goto('/support/whatsapp?c=sc-wa')
+    await waitFor(`document.querySelector('[data-testid=wa-window]')?.dataset.open === 'false' && !!document.querySelector('[data-testid=wa-template-open]')`, 'window closed')
+    assert(!(await evaluate(`!!document.querySelector('[data-testid=wa-send]')`)), 'free-form send offered outside the window')
+    await click('[data-testid=wa-template-open]')
+    await waitFor(`!!document.querySelector('[data-testid=wa-template-dialog]')`, 'template dialog')
+    await choose('#wa-tpl', 'order_update')
+    await waitFor(`!!document.querySelector('#wa-v-1') && !!document.querySelector('#wa-v-2')`, 'placeholders')
+    await fill('#wa-v-1', 'Ravi')
+    await click('[data-testid=wa-template-send]')
+    await waitFor(bodyHas('Enter values for {{2}}'), 'missing value refused')
+    await fill('#wa-v-2', 'SO-000011')
+    await waitFor(`document.querySelector('[data-testid=wa-template-preview]').innerText.includes('Hi Ravi, your order SO-000011 is on its way.')`, 'preview')
+    await click('[data-testid=wa-template-send]')
+    await waitFor(`document.querySelector('[data-testid=wa-notice]')?.innerText.includes('Accepted by Meta')`, 'template accepted')
+    const tr = WA.templateCalls.at(-1)
+    assert(tr.kind === 'TEMPLATE' && tr.template_id === 'wt1' && tr.parameters['1'] === 'Ravi' && tr.parameters['2'] === 'SO-000011' && tr.conversation_id === 'sc-wa', `template request: ${JSON.stringify(tr)}`)
+    await screenshot('252-support-whatsapp-template')
+
+    // New conversation from the WhatsApp page: template to a number.
+    await goto('/support/whatsapp')
+    await waitFor(`!!document.querySelector('[data-testid=wa-start]')`, 'start conversation')
+    await click('[data-testid=wa-start]')
+    await waitFor(`!!document.querySelector('#wa-to')`, 'number field')
+    await fill('#wa-to', '+91 99887 76655')
+    await choose('#wa-tpl', 'order_update')
+    await fill('#wa-v-1', 'A')
+    await fill('#wa-v-2', 'B')
+    await click('[data-testid=wa-template-send]')
+    for (let i = 0; i < 30 && WA.templateCalls.at(-1)?.to !== '+91 99887 76655'; i++) await sleep(100)
+    assert(WA.templateCalls.at(-1).to === '+91 99887 76655' && !WA.templateCalls.at(-1).conversation_id, 'start conversation request')
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+    SUPPORT_INBOX.splice(SUPPORT_INBOX.indexOf(waConv), 1)
+    waChannel.status = before
+    WA.enabled = false; WA.state = 'MIGRATION_REQUIRED'; WA.windowOpen = true
+  }
+})
+
+await step('Support unified: ticket rules, business hours and escalation, integration health (Connected only after a real test, expired credentials), ticket SLA panel, reports with CSV export', async () => {
+  const PERMS = ['support.view', 'support.manage_tickets', 'support.assign', 'support.reply', 'support.manage_integrations', 'support.view_reports', 'support.manage_settings']
+  USERS['manager@test.invalid'].permissions.push(...PERMS)
+  try {
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+
+    // Ticket rules: switch on missed-call tickets and WhatsApp keywords; the saved rules reach the server.
+    await goto('/support/settings?tab=rules')
+    await waitFor(`!!document.querySelector('[data-testid=ticket-rules]') && !!document.querySelector('[data-testid=assignment-rules]')`, 'ticket rules')
+    assert(await evaluate(bodyHasAll('Ticket only when an agent creates one', 'Create a ticket for every missed call', 'Reopen a resolved ticket when the customer replies',
+      'Escalate breached tickets', 'Agent and department assignment', 'Urgent to quality')), 'rules content')
+    await click('[data-testid=rule-missed_call_enabled]')
+    await waitFor(`document.querySelector('[data-testid=rule-missed_call_enabled]').getAttribute('aria-checked') === 'true'`, 'missed-call rule ticked')
+    await click('[data-testid=rule-whatsapp_keywords_enabled]')
+    await fill('#rule-wk', 'damaged, urgent')
+    await click('[data-testid=rules-save]')
+    await waitFor(`document.querySelector('[data-testid=unified-notice]')?.innerText.includes('Ticket rules saved')`, 'rules saved')
+    const saved = UNI.rulesSaves.at(-1)
+    assert(saved.missed_call_enabled === true && saved.whatsapp_keywords_enabled === true && JSON.stringify(saved.whatsapp_keywords) === '["damaged","urgent"]', `rules: ${JSON.stringify(saved)}`)
+    await screenshot('260-support-ticket-rules')
+
+    // SLA: business hours, holidays, escalation levels; run the monitor now.
+    await goto('/support/settings?tab=sla')
+    await waitFor(`!!document.querySelector('[data-testid=sla-calendar]') && !!document.querySelector('[data-testid=escalation-levels]')`, 'sla calendar')
+    assert(await evaluate(bodyHasAll('Business hours', 'Pause the SLA while a ticket waits for the customer', 'Test holiday', 'Escalations')), 'calendar content')
+    await click('[data-testid=cal-enabled]')
+    await click('[data-testid=cal-save]')
+    await waitFor(`document.querySelector('[data-testid=unified-notice]')?.innerText.includes('Business hours saved')`, 'calendar saved')
+    assert(UNI.calendarSaves.at(-1).enabled === true && UNI.calendarSaves.at(-1).start_time === '09:30', `calendar: ${JSON.stringify(UNI.calendarSaves.at(-1))}`)
+    await click('button', 'Run SLA check now')
+    await waitFor(`document.querySelector('[data-testid=unified-notice]')?.innerText.includes('1 breaches')`, 'sla run')
+
+    // Integration health: per provider, honest statuses, expired credentials, failed events, retry queue, test.
+    await goto('/support/settings?tab=health')
+    await waitFor(`!!document.querySelector('[data-testid=health-META_WHATSAPP]')`, 'integration health')
+    assert(await evaluate(`document.querySelector('[data-testid=health-ACEFONE]').innerText.includes('Verified by API test: Never')
+      && !document.querySelector('[data-testid=health-ACEFONE]').innerText.includes('Connected')`), 'untested provider shown as connected')
+    assert(await evaluate(`!!document.querySelector('[data-testid=health-expired-GOOGLE_WORKSPACE]')`), 'expired credentials')
+    assert(await evaluate(bodyHasAll('Last webhook received', 'Last successful outbound', 'Failed events (7 days)', 'Retry queue', 'Signature rejected')), 'health content')
+    await click('[data-testid=health-ACEFONE] button', 'Test connection')
+    await waitFor(`!!document.querySelector('[data-testid=unified-notice]')`, 'provider test result')
+    await screenshot('261-support-integration-health')
+
+    // Ticket SLA panel: remaining time, breach, escalation history.
+    await goto('/support/tickets/st1')
+    await waitFor(`!!document.querySelector('[data-testid=ticket-sla]')`, 'ticket sla')
+    assert(await evaluate(`document.querySelector('[data-testid=ticket-sla]').innerText.includes('45 min overdue') && document.querySelector('[data-testid=ticket-sla]').innerText.includes('2 h 30 min left')
+      && document.querySelector('[data-testid=ticket-sla-history]').innerText.includes('Escalated (level 1)') && document.querySelector('[data-testid=ticket-sla]').innerText.includes('30 minutes excluded')`), 'sla panel content')
+
+    // Reports: unified sections with CSV export.
+    await goto('/support/reports')
+    await waitFor(`!!document.querySelector('[data-testid=unified-reports]') && !!document.querySelector('[data-testid=report-sla]')`, 'unified reports')
+    assert(await evaluate(bodyHasAll('Channel-wise incoming volume', 'Calls: answer and missed rates', 'Email and WhatsApp response time', 'Ticket volume and closure rate', 'Agent workload',
+      'SLA compliance', 'Customer satisfaction')), 'report sections')
+    const r = rpcCalls('support_reports_unified').at(-1)
+    assert(r && /^\d{4}-\d{2}-\d{2}$/.test(r.body.p_from) && /^\d{4}-\d{2}-\d{2}$/.test(r.body.p_to), 'date filter sent')
+    await click('[data-testid=csv-calls]')
+    await screenshot('262-support-unified-reports')
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+  }
+})
+
+await step('Acefone agent telephony and softphone: agent extension settings, softphone status never "Connected", official AceConnect links, call notes / ticket link / previous interactions, telephony analytics', async () => {
+  const PERMS = ['support.view', 'support.manage_tickets', 'support.assign', 'support.reply', 'support.manage_integrations', 'support.view_reports', 'support.manage_settings']
+  USERS['manager@test.invalid'].permissions.push(...PERMS)
+  try {
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+
+    // Agent telephony settings
+    await goto('/support/settings?tab=phone')
+    await waitFor(`!!document.querySelector('[data-testid=phone-lines]')`, 'agent telephony table')
+    assert(await evaluate(bodyHasAllCI('Agent telephony settings', 'ERP agent', 'Extension number', 'Acefone extension id', 'Display caller id', 'Availability', 'Softphone setup',
+      'Acefone agent status', '7001', '08069411111', 'Instructions sent', 'Extension passwords are never stored here')), 'agent telephony columns')
+    await click('button', 'Read agent status from Acefone')
+    await waitFor(`document.querySelector('[data-testid=phone-notice]')?.innerText.includes('lines matched')`, 'agent status read')
+    assert(SOFT.agentsReads === 1, 'agents action not called')
+    await click('[data-testid=phone-lines] button', 'Edit')
+    await waitFor(`!!document.querySelector('#ln-ext') && document.querySelector('#ln-cid').value === '08069411111'`, 'line dialog with telephony fields')
+    assert(!(await evaluate(`[...document.querySelectorAll('[role=dialog] input')].some((i) => i.type === 'password' || /password/i.test(i.id))`)), 'password field in line dialog')
+    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' })
+    await screenshot('270-acefone-agent-telephony')
+
+    // Softphone status widget: not "Connected" without a provider signal; official links; no answer button.
+    await goto('/support/calls')
+    await waitFor(`!!document.querySelector('[data-testid=softphone-widget]')`, 'softphone widget')
+    assert(await evaluate(`document.querySelector('[data-testid=softphone-widget]').dataset.state === 'NOT_VERIFIED' && !document.querySelector('[data-testid=softphone-widget]').innerText.includes('Connected')`), 'softphone state')
+    await click('[data-testid=softphone-widget]')
+    await waitFor(`!!document.querySelector('[data-testid=softphone-dialog]')`, 'softphone dialog')
+    assert(await evaluate(`document.querySelector('[data-testid=softphone-dialog]').innerText.includes('0601234567') && document.querySelector('[data-testid=softphone-dialog]').innerText.includes('answer them in AceConnect')
+      && [...document.querySelectorAll('[data-testid=aceconnect-links] a')].length === 5 && [...document.querySelectorAll('[data-testid=aceconnect-links] a')].every((a) => a.rel.includes('noopener') && a.href.startsWith('https://'))`), 'softphone dialog content')
+    assert(!(await evaluate(`[...document.querySelectorAll('button')].some((b) => /^\\s*answer\\s*$/i.test(b.innerText))`)), 'fake Answer button')
+    await screenshot('271-acefone-softphone')
+    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' })
+
+    // After the call: note, previous interactions, link to an open ticket.
+    await goto('/support/calls/call1')
+    await waitFor(`!!document.querySelector('[data-testid=call-follow-up]') && !!document.querySelector('[data-testid=call-previous]')`, 'call follow-up')
+    await fill('[data-testid=call-follow-up] textarea', 'Customer wants a replacement basin.')
+    await click('[data-testid=call-note-save]')
+    await waitFor(`document.querySelector('[data-testid=call-follow-up-msg]')?.innerText.includes('Note saved') && document.querySelector('[data-testid=call-notes]')?.innerText.includes('replacement basin')`, 'note saved')
+    await click('[data-testid=call-follow-up] button', 'Link')
+    await waitFor(`document.querySelector('[data-testid=call-follow-up-msg]')?.innerText.includes('Linked to TKT-000001')`, 'ticket linked')
+    assert(SOFT.links.at(-1)[0] === 'call1' && SOFT.links.at(-1)[1] === 'st1', 'link request')
+    assert(await evaluate(`document.querySelector('[data-testid=call-previous]').innerText.includes('Cracked basin')`), 'previous interactions')
+
+    // Telephony analytics
+    await goto('/support/calls?tab=analytics')
+    await waitFor(`!!document.querySelector('[data-testid=call-analytics]') && !!document.querySelector('[data-testid=call-customers]')`, 'call analytics')
+    assert(await evaluate(bodyHasAll('Inbound calls', 'Outbound calls', 'Answered', 'Missed', 'Failed', 'Average call duration', 'Average answer time', 'Agent-wise calls',
+      'Customer-wise call history', 'Unknown caller', 'Unconfirmed requests')), 'analytics content')
+    await choose('[aria-label="Group by"]', 'Weekly')
+    for (let i = 0; i < 30 && rpcCalls('support_call_analytics').at(-1)?.body.p_group !== 'week'; i++) await sleep(100)
+    assert(rpcCalls('support_call_analytics').at(-1).body.p_group === 'week', 'weekly grouping sent')
+    await screenshot('272-acefone-call-analytics')
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+  }
+})
+
+await step('Bulk BOM management: six BOM tabs, where-used search, bulk replace preview with impact, submit / approve / publish, revision history, Excel change-file validation', async () => {
+  await goto('/production/boms')
+  await waitFor(`!!document.querySelector('[data-testid=bom-tabs]')`, 'BOM tabs')
+  assert(await evaluate(`(() => { const t = document.querySelector('[data-testid=bom-tabs]').innerText; return ['BOM Master', 'Where-Used Analysis', 'Bulk BOM Editor', 'Revision History', 'Change Approvals', 'Excel Import/Export'].every((x) => t.includes(x)) })()`), 'six tabs')
+  await waitFor(bodyHas('BOM-000001'), 'BOM master list still shown')
+  // One row per finished product: the approved version only; "Show all versions" brings back the pending v2.
+  await goto('/production/boms?status=ALL')
+  await waitFor(`!!document.querySelector('[data-testid=bom-cost-bom1]')`, 'latest approved version listed')
+  assert(!(await evaluate(`!!document.querySelector('[data-testid=bom-cost-bom2]')`)), 'older / other versions of the same product must be hidden by default')
+  await click('[data-testid=bom-all-versions] button')
+  await waitFor(`!!document.querySelector('[data-testid=bom-cost-bom2]') && location.search.includes('versions=all')`, 'all versions shown')
+  await goto('/production/boms')
+  await waitFor(`!!document.querySelector('[data-testid=bom-tabs]')`, 'BOM tabs')
+
+  // Where-used
+  await click('[data-testid=bom-tabs] button', 'Where-Used Analysis')
+  await waitFor(`!!document.querySelector('[data-testid=where-used]') && location.search.includes('tab=where-used')`, 'where-used tab')
+  await fill('[data-testid=where-used-component] input', 'glaze')
+  await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('RM-GLAZE-01'))`, 'component hits')
+  await click('[role=option]', 'RM-GLAZE-01')
+  await waitFor(`document.querySelector('[data-testid=where-used-table]')?.innerText.includes('FG-BASIN-3')`, 'where-used rows')
+  assert(await evaluate(bodyHasAllCI('Finished product', 'BOM / revision', 'Quantity', 'UOM', 'Wastage %', 'Status', 'Effective', 'BOM-000101', '3 current revisions')), 'where-used columns')
+  assert(rpcCalls('bom_where_used').at(-1).body.p_filters.status === 'CURRENT', 'current revisions by default')
+  await screenshot('280-bom-where-used')
+
+  // Bulk replace
+  assert(!(await evaluate(`[...document.querySelectorAll('[data-testid=where-used] button')].some((b) => b.innerText.trim() === 'Edit')`)), 'no Edit shortcut on where-used')
+  await click('main button', 'Replace')
+  await waitFor(`location.search.includes('tab=editor') && location.search.includes('op=REPLACE') && document.querySelector('[data-testid=bulk-old-component]')?.innerText.includes('RM-GLAZE-01')`, 'editor with the component')
+  await waitFor(`document.querySelector('[data-testid=bulk-bom-table]')?.innerText.includes('FG-BASIN-2')`, 'BOMs to change')
+  assert(!(await evaluate(`[...document.querySelectorAll('[aria-label="Bulk operation"] button')].some((b) => /bulk edit/i.test(b.innerText))`)), 'Bulk edit must not be offered in the editor')
+  await fill('[data-testid=bulk-new-component] input', 'glaze-02')
+  await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('RM-GLAZE-02'))`, 'replacement hits')
+  await click('[role=option]', 'RM-GLAZE-02')
+  await click('[aria-label="Select all BOMs"]')
+  await waitFor(`document.querySelector('[data-testid=bulk-selected-count]')?.innerText.startsWith('3')`, 'all selected')
+  await fill('#bulk-reason', 'Supplier changed the glaze')
+  await waitFor(`!document.querySelector('[data-testid=bulk-preview]').disabled`, 'preview enabled')
+  await screenshot('281-bom-bulk-editor')
+  await click('[data-testid=bulk-preview]')
+  await waitFor(`!!document.querySelector('[data-testid=batch-detail]') && location.search.includes('batch=bcb1')`, 'batch preview')
+  const sent = BULK.saves.at(-1)
+  assert(sent.p_header.operation === 'REPLACE' && sent.p_lines.length === 3 && sent.p_lines.every((l) => l.new_component_product_id === 'cmp-new' && l.component_product_id === 'cmp-old' && !('quantity' in l)), JSON.stringify(sent))
+  assert(await evaluate(bodyHasAllCI('BOMs affected', 'Component lines', 'Lines with errors', 'Production orders potentially affected', 'PRD-000001', 'Keeps v1',
+    'Inventory and procurement impact', 'RM-GLAZE-01: 40 KG available, 25 KG on open purchase orders', '1.5 KG → 1.5 KG')), 'preview and impact')
+
+  // Workflow
+  for (const [button, status] of [['batch-submit', 'PENDING_APPROVAL'], ['batch-approve', 'APPROVED'], ['batch-publish', 'PUBLISHED']]) {
+    await click(`[data-testid=${button}]`)
+    await waitFor(`!!document.querySelector('[data-testid=batch-confirm]')`, `${button} dialog`)
+    await click('[data-testid=batch-confirm]')
+    await waitFor(`document.querySelector('[data-testid=batch-detail]')?.dataset.status === '${status}'`, status)
+  }
+  await waitFor(`document.querySelector('[data-testid=batch-message]')?.innerText.includes('Published: 3 new BOM revision')`, 'published message')
+  assert(BULK.published === 1 && rpcCalls('bom_change_batch_publish').length === 1 && /^[0-9a-f-]{36}$/.test(rpcCalls('bom_change_batch_publish')[0].body.p_idempotency_key), 'one publish with a request id')
+  assert(await evaluate(bodyHasAllCI('Created', 'Submitted for approval', 'Approved', 'Published', 'Create reversal')), 'history and reversal')
+  await screenshot('282-bom-batch-published')
+
+  // Approvals list and revision history
+  await click('main button', 'All batches')
+  await waitFor(`document.querySelector('[data-testid=bom-batches]')?.innerText.includes('BCB-000001') || document.querySelector('[data-testid=bom-approvals]')?.innerText.includes('No batches here')`, 'batch list')
+  await goto('/production/boms?tab=revisions&rsource=BULK')
+  await waitFor(`document.querySelector('[data-testid=bom-revision-table]')?.innerText.includes('BCB-000001')`, 'revision history')
+  assert(await evaluate(bodyHasAllCI('Compare with previous', 'Supplier changed the glaze')), 'revision row')
+
+  // Excel change file: row-level validation
+  await goto('/production/boms?tab=excel')
+  await waitFor(`!!document.querySelector('[data-testid=bom-import-export]')`, 'excel tab')
+  const csv = path.join(outDir, 'bom-bulk-add.csv')
+  writeFileSync(csv, 'Finished Product SKU,Component SKU,Quantity,Unit,Wastage %,Notes\nFG-BASIN-1,PK-BOX-01,1,PCS,0,carton\nFG-UNKNOWN,PK-BOX-01,1,,,\nFG-BASIN-1,PK-BOX-01,-2,,,\n')
+  await setFile(csv)
+  await waitFor(`document.querySelector('[data-testid=bom-import-summary]')?.innerText.includes('1 valid row')`, 'validated rows')
+  assert(await evaluate(bodyHasAllCI('2 with errors', 'FG-UNKNOWN is not in the Product Master', 'greater than zero')), 'row errors')
+  await fill('#import-reason', 'Add outer carton')
+  await click('[data-testid=bom-import-create]')
+  await waitFor(`!!document.querySelector('[data-testid=batch-detail]') && location.search.includes('batch=bcb2')`, 'draft from Excel')
+  assert(BULK.saves.at(-1).p_header.operation === 'ADD' && BULK.saves.at(-1).p_lines.length === 1 && BULK.saves.at(-1).p_lines[0].finished_product_id === 'fgb1', JSON.stringify(BULK.saves.at(-1)))
+  await screenshot('283-bom-excel-import')
 })
 
 await step('no console errors or uncaught exceptions', async () => {

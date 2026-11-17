@@ -20,8 +20,9 @@ import { fetchCurrentBoms, fetchWhereUsed, saveBatch, type BatchLineInput, type 
 
 import { ComponentSearch } from './component-search'
 
-const OPS: ImportOperation[] = ['REPLACE', 'DELETE', 'ADD', 'EDIT']
-type RowEdit = { quantity?: string; wastage?: string; notes?: string }
+// Bulk edit is not offered in the editor (removed on request); quantities can still be changed per BOM in Replace.
+const OPS: ImportOperation[] = ['REPLACE', 'DELETE', 'ADD']
+type RowEdit = { quantity?: string; wastage?: string }
 type AddComponent = { hit: ComponentHit; quantity: string; wastage: string; notes: string }
 
 const num = (s: string | undefined) => (s && s.trim() !== '' ? s.trim() : null)
@@ -35,7 +36,7 @@ export function BulkEditorTab() {
   const [today] = useState(() => toIsoDate(new Date()))
   const [newComp, setNewComp] = useState<ComponentHit | null>(null)
   const [factor, setFactor] = useState('')
-  const [defaults, setDefaults] = useState<RowEdit & { source?: string }>({})
+  const [defaults, setDefaults] = useState<RowEdit>({})
   const [reason, setReason] = useState('')
   const [title, setTitle] = useState('')
   const [effective, setEffective] = useState(() => toIsoDate(new Date()))
@@ -78,7 +79,6 @@ export function BulkEditorTab() {
   const previewQty = (r: WhereUsedRow) => {
     const own = num(edits[r.bom_id]?.quantity)
     if (own) return `${own} ${op === 'REPLACE' ? newComp?.base_unit ?? '' : r.unit}`
-    if (op === 'EDIT' && num(defaults.quantity)) return `${defaults.quantity} ${r.unit}`
     if (op === 'REPLACE') {
       if (unitsDiffer && !num(factor)) return 'needs factor'
       return qtyText(Number(r.quantity) * Number(num(factor) ?? 1), newComp?.base_unit ?? r.unit)
@@ -97,12 +97,7 @@ export function BulkEditorTab() {
       const e = edits[r.bom_id] ?? {}
       const base: BatchLineInput = { bom_id: r.bom_id, component_product_id: r.component_product_id }
       if (op === 'DELETE') return base
-      if (op === 'REPLACE') {
-        return { ...base, new_component_product_id: newComp?.product_id, quantity: num(e.quantity), factor: num(e.quantity) ? null : num(factor), wastage_percentage: num(e.wastage) ?? num(defaults.wastage) }
-      }
-      const notes = e.notes ?? defaults.notes
-      return { ...base, quantity: num(e.quantity) ?? num(defaults.quantity), wastage_percentage: num(e.wastage) ?? num(defaults.wastage),
-        source_type: defaults.source || null, ...(notes !== undefined && notes !== '' ? { notes } : {}) }
+      return { ...base, new_component_product_id: newComp?.product_id, quantity: num(e.quantity), factor: num(e.quantity) ? null : num(factor), wastage_percentage: num(e.wastage) ?? num(defaults.wastage) }
     })
   }
 
@@ -161,21 +156,6 @@ export function BulkEditorTab() {
                 </div>
               </>
             )}
-            {op === 'EDIT' && (
-              <div className="grid gap-3 sm:grid-cols-2 md:col-span-2 lg:grid-cols-4">
-                <div className="space-y-1.5"><Label htmlFor="edit-qty">New quantity for all selected</Label>
-                  <Input id="edit-qty" inputMode="decimal" placeholder="keep" value={defaults.quantity ?? ''} onChange={(e) => setDefaults((d) => ({ ...d, quantity: e.target.value }))} /></div>
-                <div className="space-y-1.5"><Label htmlFor="edit-wastage">New wastage %</Label>
-                  <Input id="edit-wastage" inputMode="decimal" placeholder="keep" value={defaults.wastage ?? ''} onChange={(e) => setDefaults((d) => ({ ...d, wastage: e.target.value }))} /></div>
-                <div className="space-y-1.5"><Label htmlFor="edit-notes">Notes</Label>
-                  <Input id="edit-notes" placeholder="keep" value={defaults.notes ?? ''} onChange={(e) => setDefaults((d) => ({ ...d, notes: e.target.value }))} /></div>
-                <div className="space-y-1.5"><Label htmlFor="edit-source">Source</Label>
-                  <select id="edit-source" className="h-9 w-full rounded-md border bg-background px-2 text-sm" value={defaults.source ?? ''} onChange={(e) => setDefaults((d) => ({ ...d, source: e.target.value }))}>
-                    <option value="">Keep</option><option value="IN_HOUSE">In-house</option><option value="OUTSOURCED">Outsourced</option><option value="PURCHASED">Purchased</option>
-                  </select></div>
-                <p className="text-xs text-muted-foreground sm:col-span-2 lg:col-span-4">The unit of a BOM line is always the component's inventory unit ({oldComp?.base_unit ?? '—'}); no unit conversion is configured.</p>
-              </div>
-            )}
           </CardContent>
         </Card>
       ) : (
@@ -227,7 +207,6 @@ export function BulkEditorTab() {
                         <TableHead className="text-right">Wastage %</TableHead>
                         {op !== 'DELETE' && <TableHead className="text-right">New quantity</TableHead>}
                         {op !== 'DELETE' && <TableHead className="text-right">New wastage %</TableHead>}
-                        {op === 'EDIT' && <TableHead>Notes</TableHead>}
                       </>}
                 </TableRow>
               </TableHeader>
@@ -267,10 +246,6 @@ export function BulkEditorTab() {
                             <Input className="ml-auto h-8 w-20 text-right" inputMode="decimal" aria-label={`New wastage for ${r.sku}`} placeholder={defaults.wastage || String(Number(r.wastage_percentage))}
                               disabled={!selected.has(r.bom_id)} value={edits[r.bom_id]?.wastage ?? ''} onChange={(e) => setEdit(r.bom_id, { wastage: e.target.value })} />
                           </TableCell>
-                        )}
-                        {op === 'EDIT' && (
-                          <TableCell><Input className="h-8 w-40" aria-label={`Notes for ${r.sku}`} placeholder={r.notes ?? ''} disabled={!selected.has(r.bom_id)}
-                            value={edits[r.bom_id]?.notes ?? ''} onChange={(e) => setEdit(r.bom_id, { notes: e.target.value })} /></TableCell>
                         )}
                       </TableRow>
                     ))}

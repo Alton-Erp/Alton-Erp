@@ -7,7 +7,7 @@ import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import {
-  applyResolvedSkus, changeText, cleanLine, importSkus, importTemplate, lineIdsOfFailingBoms, linesFromImport, parseImportSheet, quantityDelta, unusedAfterChange,
+  applyResolvedSkus, changeText, cleanLine, importSkus, latestBomPerProduct, importTemplate, lineIdsOfFailingBoms, linesFromImport, parseImportSheet, quantityDelta, unusedAfterChange,
   validateImportRows, whereUsedExportRows,
 } from '../../src/features/production/bom-bulk-model.ts'
 import type { BatchDetail, BatchLine, ResolvedSku, WhereUsedRow } from '../../src/services/bom-bulk.ts'
@@ -150,5 +150,23 @@ describe('migration safety rules', () => {
   it('the BOM page offers the six tabs', () => {
     const page = readFileSync(path.join(root, 'src/pages/production/boms-page.tsx'), 'utf8')
     for (const t of ['BOM Master', 'Where-Used Analysis', 'Bulk BOM Editor', 'Revision History', 'Change Approvals', 'Excel Import/Export']) assert.ok(page.includes(`'${t}'`), t)
+  })
+})
+
+describe('BOM Master: one row per finished product', () => {
+  const b = (id: string, product: string, version: number, status: string) => ({ id, finished_product_id: product, version, status })
+  it('keeps the latest approved version; else the latest version; one row per product', () => {
+    const rows = [b('a2', 'A', 2, 'APPROVED'), b('a5', 'A', 5, 'APPROVED'), b('a6', 'A', 6, 'DRAFT'), b('c1', 'C', 1, 'DRAFT'), b('c3', 'C', 3, 'PENDING_APPROVAL'), b('d1', 'D', 1, 'APPROVED')]
+    assert.deepEqual(latestBomPerProduct(rows).map((r) => r.id), ['a5', 'c3', 'd1'])
+  })
+  it('the page uses it unless all versions are asked for', () => {
+    const page = readFileSync(path.join(root, 'src/pages/production/boms-page.tsx'), 'utf8')
+    assert.match(page, /showAll \? all : latestBomPerProduct\(all\)/)
+    assert.match(page, /Show all versions/)
+  })
+  it('the Bulk BOM Editor no longer offers bulk edit', () => {
+    const editor = readFileSync(path.join(root, 'src/features/production/bom-bulk/bulk-editor-tab.tsx'), 'utf8')
+    assert.match(editor, /const OPS: ImportOperation\[\] = \['REPLACE', 'DELETE', 'ADD'\]/)
+    assert.ok(!/op === 'EDIT'/.test(editor))
   })
 })

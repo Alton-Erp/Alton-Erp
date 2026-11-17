@@ -120,17 +120,18 @@ batch, as a further revision. It goes through approval like any change. BOMs cha
 removed from the draft. History is never rewritten.
 
 ## 4. Screens (Production → Bill of Materials)
-1. **BOM Master:** the existing list, unchanged.
+1. **BOM Master:** the existing list, one row per finished product: its latest approved version, or its latest version when none is approved. "Show all versions" (`?versions=all`) lists every version, and the export follows what is shown.
 2. **Where-Used Analysis:**
    - search a component by name, SKU, code, barcode or EAN;
    - the table shows finished product, BOM number and revision, component, quantity, UOM, wastage, status and effective dates;
    - status, type and text filters, server sorting and paging, Excel export;
-   - Replace, Edit and Delete buttons start a bulk change with that component.
+   - Replace and Delete buttons start a bulk change with that component.
 3. **Bulk BOM Editor:**
    - **Replace:** old component, replacement, conversion factor, wastage, plus a quantity or wastage override per BOM.
    - **Delete:** pick the BOMs.
    - **Add:** components with default quantity and wastage, plus a quantity per BOM.
-   - **Edit:** quantity, wastage, notes and source for all selected BOMs, or per BOM.
+   - Bulk edit was removed from the editor on request. Per-BOM quantity and wastage can still be set in Replace, and the
+     backend EDIT operation remains available for Excel imports.
    - **Common to all four:**
      - select all or individual BOMs;
      - reason, effective date and the merge option;
