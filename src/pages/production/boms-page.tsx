@@ -1,8 +1,9 @@
 import { Download, FileSpreadsheet, GitCompareArrows, Layers, Loader2, Network, Plus, RefreshCw } from 'lucide-react'
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 
 import { PermissionGate } from '@/auth/permission-gate'
+import { usePermissions } from '@/auth/use-permissions'
 import { ConfirmDialog } from '@/components/common/confirm-dialog'
 import { DataTable, type DataTableColumn } from '@/components/common/data-table'
 import { FilterTabs } from '@/components/common/filter-tabs'
@@ -25,12 +26,17 @@ import { fetchBomItemsFor, fetchBoms } from '@/services/production'
 import { fetchSupplierOptions } from '@/services/suppliers'
 import type { BomListRow, BomStatus } from '@/types/database-production'
 import { useUrlEnum } from '@/hooks/use-url-state'
+import { ApprovalsTab } from '@/features/production/bom-bulk/approvals-tab'
+import { BulkEditorTab } from '@/features/production/bom-bulk/bulk-editor-tab'
+import { ImportExportTab } from '@/features/production/bom-bulk/import-export-tab'
+import { RevisionsTab } from '@/features/production/bom-bulk/revisions-tab'
+import { WhereUsedTab } from '@/features/production/bom-bulk/where-used-tab'
 
 type Filter = 'ACTIVE' | BomStatus | 'ALL'
 
 const days = (v: number | null | undefined) => (v == null ? '—' : `${formatNumber(Number(v))} d`)
 
-export default function BomsPage() {
+function BomMasterTab({ tabs }: { tabs: ReactNode }) {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const productFilter = searchParams.get('product')
@@ -158,6 +164,7 @@ export default function BomsPage() {
           </>
         }
       />
+      {tabs}
       {costNotice && (
         <p role={costNotice.tone === 'error' ? 'alert' : 'status'} data-testid="bom-cost-notice"
           className={costNotice.tone === 'error' ? 'mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-800' : 'mb-4 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-sm text-green-800'}>
@@ -230,6 +237,43 @@ export default function BomsPage() {
           description: 'Define the raw materials, components and packaging needed for one unit of each manufactured product. Creating a BOM never moves stock.',
         }}
       />
+    </>
+  )
+}
+
+type BomTab = 'master' | 'where-used' | 'editor' | 'revisions' | 'approvals' | 'excel'
+const BOM_TABS: { value: BomTab; label: string }[] = [
+  { value: 'master', label: 'BOM Master' },
+  { value: 'where-used', label: 'Where-Used Analysis' },
+  { value: 'editor', label: 'Bulk BOM Editor' },
+  { value: 'revisions', label: 'Revision History' },
+  { value: 'approvals', label: 'Change Approvals' },
+  { value: 'excel', label: 'Excel Import/Export' },
+]
+
+/** BOM module: master list plus where-used, bulk changes, revisions, approvals and Excel (tab kept in the address: ?tab=…). */
+export default function BomsPage() {
+  const [tab] = useUrlEnum<BomTab>('tab', BOM_TABS.map((t) => t.value), 'master')
+  const [, setParams] = useSearchParams()
+  const { hasAny } = usePermissions()
+  const canPrepare = hasAny(['production_bom.create', 'production_bom.update'])
+  const tabs = (
+    <div className="mb-4" data-testid="bom-tabs">
+      <FilterTabs<BomTab> label="BOM sections" value={tab}
+        onChange={(v) => setParams(v === 'master' ? {} : { tab: v }, { replace: false })}
+        options={BOM_TABS.filter((t) => t.value !== 'editor' || canPrepare)} />
+    </div>
+  )
+  if (tab === 'master') return <BomMasterTab tabs={tabs} />
+  return (
+    <>
+      <PageHeader />
+      {tabs}
+      {tab === 'where-used' && <WhereUsedTab />}
+      {tab === 'editor' && (canPrepare ? <BulkEditorTab /> : <p className="text-sm text-muted-foreground">Preparing bulk changes needs permission to create or update BOMs.</p>)}
+      {tab === 'revisions' && <RevisionsTab onOpenBatch={(id) => setParams({ tab: 'approvals', batch: id })} />}
+      {tab === 'approvals' && <ApprovalsTab />}
+      {tab === 'excel' && <ImportExportTab />}
     </>
   )
 }
