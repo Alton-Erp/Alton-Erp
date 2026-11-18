@@ -298,6 +298,16 @@ export const WA_SETUP_META: Record<string, { label: string; tone: Tone; hint: st
   CONNECTED: { label: 'Connected', tone: 'success', hint: 'Onboarding, number registration and webhook verification succeeded.' },
   ERROR: { label: 'Error', tone: 'danger', hint: 'The last connection test failed or Meta refused the access token.' },
 }
+/** Activation preflight status (server: private.support_whatsapp_preflight). */
+export const WA_PREFLIGHT_META: Record<string, { label: string; tone: Tone }> = {
+  NOT_CONFIGURED: { label: 'Not configured', tone: 'neutral' },
+  PENDING_VERIFICATION: { label: 'Pending verification', tone: 'warning' },
+  ELIGIBILITY_BLOCKED: { label: 'Eligibility blocked', tone: 'danger' },
+  ERROR: { label: 'Error', tone: 'danger' },
+  READY_TO_ACTIVATE: { label: 'Ready to activate', tone: 'info' },
+  ACTIVE: { label: 'Active', tone: 'success' },
+}
+export const WA_CHECK_SOURCE: Record<string, string> = { META: 'Verified with Meta', ADMIN: 'Confirmed by an administrator', WEBHOOK: 'Webhook', TEST: 'Connection test', CONFIG: 'Settings' }
 export const WA_NUMBER_PATHS: Record<string, string> = {
   UNKNOWN: 'Not confirmed yet',
   BUSINESS_APP_ONLY: 'WhatsApp Business app only',

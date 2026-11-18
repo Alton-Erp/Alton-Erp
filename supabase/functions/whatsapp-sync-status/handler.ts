@@ -2,12 +2,15 @@
 //
 // Callers: the scheduler (x-cron-secret = WHATSAPP_CRON_SECRET) or an administrator (JWT). Body { action }:
 //   test       GET /{phone-number-id}?fields=… : passes only when Meta reports status CONNECTED, the Cloud API
-//              platform (when reported) and the configured display number. Read-only: nothing changes at Meta.
+//              platform (when reported) and the configured display number. Then the account mapping is verified
+//              (number under the WABA, WABA owner, subscribed apps, token permissions; _shared/whatsapp/verify.ts) and
+//              stored as evidence for the activation preflight. Read-only: nothing changes at Meta.
 //   templates  GET /{WABA-ID}/message_templates (paged): the catalogue agents may use (APPROVED only).
 //   all        (default; scheduler) test + templates + removal of raw webhook payloads older than 30 days.
 
 import { corsHeaders, type Client } from '../_shared/google/google.ts'
 import { GRAPH, authorizeWa, graphError, graphFetch, graphUrl, waSecret, type WaDeps, type WaRuntime } from '../_shared/whatsapp/whatsapp.ts'
+import { verifyMetaAccount } from '../_shared/whatsapp/verify.ts'
 
 export interface Deps extends WaDeps {
   allowedOrigins: string[]
@@ -17,6 +20,20 @@ const FIELDS = 'display_phone_number,verified_name,quality_rating,code_verificat
 const digits = (s: string | null | undefined) => (s ?? '').replace(/[^0-9]/g, '')
 
 export async function testConnection(deps: Deps, rt: WaRuntime, token: string | null): Promise<{ ok: boolean; message: string }> {
+  const result = await testPhone(deps, rt, token)
+  if (token && rt.waba_id && rt.phone_number_id) {
+    try {
+      const evidence = await verifyMetaAccount(deps.fetch, rt, token)
+      // Stored for the activation preflight (migration 20261219090000). Before that migration this call fails harmlessly.
+      await deps.admin().rpc('support_whatsapp_verification_result', { p_account: rt.account_id, p_verification: evidence })
+    } catch {
+      // The phone test result above stands; the preflight then reports the account mapping as not verified.
+    }
+  }
+  return result
+}
+
+async function testPhone(deps: Deps, rt: WaRuntime, token: string | null): Promise<{ ok: boolean; message: string }> {
   const admin = deps.admin()
   const record = async (ok: boolean, info: Record<string, unknown> | null, message: string) => {
     await admin.rpc('support_whatsapp_test_result', { p_account: rt.account_id, p_ok: ok, p_info: info, p_message: message })

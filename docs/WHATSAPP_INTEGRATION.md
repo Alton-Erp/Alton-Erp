@@ -134,3 +134,38 @@ Schedules (any scheduler, e.g. `pg_cron` + `pg_net`), each sent with the header 
 - Outbound media: JPEG / PNG images (5 MB) and PDF / text / Office documents (25 MB, the storage bucket limit). Audio, video and stickers are received but not sent.
 - Templates with media headers or dynamic URL buttons are not sent from the ERP.
 - If Meta never confirms a request (timeout), the message stays "Pending — not confirmed". Check WhatsApp Manager before sending again.
+
+## Activation preflight (migration 20261219090000)
+
+**Why "Number Eligibility Pending" stayed on.** The original state rules required manual checklist ticks for every
+usage. These were:
+- "Meta confirmed the number can be registered…", which needs a written note;
+- "Usage confirmed";
+- "System-user token";
+- "Webhook subscribed".
+
+That applied even to a number already on the Cloud API. A passed connection test and the subscribed-apps check were
+never stored as evidence. In addition, the settings page did not reload after Test connection, a checklist tick or
+Switch on.
+
+**What happens now.**
+- **Test connection** first checks the phone number, as before. It then verifies the account mapping with read-only
+  Meta calls:
+  - `GET /{WABA}/phone_numbers`: the phone number id is under this WABA;
+  - `GET /{WABA}?fields=owner_business_info,account_review_status`: the WABA belongs to the configured business
+    portfolio;
+  - `GET /{WABA}/subscribed_apps`: the configured app receives the webhooks;
+  - `GET /debug_token`: the token is valid and permanent, has both permissions, and covers this WABA.
+- The result is stored without the token in `support_whatsapp_config.meta_verification`.
+- `private.support_whatsapp_preflight` is the single gate. It decides the status (Not configured / Pending
+  verification / Eligibility blocked / Error / Ready to activate / Active), the eligibility badge, the Switch on button
+  and the exact reasons.
+- **For "Already on the Cloud API (this WABA)":** Meta's answer (CONNECTED on CLOUD_API, under this WABA) is the
+  eligibility evidence, and no migration or coexistence step is required.
+- **Checkbox ticks never override contrary Meta evidence.** This covers a wrong WABA or portfolio, an app that is not
+  subscribed, a missing permission, and an expiring or invalid token. Ticks count only where Meta gives no answer.
+- **Message delivery is shown separately.** Incoming is proven only by a real message; outgoing only by Meta's
+  delivered or read status. The webhook challenge never counts.
+
+**Deployment order.** Apply the migration, then redeploy `whatsapp-sync-status`, then run Test connection. Deploying
+the migration changes no state by itself.

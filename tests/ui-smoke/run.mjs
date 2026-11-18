@@ -732,7 +732,7 @@ const GMAIL_THREAD = [
     skipped_attachments: [{ filename: 'setup.exe', state: 'BLOCKED', reason: '.exe files are not stored (executable or script).' }] },
 ]
 // Meta WhatsApp Cloud API (20261213090000). Pending until the (mock) Meta status webhook says otherwise.
-const WA = { state: 'MIGRATION_REQUIRED', enabled: false, windowOpen: true, sendCalls: [], templateCalls: [], checklist: [] }
+const WA = { state: 'MIGRATION_REQUIRED', enabled: false, windowOpen: true, sendCalls: [], templateCalls: [], checklist: [], preflight: null }
 const WA_ITEMS = [['number_path_confirmed', true], ['cloud_api_eligibility', true], ['migration_completed', true], ['coexistence_approved', false], ['previous_routing_retired', true],
   ['system_user_token', true], ['webhook_subscribed', true], ['templates_reviewed', false]]
 const WA_CONFIG = () => ({
@@ -746,6 +746,7 @@ const WA_CONFIG = () => ({
   templates: [{ id: 'wt1', name: 'order_update', language: 'en', category: 'UTILITY', status: 'APPROVED' }, { id: 'wt2', name: 'promo_offer', language: 'en', category: 'MARKETING', status: 'PENDING' }],
   counts: { received: 2, sent: 1, pending: 0, failed: 1, media_pending: 1 },
   events: [{ id: 'we1', field: 'messages', result: 'HELD', error: 'Integration not switched on.', counts: {}, replay_count: 0, received_at: NOW, processed_at: NOW, purged: false }],
+  ...(WA.preflight ? { preflight: WA.preflight() } : {}),
 })
 const WA_TEMPLATES = [{ id: 'wt1', name: 'order_update', language: 'en', category: 'UTILITY', status: 'APPROVED', parameter_format: 'POSITIONAL',
   components: [{ type: 'BODY', text: 'Hi {{1}}, your order {{2}} is on its way.' }] }]
@@ -2186,6 +2187,7 @@ const api = http.createServer((req, res) => {
           if (body.p_done && !WA.checklist.includes(body.p_key)) WA.checklist.push(body.p_key)
           return send(res, 200, WA_CONFIG())
         case 'support_whatsapp_set_enabled':
+          if (body.p_enabled && WA.preflight && !WA.preflight().can_activate) return send(res, 400, { code: 'P0001', message: `WhatsApp cannot be switched on yet (eligibility blocked): ${WA.preflight().blockers.join(' | ')}` })
           if (body.p_enabled && WA.state !== 'CONNECTED') return send(res, 400, { code: 'P0001', message: 'WhatsApp cannot be switched on yet: the setup state is migration required.' })
           WA.enabled = Boolean(body.p_enabled)
           return send(res, 200, WA_CONFIG())
@@ -8317,6 +8319,58 @@ await step('Bulk BOM management: six BOM tabs, where-used search, bulk replace p
   await waitFor(`!!document.querySelector('[data-testid=batch-detail]') && location.search.includes('batch=bcb2')`, 'draft from Excel')
   assert(BULK.saves.at(-1).p_header.operation === 'ADD' && BULK.saves.at(-1).p_lines.length === 1 && BULK.saves.at(-1).p_lines[0].finished_product_id === 'fgb1', JSON.stringify(BULK.saves.at(-1)))
   await screenshot('283-bom-excel-import')
+})
+
+await step('WhatsApp activation preflight: one server gate for status, eligibility and Switch on; Meta-verified checks; exact block reasons; delivery not inferred', async () => {
+  const PERMS = ['support.view', 'support.manage_integrations', 'support.reply']
+  USERS['manager@test.invalid'].permissions.push(...PERMS)
+  const chk = (key, label, result, source, detail, mandatory = true) => ({ key, label, result, source, detail, mandatory })
+  const READY = [chk('identifiers', 'Meta identifiers and Graph API version entered', 'OK', 'CONFIG', 'WABA 1973917729842030, phone number id 1425662810634514.'),
+    chk('connection_test', 'Connection test passed', 'OK', 'TEST', 'Connected: Alton India +91 1800 123 9722 on the Cloud API, quality GREEN.'),
+    chk('phone_in_waba', 'The phone number id belongs to the configured WhatsApp Business Account', 'OK', 'META', 'Meta lists phone number id 1425662810634514 under WABA 1973917729842030.'),
+    chk('business_portfolio', 'The WhatsApp Business Account belongs to the configured business portfolio', 'OK', 'META', 'Meta: WABA owned by portfolio 3489020898058707.'),
+    chk('cloud_api_eligibility', 'Number registered and active on the Cloud API under this WABA', 'OK', 'META', 'Verified by Meta: CONNECTED on CLOUD_API, quality GREEN.'),
+    chk('access_token', 'Permanent system-user token with whatsapp_business_messaging and whatsapp_business_management', 'OK', 'META', 'Verified by Meta: valid system_user token, never expires.'),
+    chk('webhook_subscription', 'The Meta app is subscribed to this WABA webhooks', 'OK', 'META', 'Verified by Meta: app 1684047306664863 is subscribed.'),
+    chk('webhook_verified', 'Webhook callback verified (challenge)', 'OK', 'WEBHOOK', 'Challenge passed.'),
+    chk('webhook_signed', 'A correctly signed webhook event received', 'OK', 'WEBHOOK', 'Last signed event received.'),
+    chk('quality_rating', 'Phone quality rating', 'OK', 'TEST', 'Meta: GREEN.', false)]
+  const delivery = { inbound_messages: 0, last_inbound_at: null, outbound_accepted: 0, outbound_delivered: 0, outbound_read: 0, outbound_failed: 0, status_callbacks: 0,
+    last_outbound_success_at: null, inbound_proven: false, outbound_proven: false }
+  let mode = 'blocked'
+  const BLOCK = 'Phone number id 1425662810634514 is NOT under WABA 1973917729842030 according to Meta (1 other number(s) found).'
+  WA.preflight = () => (mode === 'ready'
+    ? { status: WA.enabled ? 'ACTIVE' : 'READY_TO_ACTIVATE', setup_state: 'CONNECTED', can_activate: !WA.enabled, eligibility: 'VERIFIED', blockers: [], checks: READY, verified_at: NOW, delivery }
+    : { status: 'ELIGIBILITY_BLOCKED', setup_state: 'NUMBER_ELIGIBILITY_PENDING', can_activate: false, eligibility: 'BLOCKED', blockers: [BLOCK],
+        checks: READY.map((c) => (c.key === 'phone_in_waba' ? { ...c, result: 'BLOCKED', detail: BLOCK } : c.key === 'cloud_api_eligibility' ? { ...c, result: 'BLOCKED' } : c)), verified_at: NOW, delivery })
+  try {
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+    // Blocked by a genuine mismatch: Switch on disabled even though the stored state says Connected; the exact reason is shown.
+    WA.state = 'CONNECTED'; WA.enabled = false
+    await goto('/support/settings?tab=whatsapp')
+    await waitFor(`!!document.querySelector('[data-testid=wa-preflight]')`, 'preflight card')
+    assert(await evaluate(`document.querySelector('[data-testid=wa-setup]').dataset.status === 'ELIGIBILITY_BLOCKED' && document.querySelector('[data-testid=wa-enable]').disabled
+      && document.querySelector('[data-testid=wa-eligibility]').dataset.eligibility === 'BLOCKED'`), 'blocked gate')
+    assert(await evaluate(`document.querySelector('[data-testid=wa-state-hint]').innerText.includes('NOT under WABA 1973917729842030')
+      && document.querySelector('[data-testid=wa-pf-phone_in_waba]').dataset.result === 'BLOCKED'`), 'exact reason')
+    await screenshot('290-whatsapp-preflight-blocked')
+    // Ready: every mandatory check verified with Meta (no manual ticks) -> Ready to activate -> Switch on -> Active.
+    mode = 'ready'
+    await goto('/support/settings?tab=whatsapp')
+    await waitFor(`document.querySelector('[data-testid=wa-setup]')?.dataset.status === 'READY_TO_ACTIVATE'`, 'ready to activate')
+    assert(await evaluate(bodyHasAll('Ready to activate', 'Number eligibility: Verified', 'Verified with Meta', 'Activation preflight', 'not proven yet')), 'ready content')
+    assert(await evaluate(`!document.querySelector('[data-testid=wa-enable]').disabled`), 'Switch on enabled')
+    await screenshot('291-whatsapp-preflight-ready')
+    await click('[data-testid=wa-enable]')
+    await waitFor(`document.querySelector('[data-testid=wa-settings-notice]')?.innerText.includes('switched on')`, 'switched on')
+    await waitFor(`document.querySelector('[data-testid=wa-setup]')?.dataset.status === 'ACTIVE'`, 'active')
+    assert(await evaluate(`document.querySelector('[data-testid=wa-delivery]').innerText.includes('Incoming: not proven yet')`), 'delivery not claimed')
+  } finally {
+    WA.preflight = null; WA.enabled = false
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+  }
 })
 
 await step('no console errors or uncaught exceptions', async () => {

@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { Field, InfoList } from '@/features/support/support-components'
-import { WA_NUMBER_PATHS, WA_SETUP_META } from '@/features/support/support-model'
+import { WA_CHECK_SOURCE, WA_NUMBER_PATHS, WA_PREFLIGHT_META, WA_SETUP_META } from '@/features/support/support-model'
 import { useAsync } from '@/hooks/use-async'
 import { describeDataError } from '@/lib/errors'
 import { formatDateTime } from '@/lib/format'
@@ -35,7 +35,8 @@ function useWebhookData(refresh: number) {
 /** Support → Settings → WhatsApp: preflight, onboarding checklist, Meta identifiers, secrets status, webhook, test and activation. */
 export function WhatsAppSettings() {
   const [refresh, setRefresh] = useState(0)
-  const q = useAsync(fetchWaConfig, [refresh])
+  // A new loader per refresh: passing the bare module function would never reload (useCallback keeps the same function).
+  const q = useAsync(() => fetchWaConfig(), [refresh])
   const hook = useWebhookData(refresh)
   const [busy, setBusy] = useState<string | null>(null)
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
@@ -51,6 +52,12 @@ export function WhatsAppSettings() {
   const d = q.data
   const c = d.config
   const st = WA_SETUP_META[c?.setup_state ?? 'NOT_CONFIGURED']
+  // One gate: the server preflight decides the status, the eligibility and whether Switch on is allowed.
+  const pre = d.preflight
+  const ps = pre ? WA_PREFLIGHT_META[pre.status] : null
+  // Before migration 20261219090000 the server sends no preflight: the earlier rule (state Connected) applies.
+  const canActivate = pre ? pre.can_activate : c?.setup_state === 'CONNECTED'
+  const blockedReason = pre?.blockers[0] ?? (pre ? undefined : 'Waiting for the server preflight.')
   const copy = (v: string) => void navigator.clipboard?.writeText(v)
   return (
     <div className="space-y-4" data-testid="wa-settings">
@@ -61,18 +68,29 @@ export function WhatsAppSettings() {
           <div><CardTitle>WhatsApp: Meta Cloud API</CardTitle>
             <CardDescription>Direct Meta WhatsApp Business Platform integration (no Zoho Bigin, no WhatsApp Web). The live number is never changed from here.</CardDescription></div>
           <div className="flex flex-wrap items-center gap-2">
-            <span title={st.hint} data-testid="wa-setup" data-state={c?.setup_state ?? 'NOT_CONFIGURED'}><StatusBadge label={st.label} tone={st.tone} /></span>
+            <span title={pre?.blockers.join(' ') || st.hint} data-testid="wa-setup" data-state={c?.setup_state ?? 'NOT_CONFIGURED'} data-status={pre?.status}>
+              <StatusBadge label={ps?.label ?? st.label} tone={ps?.tone ?? st.tone} /></span>
+            {pre && <span data-testid="wa-eligibility" data-eligibility={pre.eligibility}><StatusBadge label={`Number eligibility: ${pre.eligibility === 'VERIFIED' ? 'Verified' : pre.eligibility === 'BLOCKED' ? 'Blocked' : 'Pending'}`}
+              tone={pre.eligibility === 'VERIFIED' ? 'success' : pre.eligibility === 'BLOCKED' ? 'danger' : 'warning'} /></span>}
             <StatusBadge label={c?.integration_enabled ? 'Switched on' : 'Switched off'} tone={c?.integration_enabled ? 'success' : 'neutral'} />
             {c && <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void run('test', async () => (await testWaConnection()).results.map((r) => r.test?.message ?? r.message).join(' '))}>
               {busy === 'test' ? <Loader2 className="animate-spin" /> : <PlugZap />} Test connection</Button>}
-            {c && !c.integration_enabled && <Button size="sm" disabled={busy !== null || c.setup_state !== 'CONNECTED'} data-testid="wa-enable"
-              title={c.setup_state !== 'CONNECTED' ? 'Available when the setup state is Connected.' : undefined}
+            {c && !c.integration_enabled && <Button size="sm" disabled={busy !== null || !canActivate} data-testid="wa-enable"
+              title={!canActivate ? blockedReason : undefined}
               onClick={() => void run('on', async () => { await setWaEnabled(true, null); return 'WhatsApp switched on.' })}><Power /> Switch on</Button>}
             {c?.integration_enabled && <Button size="sm" variant="outline" className="text-red-700" onClick={() => setOff(true)}><Power /> Switch off</Button>}
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm" data-testid="wa-state-hint">{st.hint}{c?.last_test_result ? ` Last test: ${c.last_test_result}` : ''}</p>
+          {pre && pre.blockers.length > 0 ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="wa-state-hint">
+              <p className="font-medium">Activation is blocked until:</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5">{pre.blockers.map((b) => <li key={b}>{b}</li>)}</ul>
+            </div>
+          ) : (
+            <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm" data-testid="wa-state-hint">{pre ? (pre.status === 'ACTIVE' ? 'Active: agents can send and receive WhatsApp messages.'
+              : 'Ready to activate: every mandatory check passed. An administrator can switch the integration on.') : st.hint}{c?.last_test_result ? ` Last test: ${c.last_test_result}` : ''}</p>
+          )}
           {c && <InfoList items={[
             ['Connection status', d.account?.status_detail ?? '—'],
             ['Last inbound message', c.last_inbound_at ? formatDateTime(c.last_inbound_at) : 'None'],
@@ -86,6 +104,8 @@ export function WhatsAppSettings() {
           <ConfigForm cfg={c} onSaved={(t) => { setNotice({ ok: true, text: t }); reload() }} />
         </CardContent>
       </Card>
+
+      {c && pre && <PreflightCard pre={pre} />}
 
       {c && (
         <Card>
@@ -168,6 +188,34 @@ export function WhatsAppSettings() {
   )
 }
 
+const RESULT_TONE = { OK: 'success', PENDING: 'warning', BLOCKED: 'danger', FAILED: 'danger' } as const
+const RESULT_LABEL = { OK: 'Passed', PENDING: 'Pending', BLOCKED: 'Blocked', FAILED: 'Failed' } as const
+
+/** The server preflight: every condition with its evidence source, plus message delivery (never inferred from the webhook challenge). */
+function PreflightCard({ pre }: { pre: NonNullable<WaConfig['preflight']> }) {
+  const del = pre.delivery
+  return (
+    <Card data-testid="wa-preflight">
+      <CardHeader><div><CardTitle>Activation preflight</CardTitle>
+        <CardDescription>Checked on the server against Meta's own answers{pre.verified_at ? ` (last verified ${formatDateTime(pre.verified_at)})` : ' — run Test connection to verify the account mapping'}. A checkbox never overrides what Meta reports.</CardDescription></div></CardHeader>
+      <CardContent className="space-y-4">
+        <ul className="space-y-2">{pre.checks.map((k) => (
+          <li key={k.key} className="flex flex-wrap items-start justify-between gap-2 rounded-md border px-3 py-2 text-sm" data-testid={`wa-pf-${k.key}`} data-result={k.result}>
+            <div className="min-w-0 flex-1"><p className="font-medium">{k.label} {!k.mandatory && <span className="text-xs font-normal text-muted-foreground">recommended</span>}</p>
+              <p className="text-xs text-muted-foreground">{k.detail} <span className="whitespace-nowrap">· {WA_CHECK_SOURCE[k.source] ?? k.source}</span></p></div>
+            <StatusBadge label={RESULT_LABEL[k.result]} tone={RESULT_TONE[k.result]} />
+          </li>
+        ))}</ul>
+        <div className="rounded-md border px-3 py-2 text-sm" data-testid="wa-delivery">
+          <p className="font-medium">Message delivery (proven only by real traffic)</p>
+          <p className="text-xs text-muted-foreground">Incoming: {del.inbound_proven ? `${del.inbound_messages} message(s) received${del.last_inbound_at ? `, last ${formatDateTime(del.last_inbound_at)}` : ''}` : 'not proven yet — send a WhatsApp message to the support number from a staff phone'}.
+            {' '}Outgoing: {del.outbound_proven ? `${del.outbound_delivered} delivered, ${del.outbound_read} read` : 'not proven yet — after switching on, reply to that message (or send an approved template) and wait for the delivered status'}; {del.outbound_accepted} accepted by Meta, {del.outbound_failed} failed; {del.status_callbacks} status callback(s).</p>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 function ChecklistRow({ item, onChanged }: { item: WaConfig['checklist_items'][number]; onChanged: (n: { ok: boolean; text: string }) => void }) {
   const [note, setNote] = useState(item.note ?? '')
   const [busy, setBusy] = useState(false)
@@ -179,7 +227,8 @@ function ChecklistRow({ item, onChanged }: { item: WaConfig['checklist_items'][n
   return (
     <li className="rounded-md border px-3 py-2 text-sm" data-testid={`wa-check-${item.key}`}>
       <label className="flex items-start gap-2"><Checkbox checked={item.done} disabled={busy} onCheckedChange={(x) => void toggle(x === true)} />
-        <span>{item.label} {item.required ? <span className="text-xs text-red-700">required</span> : <span className="text-xs text-muted-foreground">recommended</span>}
+        <span>{item.label} {item.verified_by_meta ? <span className="text-xs font-medium text-green-700">verified with Meta</span>
+          : item.required ? <span className="text-xs text-red-700">required</span> : <span className="text-xs text-muted-foreground">not required for this usage</span>}
           {item.done && item.at && <span className="block text-xs text-muted-foreground">Confirmed by {item.by ?? 'an administrator'} on {formatDateTime(item.at)}{item.note ? ` — ${item.note}` : ''}</span>}</span></label>
       {!item.done && <Input aria-label={`Evidence for ${item.key}`} className="mt-2 h-8" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Evidence (Meta case / partner reference, date)" maxLength={500} />}
     </li>

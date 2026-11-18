@@ -48,10 +48,22 @@ export interface WaConfig {
     phone_info: Record<string, unknown>; templates_synced_at: string | null; last_error: string | null; last_error_at: string | null
   } | null
   account: { id: string; status: string; status_detail: string | null; last_checked_at: string | null } | null
-  checklist_items: { key: string; label: string; required: boolean; done: boolean; note: string | null; by: string | null; at: string | null }[]
+  checklist_items: { key: string; label: string; required: boolean; verified_by_meta?: boolean; done: boolean; note: string | null; by: string | null; at: string | null }[]
+  /** Server preflight (migration 20261219090000): the one source of status, eligibility and the Switch on gate. Absent before it. */
+  preflight?: WaPreflight
   templates: { id: string; name: string; language: string; category: string | null; status: string }[]
   counts: { received: number; sent: number; pending: number; failed: number; media_pending: number }
   events: { id: string; field: string; result: string; error: string | null; counts: Record<string, number>; replay_count: number; received_at: string; processed_at: string | null; purged: boolean }[]
+}
+export type WaPreflightStatus = 'NOT_CONFIGURED' | 'PENDING_VERIFICATION' | 'ELIGIBILITY_BLOCKED' | 'ERROR' | 'READY_TO_ACTIVATE' | 'ACTIVE'
+export interface WaPreflightCheck {
+  key: string; label: string; mandatory: boolean; result: 'OK' | 'PENDING' | 'BLOCKED' | 'FAILED'; source: 'META' | 'ADMIN' | 'WEBHOOK' | 'TEST' | 'CONFIG'; detail: string
+}
+export interface WaPreflight {
+  status: WaPreflightStatus; setup_state: WaSetupState; can_activate: boolean; eligibility: 'VERIFIED' | 'PENDING' | 'BLOCKED'; blockers: string[]
+  checks: WaPreflightCheck[]; verified_at: string | null
+  delivery: { inbound_messages: number; last_inbound_at: string | null; outbound_accepted: number; outbound_delivered: number; outbound_read: number
+    outbound_failed: number; status_callbacks: number; last_outbound_success_at: string | null; inbound_proven: boolean; outbound_proven: boolean }
 }
 export interface WaConfigSave {
   business_portfolio_id: string | null; waba_id: string | null; phone_number_id: string | null; display_phone_number: string | null; app_id: string | null
