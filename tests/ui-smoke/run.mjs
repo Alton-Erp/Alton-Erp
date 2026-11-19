@@ -8342,7 +8342,7 @@ await step('WhatsApp activation preflight: one server gate for status, eligibili
   WA.preflight = () => (mode === 'ready'
     ? { status: WA.enabled ? 'ACTIVE' : 'READY_TO_ACTIVATE', setup_state: 'CONNECTED', can_activate: !WA.enabled, eligibility: 'VERIFIED', blockers: [], checks: READY, verified_at: NOW, delivery }
     : { status: 'ELIGIBILITY_BLOCKED', setup_state: 'NUMBER_ELIGIBILITY_PENDING', can_activate: false, eligibility: 'BLOCKED', blockers: [BLOCK],
-        checks: READY.map((c) => (c.key === 'phone_in_waba' ? { ...c, result: 'BLOCKED', detail: BLOCK } : c.key === 'cloud_api_eligibility' ? { ...c, result: 'BLOCKED' } : c)), verified_at: NOW, delivery })
+        checks: READY.map((c) => (c.key === 'phone_in_waba' ? { ...c, result: 'BLOCKED', reason: 'WRONG_ACCOUNT', detail: BLOCK } : c.key === 'cloud_api_eligibility' ? { ...c, result: 'BLOCKED' } : c)), verified_at: NOW, delivery })
   try {
     await signOut().catch(() => {})
     await login('manager@test.invalid')
@@ -8355,6 +8355,9 @@ await step('WhatsApp activation preflight: one server gate for status, eligibili
       && document.querySelector('[data-testid=wa-eligibility]').dataset.eligibility === 'BLOCKED'`), 'blocked gate')
     assert(await evaluate(`document.querySelector('[data-testid=wa-state-hint]').innerText.includes('NOT under WABA 1973917729842030')
       && document.querySelector('[data-testid=wa-pf-phone_in_waba]').dataset.result === 'BLOCKED'`), 'exact reason')
+    assert(await evaluate(`document.querySelector('[data-testid=wa-pf-reason-phone_in_waba]').innerText.includes('Wrong account')
+      && document.querySelector('[data-testid=wa-verified-at]').innerText.includes('latest verification')
+      && [...document.querySelectorAll('[data-testid=wa-state-hint] li')].length === 1`), 'reason badge, verification time, one line per blocker')
     await screenshot('290-whatsapp-preflight-blocked')
     // Ready: every mandatory check verified with Meta (no manual ticks) -> Ready to activate -> Switch on -> Active.
     mode = 'ready'

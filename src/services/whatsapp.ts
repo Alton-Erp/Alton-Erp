@@ -58,10 +58,13 @@ export interface WaConfig {
 export type WaPreflightStatus = 'NOT_CONFIGURED' | 'PENDING_VERIFICATION' | 'ELIGIBILITY_BLOCKED' | 'ERROR' | 'READY_TO_ACTIVATE' | 'ACTIVE'
 export interface WaPreflightCheck {
   key: string; label: string; mandatory: boolean; result: 'OK' | 'PENDING' | 'BLOCKED' | 'FAILED'; source: 'META' | 'ADMIN' | 'WEBHOOK' | 'TEST' | 'CONFIG'; detail: string
+  /** Migration 20261220090000: why (Not tested, Verified, …), Meta's error code and when it was checked. */
+  reason?: WaCheckReason; error_code?: number | null; checked_at?: string | null; derived?: boolean
 }
+export type WaCheckReason = 'NOT_TESTED' | 'VERIFIED' | 'VERIFICATION_FAILED' | 'PERMISSION_DENIED' | 'INVALID_REQUEST' | 'WRONG_ACCOUNT'
 export interface WaPreflight {
   status: WaPreflightStatus; setup_state: WaSetupState; can_activate: boolean; eligibility: 'VERIFIED' | 'PENDING' | 'BLOCKED'; blockers: string[]
-  checks: WaPreflightCheck[]; verified_at: string | null
+  checks: WaPreflightCheck[]; verified_at: string | null; evidence_stale?: boolean
   delivery: { inbound_messages: number; last_inbound_at: string | null; outbound_accepted: number; outbound_delivered: number; outbound_read: number
     outbound_failed: number; status_callbacks: number; last_outbound_success_at: string | null; inbound_proven: boolean; outbound_proven: boolean }
 }

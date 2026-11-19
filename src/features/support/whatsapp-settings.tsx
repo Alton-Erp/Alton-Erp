@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { Field, InfoList } from '@/features/support/support-components'
-import { WA_CHECK_SOURCE, WA_NUMBER_PATHS, WA_PREFLIGHT_META, WA_SETUP_META } from '@/features/support/support-model'
+import { WA_CHECK_REASON, WA_CHECK_SOURCE, WA_NUMBER_PATHS, WA_PREFLIGHT_META, WA_SETUP_META } from '@/features/support/support-model'
 import { useAsync } from '@/hooks/use-async'
 import { describeDataError } from '@/lib/errors'
 import { formatDateTime } from '@/lib/format'
@@ -85,7 +85,7 @@ export function WhatsAppSettings() {
           {pre && pre.blockers.length > 0 ? (
             <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="wa-state-hint">
               <p className="font-medium">Activation is blocked until:</p>
-              <ul className="mt-1 list-disc space-y-0.5 pl-5">{pre.blockers.map((b) => <li key={b}>{b}</li>)}</ul>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5">{pre.blockers.map((b, i) => <li key={`${i}-${b}`}>{b}</li>)}</ul>
             </div>
           ) : (
             <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm" data-testid="wa-state-hint">{pre ? (pre.status === 'ACTIVE' ? 'Active: agents can send and receive WhatsApp messages.'
@@ -197,13 +197,14 @@ function PreflightCard({ pre }: { pre: NonNullable<WaConfig['preflight']> }) {
   return (
     <Card data-testid="wa-preflight">
       <CardHeader><div><CardTitle>Activation preflight</CardTitle>
-        <CardDescription>Checked on the server against Meta's own answers{pre.verified_at ? ` (last verified ${formatDateTime(pre.verified_at)})` : ' — run Test connection to verify the account mapping'}. A checkbox never overrides what Meta reports.</CardDescription></div></CardHeader>
+        <CardDescription data-testid="wa-verified-at">Checked on the server against Meta's own answers{pre.verified_at ? ` — latest verification ${formatDateTime(pre.verified_at)}` : ' — run Test connection to verify the account mapping'}. A checkbox never overrides what Meta reports.
+          {pre.evidence_stale && <span className="block text-amber-800">The stored verification was made for other ids or by an earlier version: run Test connection again.</span>}</CardDescription></div></CardHeader>
       <CardContent className="space-y-4">
         <ul className="space-y-2">{pre.checks.map((k) => (
           <li key={k.key} className="flex flex-wrap items-start justify-between gap-2 rounded-md border px-3 py-2 text-sm" data-testid={`wa-pf-${k.key}`} data-result={k.result}>
             <div className="min-w-0 flex-1"><p className="font-medium">{k.label} {!k.mandatory && <span className="text-xs font-normal text-muted-foreground">recommended</span>}</p>
-              <p className="text-xs text-muted-foreground">{k.detail} <span className="whitespace-nowrap">· {WA_CHECK_SOURCE[k.source] ?? k.source}</span></p></div>
-            <StatusBadge label={RESULT_LABEL[k.result]} tone={RESULT_TONE[k.result]} />
+              <p className="text-xs text-muted-foreground">{k.detail} <span className="whitespace-nowrap">· {WA_CHECK_SOURCE[k.source] ?? k.source}{k.error_code ? ` · Meta error ${k.error_code}` : ''}{k.checked_at ? ` · ${formatDateTime(k.checked_at)}` : ''}</span></p></div>
+            <span data-testid={`wa-pf-reason-${k.key}`} data-reason={k.reason}><StatusBadge label={k.reason ? WA_CHECK_REASON[k.reason] ?? k.reason : RESULT_LABEL[k.result]} tone={RESULT_TONE[k.result]} /></span>
           </li>
         ))}</ul>
         <div className="rounded-md border px-3 py-2 text-sm" data-testid="wa-delivery">

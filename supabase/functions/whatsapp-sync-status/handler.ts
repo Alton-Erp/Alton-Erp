@@ -10,7 +10,7 @@
 
 import { corsHeaders, type Client } from '../_shared/google/google.ts'
 import { GRAPH, authorizeWa, graphError, graphFetch, graphUrl, waSecret, type WaDeps, type WaRuntime } from '../_shared/whatsapp/whatsapp.ts'
-import { verifyMetaAccount } from '../_shared/whatsapp/verify.ts'
+import { PHONE_STATUS_MEANING, verifyMetaAccount } from '../_shared/whatsapp/verify.ts'
 
 export interface Deps extends WaDeps {
   allowedOrigins: string[]
@@ -23,7 +23,8 @@ export async function testConnection(deps: Deps, rt: WaRuntime, token: string | 
   const result = await testPhone(deps, rt, token)
   if (token && rt.waba_id && rt.phone_number_id) {
     try {
-      const evidence = await verifyMetaAccount(deps.fetch, rt, token)
+      // Only whether the app secret is set is recorded (it verifies X-Hub-Signature-256 in whatsapp-webhook), never its value.
+      const evidence = await verifyMetaAccount(deps.fetch, rt, token, { appSecretConfigured: waSecret('WHATSAPP_APP_SECRET', deps.env) !== null })
       // Stored for the activation preflight (migration 20261219090000). Before that migration this call fails harmlessly.
       await deps.admin().rpc('support_whatsapp_verification_result', { p_account: rt.account_id, p_verification: evidence })
     } catch {
@@ -54,7 +55,8 @@ async function testPhone(deps: Deps, rt: WaRuntime, token: string | null): Promi
   const info = await res.json().catch(() => ({})) as Record<string, unknown>
   const safe = Object.fromEntries(FIELDS.split(',').filter((k) => k in info).map((k) => [k, info[k]]))
   const problems: string[] = []
-  if (String(info.status ?? '').toUpperCase() !== 'CONNECTED') problems.push(`number status is ${info.status ?? 'not reported'} (must be CONNECTED)`)
+  const status = String(info.status ?? '').trim().toUpperCase()
+  if (status !== 'CONNECTED') problems.push(`number status is ${status || 'not reported'}${PHONE_STATUS_MEANING[status] ? ` (${PHONE_STATUS_MEANING[status]})` : ''} (must be CONNECTED)`)
   if (info.platform_type !== undefined && String(info.platform_type).toUpperCase() !== 'CLOUD_API') problems.push(`platform is ${info.platform_type} (must be CLOUD_API)`)
   if (digits(String(info.display_phone_number ?? '')) !== digits(rt.display_phone_number)) problems.push(`Meta reports ${info.display_phone_number ?? 'no number'}, not the configured ${rt.display_phone_number}`)
   if (problems.length) return record(false, safe, `Not ready: ${problems.join('; ')}.`)

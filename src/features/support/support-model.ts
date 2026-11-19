@@ -307,6 +307,10 @@ export const WA_PREFLIGHT_META: Record<string, { label: string; tone: Tone }> = 
   READY_TO_ACTIVATE: { label: 'Ready to activate', tone: 'info' },
   ACTIVE: { label: 'Active', tone: 'success' },
 }
+export const WA_CHECK_REASON: Record<string, string> = {
+  NOT_TESTED: 'Not tested', VERIFIED: 'Verified', VERIFICATION_FAILED: 'Verification failed', PERMISSION_DENIED: 'Permission denied',
+  INVALID_REQUEST: 'Invalid request', WRONG_ACCOUNT: 'Wrong account',
+}
 export const WA_CHECK_SOURCE: Record<string, string> = { META: 'Verified with Meta', ADMIN: 'Confirmed by an administrator', WEBHOOK: 'Webhook', TEST: 'Connection test', CONFIG: 'Settings' }
 export const WA_NUMBER_PATHS: Record<string, string> = {
   UNKNOWN: 'Not confirmed yet',

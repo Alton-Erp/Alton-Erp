@@ -169,3 +169,27 @@ Switch on.
 
 **Deployment order.** Apply the migration, then redeploy `whatsapp-sync-status`, then run Test connection. Deploying
 the migration changes no state by itself.
+
+### Preflight version 2 (migration 20261220090000)
+
+- **Separate read-only Meta requests**, so one refused field or permission never hides the others:
+  - `GET /{PHONE_NUMBER_ID}?fields=id,display_phone_number,verified_name,quality_rating,status,platform_type,code_verification_status`;
+  - `GET /{WABA_ID}?metadata=1&fields=id`, which returns the object type (is the id really a WABA?);
+  - `GET /{WABA_ID}?fields=id,name,account_review_status`;
+  - `GET /{WABA_ID}?fields=owner_business_info`;
+  - `GET /{WABA_ID}/phone_numbers`;
+  - `GET /{WABA_ID}/subscribed_apps`;
+  - `GET /debug_token`.
+- When the number is not under the configured WABA, the WABAs covered by the token are searched read-only, and the
+  WABA that holds the number is named. The configured id is never changed.
+- **Each check has its own reason:** Not tested, Verified, Verification failed, Permission denied, Invalid request or
+  Wrong account. Each also shows Meta's error code and the time it was checked.
+- **Webhook evidence has levels:**
+  1. the challenge;
+  2. the app subscription;
+  3. a signed POST received (Meta's webhook "Test" button is enough);
+  4. a signed event for this WABA;
+  5. a customer message.
+- Signed events that Meta sends for this phone number under another WABA id are reported as the wrong account.
+- **Secrets:** `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_APP_SECRET` (the Meta app secret; webhook signatures),
+  `WHATSAPP_VERIFY_TOKEN` and `WHATSAPP_CRON_SECRET`. Only whether the app secret is set is recorded.
