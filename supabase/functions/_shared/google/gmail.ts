@@ -33,10 +33,13 @@ export class Gmail {
   private readonly fetcher: typeof fetch
   private readonly token: string
   private readonly sleep: (ms: number) => Promise<void>
-  constructor(fetcher: typeof fetch, token: string, sleep: (ms: number) => Promise<void>) {
+  private readonly timeoutMs: number
+  /** timeoutMs: per request (the mailbox sync uses a shorter one so a slow call cannot exhaust its time budget). */
+  constructor(fetcher: typeof fetch, token: string, sleep: (ms: number) => Promise<void>, timeoutMs = 25000) {
     this.fetcher = fetcher
     this.token = token
     this.sleep = sleep
+    this.timeoutMs = timeoutMs
   }
 
   private async call<T>(method: 'GET' | 'POST', path: string, body?: unknown, retry = method === 'GET'): Promise<T> {
@@ -49,7 +52,7 @@ export class Gmail {
           method,
           headers: { Authorization: `Bearer ${this.token}`, Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
           body: body === undefined ? undefined : JSON.stringify(body),
-        }, 25000)
+        }, this.timeoutMs)
       } catch {
         last = new GmailError(0, 'Gmail could not be reached (network error or timeout).')
         continue

@@ -84,7 +84,7 @@ export function EmailCard({ email, timezone, canReply, onReply }: {
               onClick={() => { setError(null); attachmentUrl(a.storage_path!).then((u) => window.open(u, '_blank', 'noopener'), (e) => setError(describeDataError(e))) }}>
               <Paperclip className="size-3.5" />{a.file_name}{a.size_bytes ? ` (${Math.max(1, Math.round(a.size_bytes / 1024))} KB)` : ''}</button>))}
         {email.skipped_attachments.map((a, i) => (
-          <span key={`skip-${i}`} className="text-xs text-amber-800" title={a.reason ?? ''}>{a.filename}: {a.state === 'BLOCKED' ? 'not stored (blocked type)' : a.state === 'TOO_LARGE' ? 'not stored (too large)' : a.state === 'FAILED' ? 'download failed, retried on the next sync' : 'downloading…'}</span>
+          <span key={`skip-${i}`} className="text-xs text-amber-800" title={a.reason ?? ''}>{a.filename}: {a.state === 'BLOCKED' ? 'not stored (blocked type)' : a.state === 'TOO_LARGE' ? 'not stored (too large)' : a.state === 'FAILED' ? (a.reason?.startsWith('Gave up') ? 'download failed after 5 attempts (Support Settings → Email → Retry)' : 'download failed, retried automatically') : 'downloading…'}</span>
         ))}
       </div>
       {error && <p role="alert" className="mt-1 text-xs text-red-700">{error}</p>}

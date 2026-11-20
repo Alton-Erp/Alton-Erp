@@ -68,8 +68,36 @@ export const fetchGoogleStatus = () => invoke<GoogleStatus>('google-oauth-start'
 export const startGoogleConnect = () => invoke<{ url: string }>('google-oauth-start', { action: 'start' })
 export const testGoogleConnection = () => invoke<{ ok: boolean; message: string }>('google-oauth-start', { action: 'test' })
 export const disconnectGoogle = (reason: string) => invoke<{ ok: boolean; revoked: boolean }>('google-oauth-start', { action: 'disconnect', reason })
-export interface SyncResult { ok: boolean; kind: string; stored: number; duplicates: number; confirmed: number; failed: number; remaining: number; message: string }
+export interface SyncResult {
+  ok: boolean; kind: string; stored: number; duplicates: number; confirmed: number; failed: number; remaining: number; message: string
+  /** Resumable sync (20261224090000): another batch held the lock; more work is left; a background batch was started. */
+  busy?: boolean; more?: boolean; continuing?: boolean; stage?: string
+}
 export const syncMailboxNow = (full = false) => invoke<{ results: SyncResult[] }>('google-gmail-sync', { action: full ? 'full' : 'sync' })
+/** Puts failed messages and attachments back in the queue, then runs a batch. */
+export const retryMailboxSync = () => invoke<{ results: SyncResult[] }>('google-gmail-sync', { action: 'retry' })
+
+/** Progress of the resumable mailbox sync (counts only). null before migration 20261224090000. */
+export interface SyncStatus {
+  running: boolean; full_requested: boolean; batch_no: number; last_batch_at: string | null
+  last_batch: { fetched?: number; stored?: number; duplicates?: number; failed?: number; attachments?: number; bytes?: number; duration_ms?: number; ok?: boolean; stage?: string | null }
+  last_error: string | null; last_error_stage: string | null; last_error_at: string | null
+  remaining: { queue: number; queue_ready: number; failed: number; attachments: number; attachments_ready: number; attachments_failed: number; discovery: boolean }
+  job: null | {
+    id: string; reason: 'MANUAL' | 'INITIAL' | 'HISTORY_EXPIRED'; status: 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'; days: number; discovery_done: boolean; pages: number
+    discovered: number; processed: number; stored: number; duplicates: number; confirmed: number; ignored: number; failed: number; batches: number; remaining: number
+    started_at: string; finished_at: string | null; last_batch_at: string | null; last_error: string | null; failure_stage: string | null
+  }
+}
+export async function fetchSyncStatus(): Promise<SyncStatus | null> {
+  try {
+    return await rpc<SyncStatus | null>('support_email_sync_status')
+  } catch (e) {
+    const x = e as { code?: string; message?: string } | null
+    if (x?.code === 'PGRST202' || x?.code === '42883' || /could not find the function/i.test(x?.message ?? '')) return null
+    throw e
+  }
+}
 export const replayGmailEvent = (eventId: string) => invoke<{ results: SyncResult[] }>('google-gmail-sync', { action: 'replay', event_id: eventId })
 export const renewGmailWatch = () => invoke<{ results: { ok: boolean; message: string }[] }>('google-gmail-watch-renew', {})
 

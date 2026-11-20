@@ -9,12 +9,18 @@
 // Idempotency: each Pub/Sub message id is logged once; a redelivery is acknowledged without work.
 // Acknowledgement: 2xx acknowledges. Unknown mailboxes and duplicates are acknowledged; a rate-limited burst gets
 // 429 so Pub/Sub retries later. A failed sync is still acknowledged: the scheduled sync reconciles the mailbox.
+// Work: one small batch (runSync, webhook limits). When a batch of the same mailbox is already running, the
+// notification is acknowledged: that run reads the history again. Work left is continued in the background.
 
 import { b64urlToBytes, log, safeEqual, secret, type Client } from '../_shared/google/google.ts'
 import { verifyGoogleOidc } from '../_shared/google/oidc.ts'
-import { syncMailbox, type SyncDeps } from '../_shared/google/sync.ts'
+import { runSync, syncLimits, type SyncDeps } from '../_shared/google/sync.ts'
 
-export interface Deps extends SyncDeps { admin(): Client }
+export interface Deps extends SyncDeps {
+  admin(): Client
+  /** Starts the next batch in google-gmail-sync without waiting (index.ts). */
+  continueLater?(account: string, depth: number): void
+}
 const MAX_BODY = 64 * 1024
 
 export async function handle(req: Request, deps: Deps): Promise<Response> {
@@ -55,7 +61,8 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
   const r = logged.data
   if (r.result === 'RATE_LIMITED') return reply(429, 'rate_limited')
   if (r.result !== 'LOGGED' || !r.account_id || !r.event_id) return reply(200, r.result.toLowerCase())
-  const out = await syncMailbox(deps, r.account_id, { mode: 'auto', maxMessages: 25, reconcile: false })
+  const out = await runSync(deps, r.account_id, { mode: 'webhook', limits: syncLimits(deps.env, 'webhook') })
   await admin.rpc('support_gmail_event_done', { p_event: r.event_id, p_result: out.ok ? 'PROCESSED' : 'ERROR', p_error: out.ok ? null : out.message.slice(0, 500) })
-  return reply(200, out.ok ? 'processed' : 'logged')
+  if (out.more && out.progressed) deps.continueLater?.(r.account_id, 1)
+  return reply(200, out.busy ? 'queued' : out.ok ? 'processed' : 'logged')
 }

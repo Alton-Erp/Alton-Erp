@@ -95,7 +95,7 @@ Why `--no-verify-jwt` is safe for each of these:
 
 | Function | When | Why |
 |---|---|---|
-| `google-gmail-sync` | Every 5–10 minutes | Reads mailbox history and reconciles the last two days, so a missed or dropped notification never loses an email |
+| `google-gmail-sync` | Every 2 minutes | One small batch: mailbox history, queued messages and attachments, a two-day reconciliation every 15 minutes. While work is left, batches continue by themselves; this schedule is the safety net when a batch chain stops |
 | `google-gmail-watch-renew` | Daily | Gmail stops push unless `watch` is renewed at least every 7 days; Google recommends daily |
 
 Each run is a `POST` with the header `x-cron-secret: <GOOGLE_CRON_SECRET>`, for example from `pg_cron` + `pg_net` or any scheduler:
@@ -239,3 +239,57 @@ There is no new table, so the reset allowlist is unchanged. Before this migratio
 **Deploy** 20261222090000, then 20261223090000, then `google-gmail-send`, then the frontend.
 
 Checks: `npm run test:db:email-message-tools`, `tests/unit/email-workspace.test.ts` and `tests/unit/gmail-functions.test.ts`, and the smoke step "Email message tools".
+
+## Resumable mailbox sync (migration 20261224090000)
+
+**Why.** `google-gmail-sync` used to do everything in one invocation:
+- list up to 2,000 message ids;
+- fetch up to 300 messages (`format=full`) one after another;
+- download, decode and upload every attachment of each;
+- then reconcile.
+
+Supabase stops an Edge Function that exceeds its memory, wall-clock or CPU-time limit (CPU time is about 2 s per request). The caller then gets HTTP 546. A large first sync or full re-sync could not finish, and the work it had done was not saved as progress.
+
+**Now, each invocation is one small batch under a database lock per mailbox:**
+
+1. **Queue message ids.**
+   - **History:** since the checkpoint (up to 4 pages). The checkpoint moves only past ids already saved in `support_email_sync_queue`, in the same transaction.
+   - **A full re-sync's discovery:** up to 4 pages of 500 ids. The page token is saved after each page, and an expired token restarts discovery without queuing anything twice.
+   - **A two-day reconciliation:** every 15 minutes.
+2. **Fetch up to 12 queued messages and store each one.** Storing is idempotent by Gmail message id. Attachment parts are recorded as pending; small parts that came inside the message are stored at once.
+3. **Download up to 4 attachments, within 15 MB.** A single larger file is still downloaded on its own. A failed part is retried with backoff and gives up after 5 attempts, with the reason shown.
+
+**Limits and stopping.**
+- A batch stops starting new work after 30 s, or after about 1.2 s of measured parsing and decoding. Each Gmail request times out after 15 s.
+- It answers with counts and `more: true` when work is left.
+- Adjust the limits with the optional settings `GMAIL_SYNC_BATCH_SIZE`, `GMAIL_SYNC_ATTACHMENTS`, `GMAIL_SYNC_ATTACHMENT_MB`, `GMAIL_SYNC_TIME_BUDGET_MS`, `GMAIL_SYNC_CPU_BUDGET_MS` and `GMAIL_SYNC_LOCK_TTL_SECONDS`.
+
+**Background continuation.**
+- When a batch leaves work and made progress, it sends a request to `google-gmail-sync` itself (`action: continue`, with `x-cron-secret`), at most 400 batches in a row.
+- The scheduled run every 2 minutes picks up anything left: after a worker failure (HTTP 546), a network error, or a broken chain.
+- The browser is never involved: Support Settings → Email only shows progress, polled from `support_email_sync_status`.
+
+**Failure behaviour.**
+- **Overlapping runs:** a scheduled run, a push notification and an administrator's click never overlap. The second one is told the mailbox is busy, and a Full re-sync asked for meanwhile starts with the next batch.
+- **A worker that dies:** it keeps the lock until the lock expires (120 s). The next run then takes over.
+- **A worker that wakes up later:** it is refused (lock lost) and changes nothing.
+- **Failed messages:** a message Gmail keeps refusing is retried with backoff (1, 2, 4, 8 minutes). After 5 attempts it is shown as failed; **Retry** on the settings screen puts failed messages and attachments back.
+
+**Data:**
+- **New tables**, all with no app grants: `support_email_sync_state` (lock, checkpoint, last batch), `support_email_sync_jobs` (full re-syncs) and `support_email_sync_queue`.
+- **Reset allowlist:** now 134 tables (forced reset: 141).
+- **Unchanged:** no email, attachment, credential or mailbox-state row is changed or deleted, and ingest, sending and OAuth are unchanged.
+- **Checkpoint mirroring:** the checkpoint is mirrored to `support_email_config.last_history_id` at the end of a run (or every 10 minutes), so the config is not rewritten (and audited) on every batch.
+
+**Deploy order:**
+1. Apply the migration `20261224090000_gmail_sync_jobs`.
+2. Deploy `google-gmail-sync` and `google-gmail-webhook` (both `--no-verify-jwt`, as before).
+3. Change the schedule to every 2 minutes.
+4. Deploy the frontend.
+
+The functions need `GOOGLE_CRON_SECRET`, which is already set for the scheduler. Rollback: `supabase/rollback/20261224090000_gmail_sync_jobs_down.sql` and the previous function versions.
+
+Checks:
+- `npm run test:db:gmail-sync` runs the real engine on the real SQL, against a simulated Gmail and faults: 500 and 2,000-message mailboxes, a worker killed mid-batch, expired history and page tokens, and partial attachment failures.
+- Unit tests: `tests/unit/gmail-functions.test.ts` and `tests/unit/email-sync-progress.test.ts`.
+- Smoke step: "Email sync progress".

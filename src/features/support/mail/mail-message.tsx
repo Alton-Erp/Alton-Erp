@@ -210,7 +210,7 @@ export function MailMessage({ e, expanded, starred, onToggle, timezone, tools }:
           </div>
         )}
         {e.skipped_attachments.map((a, i) => (
-          <p key={`skip-${i}`} className="mt-1 text-xs text-amber-800" title={a.reason ?? ''}>{a.filename}: {a.state === 'BLOCKED' ? 'not stored (blocked type)' : a.state === 'TOO_LARGE' ? 'not stored (too large)' : a.state === 'FAILED' ? 'download failed, retried on the next sync' : 'downloading…'}</p>
+          <p key={`skip-${i}`} className="mt-1 text-xs text-amber-800" title={a.reason ?? ''}>{a.filename}: {a.state === 'BLOCKED' ? 'not stored (blocked type)' : a.state === 'TOO_LARGE' ? 'not stored (too large)' : a.state === 'FAILED' ? (a.reason?.startsWith('Gave up') ? 'download failed after 5 attempts (Support Settings → Email → Retry)' : 'download failed, retried automatically') : 'downloading…'}</p>
         ))}
       </div>
       <OriginalDialog e={e} open={original} onOpenChange={setOriginal} timezone={timezone} />

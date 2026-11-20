@@ -208,7 +208,7 @@ ok('drafts are private: listed for their author only', (await as('mb_agent')(`se
 ok('a viewer without support.reply cannot keep email drafts', await refused('mb_view', `select public.erp_form_draft_save('support.email', null, 'd-2', '{}'::jsonb, null, 0)`))
 
 console.log('\nReset allowlist and rollback')
-ok('ERP reset allowlist: 131 tables including the mailbox state (before conversations)', Number(await val(`select count(*) from private.erp_reset_tables()`)) === 131
+ok('ERP reset allowlist: 131 tables or more (later migrations add their own) including the mailbox state (before conversations)', Number(await val(`select count(*) from private.erp_reset_tables()`)) >= 131
   && Number(await val(`select ord from private.erp_reset_tables() where table_name = 'support_email_thread_state'`)) < Number(await val(`select ord from private.erp_reset_tables() where table_name = 'support_conversations'`)))
 await db.exec('reset role')
 await db.exec(await read(path.join(root, 'supabase', 'rollback', `${NAME}_down.sql`)))

@@ -4,3 +4,5 @@ declare namespace Deno {
   const env: { get(name: string): string | undefined }
   function serve(handler: (req: Request) => Response | Promise<Response>): void
 }
+// Supabase Edge Runtime: keeps the worker alive until a background promise settles.
+declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void } | undefined

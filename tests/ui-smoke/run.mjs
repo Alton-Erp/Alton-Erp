@@ -708,7 +708,9 @@ const PHONE_DETAIL = (id) => {
     events: [{ event_name: out ? 'click_to_call' : 'received', from: null, to: out ? 'INITIATED' : 'RINGING', occurred_at: c.started_at, at: c.created_at }] }
 }
 // Google Workspace Gmail (20261212090000). "Sent" only when the mock Gmail accepted the message.
-const GMAIL = { connected: false, sendOutcome: 'PENDING', sendCalls: [], startCalls: 0, originalCalls: [] }
+const GMAIL = { connected: false, sendOutcome: 'PENDING', sendCalls: [], startCalls: 0, originalCalls: [], syncCalls: [] }
+// Resumable sync progress (20261224090000); null = the function does not exist yet (before the migration).
+const SYNC = { status: null }
 const GMAIL_CONFIG = () => ({
   config: { channel_account_id: 'sca-mail', provider: 'GOOGLE_WORKSPACE', mailbox_address: 'support@alton.example', display_name: 'Alton Support', signature: 'Alton Support Team',
     pubsub_topic: 'projects/alton-erp-123/topics/gmail-support', push_enabled: true, mailbox_modify_enabled: false, initial_sync_days: 7, max_attachment_mb: 10,
@@ -1662,6 +1664,11 @@ const api = http.createServer((req, res) => {
         message: state === 'SENT' ? 'Sent: Gmail accepted the message.' : state === 'FAILED' ? 'Gmail refused the message: Invalid To header' : 'Gmail did not confirm the message. It shows as Pending until the next mailbox sync confirms it.' })
     }
     if (url.pathname === '/functions/v1/google-gmail-sync') {
+      GMAIL.syncCalls.push(body ?? {})
+      if (SYNC.status) {
+        return send(res, 200, { results: [{ ok: true, busy: false, kind: 'FULL', stored: 12, duplicates: 0, confirmed: 0, failed: 0, remaining: 1338, more: true, continuing: true,
+          message: body?.action === 'retry' ? 'Mailbox sync: 1 new email.' : 'Full re-sync: 12 new emails.' }] })
+      }
       return send(res, 200, { results: [{ ok: true, kind: body?.action === 'replay' ? 'REPLAY' : 'HISTORY', stored: 0, duplicates: 1, confirmed: 0, failed: 0, remaining: 0,
         message: body?.action === 'replay' ? 'Mailbox history synchronised: 0 new, 1 already stored.' : 'Mailbox history synchronised: 1 new.' }] })
     }
@@ -2227,6 +2234,9 @@ const api = http.createServer((req, res) => {
           PHONE_CONFIG.config.is_enabled = false
           PHONE_CONFIG.config.disconnected_at = new Date().toISOString()
           return send(res, 200, null)
+        case 'support_email_sync_status':
+          if (!SYNC.status) return send(res, 404, { code: 'PGRST202', message: 'Could not find the function public.support_email_sync_status' })
+          return send(res, 200, SYNC.status)
         case 'support_email_config_get':
           return has('support.manage_integrations') ? send(res, 200, GMAIL_CONFIG()) : send(res, 403, { code: '42501', message: 'You are not allowed to perform this action (requires support.manage_integrations).' })
         case 'support_email_config_save':
@@ -8139,6 +8149,62 @@ await step('Support email (Gmail): Settings > Email connect / status without sec
     SUPPORT_INBOX.splice(SUPPORT_INBOX.indexOf(mailConv), 1)
     emailChannel.status = before
     GMAIL.connected = false
+  }
+})
+
+await step('Email sync progress: batches continue on the server, progress and remaining counts, duplicate runs prevented, Retry after a failure, page can be left', async () => {
+  const PERMS = ['support.view', 'support.manage_tickets', 'support.assign', 'support.reply', 'support.manage_integrations', 'support.view_reports', 'support.manage_settings']
+  USERS['manager@test.invalid'].permissions.push(...PERMS)
+  const emailChannel = SUPPORT_CHANNELS.find((c) => c.channel === 'EMAIL')
+  const before = emailChannel.status
+  const none = { queue: 0, queue_ready: 0, failed: 0, attachments: 0, attachments_ready: 0, attachments_failed: 0, discovery: false }
+  const job = { id: 'j1', reason: 'MANUAL', status: 'RUNNING', days: 7, discovery_done: true, pages: 4, discovered: 1800, processed: 450, stored: 440, duplicates: 10, confirmed: 0,
+    ignored: 0, failed: 0, batches: 40, remaining: 1350, started_at: NOW, finished_at: null, last_batch_at: NOW, last_error: null, failure_stage: null }
+  GMAIL.connected = true; emailChannel.status = 'CONNECTED'
+  try {
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+    await setViewport(1440, 900)
+    // Before the migration: the buttons work as before, with a note instead of progress.
+    SYNC.status = null
+    await goto('/support/settings?tab=email')
+    await waitFor(`!!document.querySelector('[data-testid=email-sync-panel]') && document.querySelector('[data-testid=email-sync-panel]').innerText.includes('Progress appears once migration')`, 'pre-migration note')
+    // A full re-sync in progress: bar, processed / remaining, attachments still downloading; Full re-sync cannot start twice.
+    SYNC.status = { running: false, full_requested: false, batch_no: 41, last_batch_at: NOW, last_batch: { fetched: 12, stored: 12, attachments: 3, bytes: 3145728, duration_ms: 9200, ok: true },
+      last_error: null, last_error_stage: null, last_error_at: null, remaining: { ...none, queue: 1350, queue_ready: 1350, attachments: 40, attachments_ready: 40 }, job }
+    await goto('/support/settings?tab=email')
+    await waitFor(`document.querySelector('[data-testid=email-sync-state]')?.dataset.state === 'CONTINUING'`, 'sync in progress')
+    assert(await evaluate(`document.querySelector('[data-testid=email-sync-bar]').getAttribute('aria-valuenow') === '25'
+      && document.querySelector('[data-testid=email-sync-lines]').innerText.includes('450 of 1,800 new messages processed')
+      && document.querySelector('[data-testid=email-sync-lines]').innerText.includes('40 attachments still downloading')
+      && document.querySelector('[data-testid=email-sync-last]').innerText.includes('12 fetched (12 new), 3 attachments (3.0 MB) in 9.2 s')
+      && document.querySelector('[data-testid=email-sync-last]').innerText.includes('you can leave this page')`), 'progress details')
+    assert(await evaluate(`document.querySelector('[data-testid=email-sync-full]').disabled && !document.querySelector('[data-testid=email-sync-now]').disabled`), 'Full re-sync locked while one runs')
+    await screenshot('267-email-sync-progress')
+    const n0 = GMAIL.syncCalls.length
+    await evaluate(`(() => { const b = document.querySelector('[data-testid=email-sync-now]'); b.click(); b.click(); b.click() })()`)
+    await waitFor(`document.querySelector('[data-testid=email-notice]')?.innerText.includes('Continuing in the background')`, 'continuing notice')
+    assert(GMAIL.syncCalls.length === n0 + 1 && (GMAIL.syncCalls.at(-1).action ?? 'sync') === 'sync', `one request for three clicks: ${GMAIL.syncCalls.length - n0}`)
+    // A batch running right now: both buttons wait.
+    SYNC.status = { ...SYNC.status, running: true }
+    await goto('/support/settings?tab=email')
+    await waitFor(`document.querySelector('[data-testid=email-sync-state]')?.dataset.state === 'RUNNING' && document.querySelector('[data-testid=email-sync-now]').disabled`, 'running: buttons wait')
+    // A failed batch and messages that gave up: needs attention, Retry.
+    SYNC.status = { ...SYNC.status, running: false, job: null, last_batch: { ok: false, stage: 'history' }, last_error: 'Sync stopped at history: Gmail API error 503: backend',
+      last_error_stage: 'history', last_error_at: NOW, remaining: { ...none, failed: 2, attachments: 1, attachments_failed: 1 } }
+    await goto('/support/settings?tab=email')
+    await waitFor(`document.querySelector('[data-testid=email-sync-state]')?.dataset.state === 'ATTENTION' && !!document.querySelector('[data-testid=email-sync-retry]')`, 'needs attention')
+    assert(await evaluate(`document.querySelector('[data-testid=email-sync-error]').innerText.includes('Gmail API error 503')
+      && document.querySelector('[data-testid=email-sync-lines]').innerText.includes('2 messages could not be fetched after 5 attempts')`), 'error and failures shown')
+    await click('[data-testid=email-sync-retry]')
+    for (let i = 0; i < 30 && GMAIL.syncCalls.at(-1)?.action !== 'retry'; i++) await sleep(100)
+    assert(GMAIL.syncCalls.at(-1).action === 'retry', 'retry request')
+    assert(!(await evaluate(`document.body.innerText.includes('ya29') || document.body.innerText.includes('refresh_token')`)), 'no token on the page')
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+    emailChannel.status = before
+    SYNC.status = null; GMAIL.connected = false
   }
 })
 

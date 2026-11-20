@@ -1,4 +1,4 @@
-import { Copy, Loader2, Mail, PlugZap, Plus, RefreshCw, RotateCcw, Unplug } from 'lucide-react'
+import { Copy, Loader2, Mail, PlugZap, Plus, RotateCcw, Unplug } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
+import { EmailSyncPanel } from '@/features/support/email-sync-progress'
 import { Field, InfoList, IntegrationBadge } from '@/features/support/support-components'
 import { GMAIL_CONNECT_REASONS, isEmail } from '@/features/support/support-model'
 import { useAsync } from '@/hooks/use-async'
@@ -19,7 +20,7 @@ import { describeDataError } from '@/lib/errors'
 import { formatDateTime } from '@/lib/format'
 import {
   disconnectGoogle, fetchEmailConfig, fetchEmailTemplates, fetchGoogleStatus, renewGmailWatch, replayGmailEvent, saveEmailConfig, saveEmailTemplate, startGoogleConnect,
-  syncMailboxNow, testGoogleConnection, type EmailConfig, type EmailTemplate, type GoogleStatus,
+  testGoogleConnection, type EmailConfig, type EmailTemplate, type GoogleStatus,
 } from '@/services/email'
 
 const SECRET_ROWS: [keyof GoogleStatus['secrets'], string, string][] = [
@@ -100,12 +101,9 @@ export function EmailSettings({ canEditTemplates }: { canEditTemplates: boolean 
             ['Push watch', cfg.watch_expiration ? `until ${formatDateTime(cfg.watch_expiration)}${cfg.watch_status ? ` — ${cfg.watch_status}` : ''}` : cfg.watch_status ?? '—'],
             ['Emails', `${d.counts.received} received · ${d.counts.sent} sent · ${d.counts.pending} pending · ${d.counts.failed} failed`],
           ]} />}
-          {cfg?.is_enabled && (
+          {cfg?.is_enabled && <EmailSyncPanel onNotice={(n) => { setNotice(n); reload() }} />}
+          {cfg?.is_enabled && cfg.push_enabled && (
             <div className="flex flex-wrap gap-2">
-              <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void run('sync', async () => (await syncMailboxNow()).results.map((r) => r.message).join(' ') || 'Synced.')}>
-                {busy === 'sync' ? <Loader2 className="animate-spin" /> : <RefreshCw />} Sync now</Button>
-              <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void run('full', async () => (await syncMailboxNow(true)).results.map((r) => r.message).join(' ') || 'Synced.')}>
-                {busy === 'full' && <Loader2 className="animate-spin" />}Full re-sync</Button>
               {cfg.push_enabled && <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void run('watch', async () => (await renewGmailWatch()).results.map((r) => r.message).join(' '))}>
                 {busy === 'watch' && <Loader2 className="animate-spin" />}Renew push watch</Button>}
             </div>

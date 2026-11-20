@@ -1,6 +1,6 @@
 // Google Workspace Gmail Edge Functions with fake Supabase clients and a fake Google: OAuth state and callback,
-// token encryption, expired / revoked tokens, push webhook validation and replay, history sync (duplicates,
-// expired history, failures), Gmail threading, attachment handling, send outcomes (Sent / Failed / Pending),
+// token encryption, expired / revoked tokens, push webhook validation and replay, batch sync (lock, queue, checkpoint,
+// expired history, failures, budgets, continuation), Gmail threading, attachment handling, send outcomes (Sent / Failed / Pending),
 // watch renewal, HTML sanitising, MIME parsing and building — and that no secret or token is ever logged.
 import assert from 'node:assert/strict'
 import { afterEach, beforeEach, describe, it } from 'node:test'
@@ -11,7 +11,8 @@ import { buildMime, decodeEncodedWords, parseAddressList, parseGmailMessage, toR
 import { buildAuthUrl } from '../../supabase/functions/_shared/google/oauth.ts'
 import { resetJwksCache } from '../../supabase/functions/_shared/google/oidc.ts'
 import { htmlToText, sanitizeHtml } from '../../supabase/functions/_shared/google/sanitize.ts'
-import { syncMailbox } from '../../supabase/functions/_shared/google/sync.ts'
+import { makeContinuation } from '../../supabase/functions/_shared/google/continuation.ts'
+import { runSync, syncLimits } from '../../supabase/functions/_shared/google/sync.ts'
 import { handle as oauthStart } from '../../supabase/functions/google-oauth-start/handler.ts'
 import { handle as oauthCallback } from '../../supabase/functions/google-oauth-callback/handler.ts'
 import { handle as webhook } from '../../supabase/functions/google-gmail-webhook/handler.ts'
@@ -337,22 +338,79 @@ describe('google-oauth-callback', () => {
 })
 
 // ---- webhook, sync, replay ---------------------------------------------------------------------------
-function mailboxDb(o: { known?: string[]; push?: unknown; runtime?: unknown; creds?: unknown; ingest?: (p: Record<string, unknown>) => unknown } = {}) {
+// In-memory stand-in for the database side of the mailbox sync (migration 20261224090000: lock, queue, checkpoint,
+// full re-sync job, attachment parts). The real SQL is exercised by tests/db/gmail-sync-resumable-check.mjs.
+function mailboxDb(o: { known?: string[]; push?: unknown; runtime?: unknown; creds?: unknown; ingest?: (p: Record<string, unknown>) => unknown; busy?: boolean; historyId?: string | null } = {}) {
   const ingested: Record<string, unknown>[] = []
+  const known = new Set(o.known ?? [])
+  const queue: { id: number; gid: string; state: string; source: string }[] = []
+  const parts: { email_id: string; gmail_message_id: string; part_id: string; attachment_id: string | null; filename: string; mime_type: string; size: number; state: string }[] = []
+  const st = { history: o.historyId === undefined ? '100' : o.historyId, job: null as null | Record<string, unknown> }
+  const enqueue = (ids: string[], source: string) => {
+    let added = 0
+    for (const gid of ids) if (!known.has(gid) && !queue.some((q) => q.gid === gid)) { queue.push({ id: queue.length + 1, gid, state: 'PENDING', source }); added++ }
+    return added
+  }
+  const remaining = () => ({ queue: queue.filter((q) => q.state === 'PENDING').length, queue_ready: queue.filter((q) => q.state === 'PENDING').length, failed: 0,
+    attachments: parts.filter((p) => p.state === 'PENDING').length, attachments_ready: parts.filter((p) => p.state === 'PENDING').length, attachments_failed: 0,
+    discovery: Boolean(st.job && !st.job.discovery_done) })
   return {
-    ingested,
+    ingested, queue, parts, st,
     rpc: (async () => { const creds = o.creds === undefined ? await storedCreds() : o.creds
       return ((fn: string, args: Record<string, unknown>) => {
         switch (fn) {
           case 'support_gmail_runtime': return { data: o.runtime ?? RUNTIME }
           case 'support_gmail_credentials': return { data: creds }
-          case 'support_gmail_known': return { data: (args.p_ids as string[]).filter((x) => (o.known ?? []).includes(x)) }
           case 'support_gmail_push': return { data: o.push ?? { result: 'LOGGED', account_id: ACCOUNT, event_id: '44444444-4444-4444-8444-444444444444' } }
+          case 'support_gmail_sync_begin':
+            return { data: o.busy ? { acquired: false } : { acquired: true, history_id: st.history, needs_full: !st.history, reconcile_due: false, job: st.job } }
+          case 'support_gmail_sync_job_start':
+            st.job = { id: 'job1', status: 'RUNNING', query: args.p_query, days: args.p_days, page_token: null, discovery_done: false, discovery_restarts: 0, reason: args.p_reason }
+            if (!st.history || args.p_reason === 'HISTORY_EXPIRED') st.history = args.p_history_id as string
+            return { data: { created: true, job: st.job } }
+          case 'support_gmail_sync_discovered': {
+            const added = enqueue(args.p_ids as string[], 'FULL')
+            st.job = { ...st.job, page_token: args.p_next_page, discovery_done: !args.p_next_page }
+            return { data: { added, done: !args.p_next_page } }
+          }
+          case 'support_gmail_sync_enqueue': {
+            const added = enqueue(args.p_ids as string[], args.p_source as string)
+            if (args.p_history_id) st.history = args.p_history_id as string
+            return { data: { added } }
+          }
+          case 'support_gmail_sync_next':
+            return { data: queue.filter((q) => q.state === 'PENDING').slice(0, args.p_limit as number).map((q) => ({ id: q.id, gmail_message_id: q.gid, source: q.source, attempts: 0 })) }
+          case 'support_gmail_sync_item_result': {
+            const q = queue.find((x) => x.id === args.p_item)!
+            q.state = args.p_ok ? 'DONE' : 'RETRY'
+            return { data: { state: q.state } }
+          }
+          case 'support_gmail_sync_attachments_next':
+            return { data: parts.filter((p) => p.state === 'PENDING').slice(0, args.p_limit as number).map((p) => ({ ...p, attempts: 0 })) }
+          case 'support_gmail_attachment_result':
+          case 'support_gmail_attachment_failed': {
+            const p = parts.find((x) => x.email_id === args.p_email && x.part_id === args.p_part_id)
+            if (p) p.state = fn === 'support_gmail_attachment_failed' ? 'FAILED' : args.p_ok ? 'STORED' : 'FAILED'
+            return { data: null }
+          }
+          case 'support_gmail_sync_finish': {
+            const r = remaining()
+            return { data: { released: true, more: r.queue_ready > 0 || r.attachments_ready > 0 || r.discovery, remaining: r } }
+          }
           case 'support_gmail_ingest': {
             const p = args.p as Record<string, unknown>
             ingested.push(p)
-            return { data: o.ingest ? o.ingest(p) : { result: 'STORED', email_id: EMAIL_ID, conversation_id: 'c1',
-              attachments: (p.attachments as { state?: string }[]).filter((a) => !a.state) } }
+            // Each new email its own id (the first keeps EMAIL_ID, which the path assertions use).
+            const id = ingested.length === 1 ? EMAIL_ID : `${EMAIL_ID.slice(0, -4)}${String(ingested.length).padStart(4, '0')}`
+            const out = o.ingest ? o.ingest(p) as { email_id?: string } | null : { result: 'STORED', email_id: id, conversation_id: 'c1',
+              attachments: (p.attachments as { state?: string }[]).filter((a) => !a.state) }
+            if (out && (out as { result?: string }).result === 'STORED') {
+              for (const a of (p.attachments as { part_id: string; attachment_id: string | null; filename: string; mime_type: string; size: number; state?: string }[]).filter((x) => !x.state)) {
+                parts.push({ email_id: out.email_id ?? EMAIL_ID, gmail_message_id: p.gmail_message_id as string, part_id: a.part_id, attachment_id: a.attachment_id, filename: a.filename,
+                  mime_type: a.mime_type, size: a.size, state: 'PENDING' })
+              }
+            }
+            return { data: out }
           }
           default: return {}
         }
@@ -446,59 +504,89 @@ describe('google-gmail-webhook', () => {
   })
 })
 
-describe('mailbox sync', () => {
-  const run = async (o: Parameters<typeof mailboxDb>[0] = {}, routes: Parameters<typeof gmailRoutes>[0] = {}, opts = { mode: 'auto' as const, maxMessages: 50, reconcile: false }) => {
+describe('mailbox sync (one batch)', () => {
+  const LIM = { ...syncLimits(env), cpuBudgetMs: 60000 }
+  const run = async (o: Parameters<typeof mailboxDb>[0] = {}, routes: Parameters<typeof gmailRoutes>[0] = {}, opts: { mode?: 'auto' | 'full' | 'webhook'; limits?: typeof LIM } = {}) => {
     const db = mailboxDb(o)
     const c = fakeClient(await db.rpc)
     const g = fakeGoogle(gmailRoutes(routes))
-    const out = await syncMailbox({ env, admin: () => c.client, fetch: g.fetch, sleep: async () => {}, now: () => new Date() }, ACCOUNT, opts)
+    const out = await runSync({ env, admin: () => c.client, fetch: g.fetch, sleep: async () => {}, now: () => new Date() }, ACCOUNT, { mode: opts.mode ?? 'auto', limits: opts.limits ?? LIM })
     return { out, c, g, db }
   }
-  it('history sync: new message stored, permitted attachment copied to the private bucket, blocked / oversized ones not downloaded', async () => {
+  it('history: new message queued with the checkpoint, fetched, stored; permitted attachment downloaded in the attachment stage, blocked / oversized never', async () => {
     const { out, c, g } = await run()
     assert.equal(out.ok, true)
     assert.equal(out.stored, 1)
+    const enq = c.called('support_gmail_sync_enqueue')[0].args
+    assert.deepEqual([enq.p_ids, enq.p_source, enq.p_history_id], [['aaaa000001'], 'HISTORY', '105'])
     const res = c.called('support_gmail_attachment_result')
     assert.equal(res.length, 1)
     assert.equal(res[0].args.p_path, `${COMPANY}/email/${EMAIL_ID}/1-photo.jpg`)
     assert.equal(c.store.size, 1)
     assert.ok(!g.hits.some((h) => h.url.includes('ATTACH-0002') || h.url.includes('ATTACH-0003')))
-    assert.equal(c.called('support_gmail_sync_state')[0].args.p_history_id, '105')
+    assert.ok(c.calls.findIndex((x) => x.fn === 'support_gmail_sync_item_result') < c.calls.findIndex((x) => x.fn === 'support_gmail_attachment_result'), 'message recorded before attachments')
+    assert.equal(c.called('support_gmail_sync_finish')[0].args.p_ok, true)
   })
-  it('already stored messages are not fetched again (duplicates)', async () => {
+  it('every progress call carries the lock owner taken at the start', async () => {
+    const { c } = await run()
+    const owner = c.called('support_gmail_sync_begin')[0].args.p_owner
+    assert.match(String(owner), /^[0-9a-f-]{36}$/)
+    for (const fn of ['support_gmail_sync_enqueue', 'support_gmail_sync_next', 'support_gmail_sync_item_result', 'support_gmail_sync_attachments_next', 'support_gmail_sync_finish']) {
+      assert.ok(c.called(fn).every((x) => x.args.p_owner === owner), fn)
+    }
+  })
+  it('already stored messages are not fetched again', async () => {
     const { out, g } = await run({ known: ['aaaa000001'] })
     assert.equal(out.stored, 0)
     assert.ok(!g.hits.some((h) => h.url.includes('/messages/aaaa000001')))
   })
-  it('expired history (Gmail 404): full re-sync of recent mail from a fresh position', async () => {
+  it('another batch holds the lock: nothing is read from Google', async () => {
+    const { out, g } = await run({ busy: true })
+    assert.equal(out.busy, true)
+    assert.equal(g.hits.length, 0)
+  })
+  it('expired history (Gmail 404): a HISTORY_EXPIRED full re-sync starts from Gmail\'s current position and lists recent mail', async () => {
     const { out, c, g } = await run({}, { history: () => json(404, { error: { code: 404, message: 'Requested entity was not found.' } }), list: ['bbbb000002', 'bbbb000001'] })
     assert.equal(out.kind, 'FULL')
     assert.equal(out.stored, 2)
+    const js = c.called('support_gmail_sync_job_start')[0].args
+    assert.deepEqual([js.p_reason, js.p_history_id], ['HISTORY_EXPIRED', '900'])
     assert.ok(g.hits.some((h) => h.url.includes('/messages?') && new URL(h.url).searchParams.get('q') === 'newer_than:7d (in:inbox OR in:sent)'))
-    const st = c.called('support_gmail_sync_state')[0].args
-    assert.equal(st.p_kind, 'FULL')
-    assert.equal(st.p_history_id, '900')
   })
-  it('a failed message stops the position before it (read again next time)', async () => {
+  it('no position yet: an INITIAL full re-sync', async () => {
+    const { c } = await run({ historyId: null }, { list: ['bbbb000001'] })
+    assert.equal(c.called('support_gmail_sync_job_start')[0].args.p_reason, 'INITIAL')
+  })
+  it('a message that fails is recorded for a retry; the others are stored; the batch is still a success', async () => {
     const { out, c } = await run({ ingest: (p) => (p.gmail_message_id === 'aaaa000002' ? null : { result: 'STORED', email_id: EMAIL_ID, attachments: [] }) },
       { history: () => json(200, { history: [{ id: '101', messagesAdded: [{ message: { id: 'aaaa000001' } }] }, { id: '102', messagesAdded: [{ message: { id: 'aaaa000002' } }] },
         { id: '103', messagesAdded: [{ message: { id: 'aaaa000003' } }] }], historyId: '110' }) })
     assert.equal(out.failed, 1)
-    assert.equal(c.called('support_gmail_sync_state')[0].args.p_history_id, '101')
+    assert.equal(out.stored, 2)
+    assert.equal(out.ok, true)
+    const failedCall = c.called('support_gmail_sync_item_result').find((x) => x.args.p_ok === false)!
+    assert.match(String(failedCall.args.p_error), /Storing failed/)
   })
-  it('budget reached: position stays before the first unprocessed message', async () => {
-    const { out, c } = await run({}, { history: () => json(200, { history: [{ id: '101', messagesAdded: [{ message: { id: 'aaaa000001' } }] }, { id: '102', messagesAdded: [{ message: { id: 'aaaa000002' } }] }], historyId: '110' }) },
-      { mode: 'auto', maxMessages: 1, reconcile: false })
+  it('batch size reached: one message processed, the rest left (more = true)', async () => {
+    const { out } = await run({}, { history: () => json(200, { history: [{ id: '101', messagesAdded: [{ message: { id: 'aaaa000001' } }] }, { id: '102', messagesAdded: [{ message: { id: 'aaaa000002' } }] }], historyId: '110' }) },
+      { limits: { ...LIM, messages: 1, attachments: 0 } })
+    assert.equal(out.fetched, 1)
+    assert.equal(out.more, true)
     assert.equal(out.remaining, 1)
-    assert.equal(c.called('support_gmail_sync_state')[0].args.p_history_id, '101')
   })
-  it('expired / revoked refresh token (invalid_grant): mailbox marked for reauthorisation, nothing fetched', async () => {
+  it('history pages beyond the page limit: the checkpoint stops at the last record queued', async () => {
+    const page = (n: number) => json(200, { history: [{ id: String(100 + n), messagesAdded: [{ message: { id: `aaaa00000${n}` } }] }], historyId: '999', nextPageToken: `p${n + 1}` })
+    const { c } = await run({}, { history: (h) => page(Number(new URL(h.url).searchParams.get('pageToken')?.slice(1) ?? 1)) }, { limits: { ...LIM, historyPages: 2 } })
+    assert.deepEqual(c.called('support_gmail_sync_enqueue').map((x) => x.args.p_history_id), ['101', '102'])
+  })
+  it('expired / revoked refresh token (invalid_grant): mailbox marked for reauthorisation, nothing fetched, lock released', async () => {
     const db = mailboxDb()
     const c = fakeClient(await db.rpc)
     const g = fakeGoogle((h) => (h.url === GOOGLE.token ? json(400, { error: 'invalid_grant', error_description: 'Token has been expired or revoked.' }) : null))
-    const out = await syncMailbox({ env, admin: () => c.client, fetch: g.fetch, sleep: async () => {}, now: () => new Date() }, ACCOUNT, { mode: 'auto', maxMessages: 5, reconcile: false })
+    const out = await runSync({ env, admin: () => c.client, fetch: g.fetch, sleep: async () => {}, now: () => new Date() }, ACCOUNT, { mode: 'auto', limits: LIM })
     assert.equal(out.ok, false)
     assert.equal(c.called('support_gmail_reauth_required').length, 1)
+    assert.equal(c.called('support_gmail_sync_finish').length, 1)
     assert.equal(g.hits.length, 1)
     assert.ok(noSecretsLogged())
   })
@@ -508,33 +596,121 @@ describe('mailbox sync', () => {
     assert.equal(out.ok, false)
     assert.equal(c.called('support_gmail_reauth_required').length, 1)
   })
-  it('Gmail 5xx is retried, then reported as a failed sync', async () => {
+  it('Gmail 5xx is retried, then reported with the stage where it stopped (not a generic error)', async () => {
     let n = 0
     const { out, c } = await run({}, { history: () => { n++; return json(503, { error: { message: 'backend' } }) } })
     assert.equal(n, 3)
     assert.equal(out.ok, false)
-    assert.equal(c.called('support_gmail_sync_state')[0].args.p_ok, false)
+    assert.match(out.message, /Sync stopped at history: Gmail API error 503/)
+    const fin = c.called('support_gmail_sync_finish')[0].args
+    assert.deepEqual([fin.p_ok, fin.p_stage], [false, 'history'])
   })
-  it('replay (administrator) re-reads history from the previous notification; scheduler needs its secret', async () => {
-    const db = mailboxDb({ known: ['aaaa000001'] })
+  it('batch log line: counts and timings, never tokens or message text', async () => {
+    await run()
+    const line = logs.find((l) => l.includes('"message":"batch"'))!
+    assert.ok(line && /"fetched":1/.test(line) && /"duration_ms"/.test(line) && /"remaining"/.test(line))
+    assert.ok(noSecretsLogged() && !logs.join().includes('basin cracked'))
+  })
+  it('limits are configurable but bounded', () => {
+    const l = syncLimits((k) => ({ GMAIL_SYNC_BATCH_SIZE: '500', GMAIL_SYNC_ATTACHMENTS: '2', GMAIL_SYNC_TIME_BUDGET_MS: '1' } as Record<string, string>)[k])
+    assert.deepEqual([l.messages, l.attachments, l.timeBudgetMs], [50, 2, 5000])
+    assert.equal(syncLimits(() => undefined, 'webhook').messages, 5)
+  })
+})
+
+describe('google-gmail-sync handler', () => {
+  const setup = async (o: Parameters<typeof mailboxDb>[0] = {}) => {
+    const db = mailboxDb(o)
     const c = fakeClient(() => ({}))
     const rpc = await db.rpc
     const client = { ...c.client, rpc: async (fn: string, args: Record<string, unknown> = {}) => {
       c.calls.push({ fn, args })
-      if (fn === 'support_email_admin_check') return { data: { account_id: ACCOUNT } as never, error: null }
+      if (fn === 'support_email_admin_check') return { data: { account_id: ACCOUNT, user_id: 'u1' } as never, error: null }
+      if (fn === 'support_gmail_accounts') return { data: [ACCOUNT] as never, error: null }
       if (fn === 'support_gmail_replay') return { data: { account_id: ACCOUNT, event_id: '44444444-4444-4444-8444-444444444444', start_history_id: '90' } as never, error: null }
       const r = rpc(fn, args); return { data: (r.data ?? null) as never, error: r.error ?? null }
     } } as Client
     const g = fakeGoogle(gmailRoutes())
-    const d = { allowedOrigins: [], env, caller: () => client, admin: () => client, fetch: g.fetch, sleep: async () => {}, now: () => new Date() }
-    const req = (body: unknown, h: Record<string, string>) => new Request('https://f/google-gmail-sync', { method: 'POST', headers: { 'Content-Type': 'application/json', ...h }, body: JSON.stringify(body) })
+    const continued: { account: string; depth: number }[] = []
+    const d = { allowedOrigins: [], env, caller: () => client, admin: () => client, fetch: g.fetch, sleep: async () => {}, now: () => new Date(),
+      continueLater: (account: string, depth: number) => { continued.push({ account, depth }) } }
+    return { db, c, g, d, continued }
+  }
+  const req = (body: unknown, h: Record<string, string>) => new Request('https://f/google-gmail-sync', { method: 'POST', headers: { 'Content-Type': 'application/json', ...h }, body: JSON.stringify(body) })
+  it('replay (administrator) queues history from the previous notification; already stored mail is not fetched', async () => {
+    const { d, g, db, c } = await setup({ known: ['aaaa000001'] })
     const r = await syncFn(req({ action: 'replay', event_id: '44444444-4444-4444-8444-444444444444' }, { Authorization: 'Bearer admin' }), d)
     assert.equal(r.status, 200)
     assert.ok(g.hits.some((h) => h.url.includes('startHistoryId=90')))
-    assert.equal(db.ingested.length, 0) // already stored: replay is idempotent
+    assert.equal(db.ingested.length, 0)
+    assert.equal(c.calls.find((x) => x.fn === 'support_gmail_sync_enqueue')?.args.p_history_id ?? null, null) // a replay never moves the checkpoint
     assert.equal(c.calls.filter((x) => x.fn === 'support_gmail_event_done')[0].args.p_result, 'PROCESSED')
+  })
+  it('scheduler secret required; continue and retry only for their callers', async () => {
+    const { d } = await setup()
     assert.equal((await syncFn(req({}, { 'x-cron-secret': 'wrong' }), d)).status, 401)
     assert.equal((await syncFn(req({ action: 'replay', event_id: '44444444-4444-4444-8444-444444444444' }, { 'x-cron-secret': 'cron-1' }), d)).status, 403)
+    assert.equal((await syncFn(req({ action: 'continue', account: ACCOUNT }, { Authorization: 'Bearer admin' }), d)).status, 403)
+    assert.equal((await syncFn(req({ action: 'continue', account: '99999999-9999-4999-8999-999999999999' }, { 'x-cron-secret': 'cron-1' }), d)).status, 400)
+    assert.equal((await syncFn(req({ action: 'retry' }, { 'x-cron-secret': 'cron-1' }), d)).status, 403)
+  })
+  it('work left after a batch: the next batch is started in the background (depth + 1); none when nothing is left', async () => {
+    const many = { history: () => json(200, { history: Array.from({ length: 20 }, (_, i) => ({ id: String(101 + i), messagesAdded: [{ message: { id: `cccc0000${String(i).padStart(2, '0')}` } }] })), historyId: '130' }) }
+    const s1 = await setup()
+    s1.d.fetch = fakeGoogle(gmailRoutes(many)).fetch
+    const r = await (await syncFn(req({}, { 'x-cron-secret': 'cron-1' }), s1.d)).json()
+    assert.equal(r.results[0].more, true)
+    assert.equal(r.results[0].continuing, true)
+    assert.deepEqual(s1.continued, [{ account: ACCOUNT, depth: 1 }])
+    // Follow the chain (messages, then the 20 attachments 4 at a time) until a batch leaves nothing.
+    let last = r
+    for (let i = 0; i < s1.continued.length; i++) {
+      const c = s1.continued[i]
+      last = await (await syncFn(req({ action: 'continue', account: c.account, depth: c.depth }, { 'x-cron-secret': 'cron-1' }), s1.d)).json()
+    }
+    assert.equal(last.results[0].more, false)
+    assert.equal(last.results[0].continuing, false)
+    assert.deepEqual(s1.continued.map((c) => c.depth), s1.continued.map((_, i) => i + 1))
+    assert.equal(s1.db.queue.filter((q) => q.state === 'DONE').length, 20)
+    assert.equal(s1.db.parts.filter((p) => p.state === 'STORED').length, 20)
+  })
+  it('administrator Full re-sync: starts a MANUAL job recorded with the requesting user', async () => {
+    const { d, c } = await setup()
+    const r = await syncFn(req({ action: 'full' }, { Authorization: 'Bearer admin' }), d)
+    assert.equal(r.status, 200)
+    const js = c.calls.find((x) => x.fn === 'support_gmail_sync_job_start')!.args
+    assert.deepEqual([js.p_reason, js.p_by], ['MANUAL', 'u1'])
+  })
+  it('administrator Retry: failed items reset, then a batch', async () => {
+    const { d, c } = await setup()
+    await syncFn(req({ action: 'retry' }, { Authorization: 'Bearer admin' }), d)
+    assert.equal(c.calls[c.calls.findIndex((x) => x.fn === 'support_gmail_sync_retry')].args.p_account, ACCOUNT)
+    assert.ok(c.calls.findIndex((x) => x.fn === 'support_gmail_sync_retry') < c.calls.findIndex((x) => x.fn === 'support_gmail_sync_begin'))
+  })
+})
+
+describe('background continuation', () => {
+  it('posts { action: continue } to google-gmail-sync with the scheduler secret, in the background', async () => {
+    const hits: Hit[] = []
+    const kept: Promise<unknown>[] = []
+    const go = makeContinuation({ supabaseUrl: 'https://proj.supabase.co/', cronSecret: 'cron-1', fetch: (async (u: string, i: RequestInit) => {
+      hits.push({ url: u, method: i.method ?? '', body: String(i.body), headers: i.headers as Record<string, string> }); return json(200, {}) }) as typeof fetch,
+      waitUntil: (p) => { kept.push(p) } })!
+    go(ACCOUNT, 3)
+    await Promise.all(kept)
+    assert.equal(hits[0].url, 'https://proj.supabase.co/functions/v1/google-gmail-sync')
+    assert.equal(hits[0].headers['x-cron-secret'], 'cron-1')
+    assert.deepEqual(JSON.parse(hits[0].body), { action: 'continue', account: ACCOUNT, depth: 3 })
+    assert.equal(kept.length, 1)
+  })
+  it('without the scheduler secret there is no continuation (the scheduled run continues)', () => {
+    assert.equal(makeContinuation({ supabaseUrl: 'https://p.supabase.co', cronSecret: null, fetch }), undefined)
+  })
+  it('a lost continuation is logged, never thrown', async () => {
+    const kept: Promise<unknown>[] = []
+    makeContinuation({ supabaseUrl: 'https://p.supabase.co', cronSecret: 'c', fetch: (async () => { throw new Error('down') }) as typeof fetch, waitUntil: (p) => { kept.push(p) } })!(ACCOUNT, 1)
+    await Promise.all(kept)
+    assert.ok(logs.some((l) => l.includes('continuation not delivered')))
   })
 })
 
