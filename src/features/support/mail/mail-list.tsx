@@ -2,17 +2,19 @@ import {
   Archive, ArchiveRestore, Bookmark, ChevronDown, ChevronLeft, ChevronRight, Clock, FolderInput, Inbox, Mail, MailOpen, OctagonAlert, Paperclip, RefreshCw, ShieldCheck,
   Star, Tag, Trash2, Undo2,
 } from 'lucide-react'
-import { useState, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 
 import { StatusBadge } from '@/components/common/status-badge'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { AttachmentChip, AttachmentPreview } from '@/features/support/mail/attachment-preview'
 import { mailListDate, pageLabel, snoozeChoices, type MailFolder } from '@/features/support/mail/mail-model'
+import { useAsync } from '@/hooks/use-async'
 import { describeDataError } from '@/lib/errors'
 import { formatDateTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import type { MailboxAction, MailboxPage, MailThreadRow } from '@/services/email'
+import { fetchListAttachments, type MailAttachment, type MailboxAction, type MailboxPage, type MailThreadRow, type RowAttachments } from '@/services/email'
 import type { TagRef } from '@/services/support'
 
 export type Act = (ids: string[], action: MailboxAction, p?: { until?: string; label?: string }) => Promise<void>
@@ -105,41 +107,56 @@ export function ThreadActions({ ids, folder, rows, labels, act, canEdit, afterMo
   )
 }
 
-function Row({ r, folder, checked, onCheck, onOpen, act, canEdit, timezone }: {
+const CHIPS = 3
+
+function Row({ r, folder, checked, onCheck, onOpen, act, canEdit, timezone, atts, onPreview }: {
   r: MailThreadRow; folder: MailFolder; checked: boolean; onCheck: () => void; onOpen: () => void; act: Act; canEdit: boolean; timezone?: string
+  atts?: RowAttachments; onPreview: (items: MailAttachment[], index: number) => void
 }) {
   const unread = r.unread_count > 0
   const who = folder === 'SENT' || !r.from_address
     ? `To: ${r.to.map((t) => t.name || t.email).join(', ') || '—'}`
     : r.senders.length > 1 ? r.senders.slice(-3).map((s) => s.split(/[\s@]/)[0]).join(', ') : r.from_name || r.from_address || 'Unknown sender'
   return (
-    <li className={cn('group relative flex cursor-pointer items-center gap-1 border-b border-[#F1F3F4] pr-3 pl-2 text-sm transition-shadow hover:z-[1] hover:shadow-[inset_1px_0_0_#dadce0,inset_-1px_0_0_#dadce0,0_1px_2px_0_rgba(60,64,67,.3),0_1px_3px_1px_rgba(60,64,67,.15)]',
+    <li className={cn('group relative flex cursor-pointer items-start gap-1 border-b border-[#F1F3F4] pr-3 pl-2 text-sm transition-shadow hover:z-[1] hover:shadow-[inset_1px_0_0_#dadce0,inset_-1px_0_0_#dadce0,0_1px_2px_0_rgba(60,64,67,.3),0_1px_3px_1px_rgba(60,64,67,.15)]',
       checked ? 'bg-[#C2DBFF]' : unread ? 'bg-white' : 'bg-[#F2F6FC]')}
       onClick={onOpen} data-testid={`mail-row-${r.id}`} data-unread={unread}>
       <input type="checkbox" aria-label={`Select ${r.subject ?? 'email'}`} checked={checked} onClick={(e) => e.stopPropagation()} onChange={onCheck}
-        className="mx-2 size-4 shrink-0 cursor-pointer accent-[#0B57D0]" data-testid="mail-row-check" />
-      <MailIcon label={r.starred ? 'Starred' : 'Not starred'} disabled={!canEdit} onClick={() => void act([r.id], r.starred ? 'UNSTAR' : 'STAR')} testId="mail-star" className="size-8">
+        className="mx-2 mt-3 size-4 shrink-0 cursor-pointer accent-[#0B57D0]" data-testid="mail-row-check" />
+      <MailIcon label={r.starred ? 'Starred' : 'Not starred'} disabled={!canEdit} onClick={() => void act([r.id], r.starred ? 'UNSTAR' : 'STAR')} testId="mail-star" className="mt-1 size-8">
         <Star className={r.starred ? 'fill-[#F4B400] text-[#F4B400]' : ''} /></MailIcon>
       <MailIcon label={r.important ? 'Important (click to remove)' : 'Mark as important'} disabled={!canEdit} onClick={() => void act([r.id], r.important ? 'NOT_IMPORTANT' : 'IMPORTANT')}
-        testId="mail-important" className="hidden size-8 sm:inline-flex"><Bookmark className={r.important ? 'fill-[#F4B400] text-[#F4B400]' : ''} /></MailIcon>
-      <div className="flex min-w-0 flex-1 flex-col py-2 sm:flex-row sm:items-center sm:gap-3 sm:py-0">
+        testId="mail-important" className="mt-1 hidden size-8 sm:inline-flex"><Bookmark className={r.important ? 'fill-[#F4B400] text-[#F4B400]' : ''} /></MailIcon>
+      <div className="flex min-w-0 flex-1 flex-col py-2 sm:flex-row sm:items-start sm:gap-3 sm:py-0">
         <span className={cn('w-full shrink-0 truncate sm:h-10 sm:w-48 sm:leading-10', unread ? 'font-bold text-[#1F1F1F]' : 'text-[#5F6368] sm:text-[#1F1F1F]')}>
           {who}{r.message_count > 1 && <span className="ml-1 text-xs font-normal text-[#5F6368]">{r.message_count}</span>}
           {r.last_direction === 'OUTBOUND' && r.last_send_state && r.last_send_state !== 'SENT' && <span className="ml-1 text-xs font-normal text-[#B3261E]">{r.last_send_state === 'FAILED' ? 'Failed' : 'Sending'}</span>}
         </span>
-        <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate sm:leading-10">
+        <span className="flex min-w-0 flex-1 flex-col">
+        <span className="flex min-w-0 items-center gap-1.5 truncate sm:leading-10">
           {r.labels.map((l) => <span key={l.id} className="shrink-0"><StatusBadge label={l.name} tone={l.color as never} /></span>)}
           {folder !== 'INBOX' && r.folder === 'INBOX' && folder !== 'SENT' && <span className="shrink-0 rounded bg-[#DDE3EA] px-1.5 text-[11px] text-[#444746]">Inbox</span>}
           {r.ticket_number && <span className="shrink-0 rounded bg-[#E8F0FE] px-1.5 text-[11px] text-[#0B57D0]">{r.ticket_number}</span>}
           <span className={cn('max-w-[70%] shrink-0 truncate', unread ? 'font-bold text-[#1F1F1F]' : 'text-[#1F1F1F]')}>{r.subject || '(no subject)'}</span>
           <span className="truncate text-[#5F6368]"> – {r.snippet}</span>
         </span>
+        {atts && atts.items.length > 0 && (
+          <span className="flex flex-wrap items-center gap-2 pt-1 pb-2 sm:pt-0" data-testid="mail-row-attachments">
+            {atts.items.slice(0, CHIPS).map((a, i) => <AttachmentChip key={a.id} a={a} onOpen={() => onPreview(atts.items, i)} />)}
+            {atts.count > CHIPS && (
+              <button type="button" data-testid="mail-row-attachments-more" aria-label={`${atts.count - CHIPS} more attachments`} title={`${atts.count - CHIPS} more attachment${atts.count - CHIPS > 1 ? 's' : ''}`}
+                onClick={(e) => { e.stopPropagation(); if (atts.items.length > CHIPS) onPreview(atts.items, CHIPS); else onOpen() }}
+                className="inline-flex h-8 items-center rounded-full border border-[#DADCE0] bg-white px-2.5 text-xs font-medium text-[#3C4043] hover:bg-[#F1F3F4]">+{atts.count - CHIPS}</button>
+            )}
+          </span>
+        )}
+        </span>
       </div>
-      {r.has_attachment && <Paperclip className="size-4 shrink-0 text-[#5F6368]" aria-label="Has attachment" data-testid="mail-has-attachment" />}
-      <span className={cn('w-20 shrink-0 text-right text-xs', canEdit && 'group-hover:hidden group-focus-within:hidden', unread ? 'font-bold text-[#1F1F1F]' : 'text-[#5F6368]')}>
+      {r.has_attachment && <Paperclip className="mt-3 size-4 shrink-0 text-[#5F6368]" aria-label="Has attachment" data-testid="mail-has-attachment" />}
+      <span className={cn('w-20 shrink-0 text-right text-xs leading-10', canEdit && 'group-hover:hidden group-focus-within:hidden', unread ? 'font-bold text-[#1F1F1F]' : 'text-[#5F6368]')}>
         {r.snoozed_until && folder === 'SNOOZED' ? <span className="text-[#B06000]">{mailListDate(r.snoozed_until, undefined, timezone)}</span> : mailListDate(r.last_at, undefined, timezone)}</span>
       {canEdit && (
-        <span className="hidden shrink-0 items-center group-focus-within:flex group-hover:flex" data-testid="mail-quick-actions">
+        <span className="mt-0.5 hidden shrink-0 items-center group-focus-within:flex group-hover:flex" data-testid="mail-quick-actions">
           {r.folder === 'ARCHIVE' || folder === 'TRASH' || folder === 'SPAM'
             ? <MailIcon label="Move to Inbox" onClick={() => void act([r.id], 'INBOX')}><Inbox /></MailIcon>
             : <MailIcon label="Archive" onClick={() => void act([r.id], 'ARCHIVE')} testId="mail-row-archive"><Archive /></MailIcon>}
@@ -160,10 +177,15 @@ export function MailList({ page, loading, error, folder, selected, setSelected, 
   onOpen: (id: string) => void; act: Act; canEdit: boolean; limit: number; offset: number; setOffset: (n: number) => void; onRefresh: () => void
   timezone?: string; emptyText: string
 }) {
-  const rows = page?.rows ?? []
+  const rows = useMemo(() => page?.rows ?? [], [page])
   const all = rows.length > 0 && rows.every((r) => selected.has(r.id))
   const some = rows.some((r) => selected.has(r.id))
   const pick = (f: (r: MailThreadRow) => boolean) => setSelected(new Set(rows.filter(f).map((r) => r.id)))
+  // Attachment chips: one request per page of rows (only those with files); kept while the list refreshes.
+  const attIds = useMemo(() => rows.filter((r) => r.has_attachment).map((r) => r.id), [rows])
+  const attKey = attIds.join(',')
+  const atts = useAsync(() => fetchListAttachments(attIds).catch(() => ({} as Record<string, RowAttachments>)), [attKey])
+  const [preview, setPreview] = useState<{ items: MailAttachment[]; index: number } | null>(null)
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex h-12 shrink-0 items-center gap-1 px-2" role="toolbar" aria-label="Email actions">
@@ -205,11 +227,13 @@ export function MailList({ page, loading, error, folder, selected, setSelected, 
         ) : (
           <ul data-testid="mail-list">{rows.map((r) => (
             <Row key={r.id} r={r} folder={folder} checked={selected.has(r.id)} timezone={timezone} canEdit={canEdit} act={act} onOpen={() => onOpen(r.id)}
+              atts={atts.data?.[r.id]} onPreview={(items, index) => setPreview({ items, index })}
               onCheck={() => { const n = new Set(selected); if (n.has(r.id)) n.delete(r.id); else n.add(r.id); setSelected(n) }} />
           ))}</ul>
         )}
         {error && page && <p className="px-4 py-2 text-center text-xs text-[#B3261E]">Could not refresh: {describeDataError(error)}</p>}
       </div>
+      <AttachmentPreview items={preview?.items ?? []} index={preview?.index ?? null} onIndex={(index) => setPreview((p) => (p ? { ...p, index } : p))} onClose={() => setPreview(null)} />
     </div>
   )
 }

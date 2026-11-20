@@ -9,9 +9,10 @@ import { fileURLToPath } from 'node:url'
 
 import { inlineToHtml, markdownToHtml, markdownToText, safeHref } from '../../supabase/functions/_shared/google/markdown.ts'
 import { buildMime } from '../../supabase/functions/_shared/google/mime.ts'
+import { base64UrlToBytes, fileKind, parseCsv, previewMode, shortName } from '../../src/features/support/mail/attachment-model.ts'
 import {
-  editorHtml, editorToMarkup, formatMailSearch, forwardBlock, forwardSubject, initiallyExpanded, mailListDate, pageLabel, parseMailSearch, printHtml, snoozeChoices, toIsoDate,
-  type EditorNode,
+  authResults, editorHtml, editorToMarkup, emlFileName, formatMailSearch, forwardBlock, forwardSubject, initiallyExpanded, mailListDate, messageLink, pageLabel,
+  parseMailSearch, printHtml, snoozeChoices, splitQuoted, starredEmails, threadItems, toIsoDate, type EditorNode,
 } from '../../src/features/support/mail/mail-model.ts'
 import type { ThreadEmail } from '../../src/services/email.ts'
 
@@ -180,5 +181,132 @@ describe('wiring and safety', () => {
     assert.doesNotMatch(m, /function public\.support_gmail_|function public\.support_email_thread\(|update public\.support_email_messages|delete from public\.support_email_messages/)
     assert.match(m, /revoke all on table public\.support_email_thread_state from anon, authenticated/)
     assert.match(m, /\('support\.email',\s+'Support Centre',\s+'Email draft',\s+array\['support\.reply'\]\)/)
+  })
+})
+
+// ---- Attachments and per-message tools (20261223090000) --------------------------------------------------------
+describe('attachments', () => {
+  it('28. file kinds from the extension, else the content type', () => {
+    assert.equal(fileKind('photo.JPG', 'application/octet-stream'), 'image')
+    assert.equal(fileKind('Invoice.pdf', null), 'pdf')
+    assert.equal(fileKind('clip.mov', null), 'video')
+    assert.equal(fileKind('report.docx', null), 'doc')
+    assert.equal(fileKind('stock.xlsx', null), 'sheet')
+    assert.equal(fileKind('rates.csv', null), 'csv')
+    assert.equal(fileKind('photos.zip', null), 'zip')
+    assert.equal(fileKind('noext', 'video/mp4'), 'video')
+    assert.equal(fileKind('noext', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'), 'sheet')
+    assert.equal(fileKind('setup.bin', 'application/octet-stream'), 'other')
+  })
+  it('29. preview only where the browser can show it; download otherwise', () => {
+    assert.equal(previewMode('a.png', 'image/png', 10), 'image')
+    assert.equal(previewMode('a.webp', null, 10), 'image')
+    assert.equal(previewMode('a.gif', null, 10), 'image')
+    assert.equal(previewMode('a.heic', 'image/heic', 10), null)
+    assert.equal(previewMode('a.pdf', 'application/pdf', 10), 'pdf')
+    assert.equal(previewMode('a.pdf', 'text/html', 10), null, 'a ".pdf" stored as HTML is never framed')
+    assert.equal(previewMode('a.mp4', 'video/mp4', 10), 'video')
+    assert.equal(previewMode('a.mkv', 'video/x-matroska', 10), null)
+    assert.equal(previewMode('a.csv', 'text/csv', 1000), 'text')
+    assert.equal(previewMode('a.csv', 'text/csv', 3 * 1048576), null)
+    for (const f of ['a.docx', 'a.xlsx', 'a.zip', 'a.exe']) assert.equal(previewMode(f, null, 10), null)
+  })
+  it('30. long names are shortened in the middle, keeping the extension', () => {
+    assert.equal(shortName('short.pdf'), 'short.pdf')
+    const s = shortName('Quarterly sales report for the northern region.pdf', 22)
+    assert.ok(s.endsWith('….pdf') && s.length <= 22, s)
+  })
+  it('31. CSV preview: quotes, doubled quotes, CRLF, tabs, row limit', () => {
+    assert.deepEqual(parseCsv('a,b\r\n"x, y","say ""hi"""\n').rows, [['a', 'b'], ['x, y', 'say "hi"']])
+    assert.deepEqual(parseCsv('a\tb\n1\t2').rows, [['a', 'b'], ['1', '2']])
+    const big = parseCsv(Array.from({ length: 300 }, (_, i) => `r${i}`).join('\n'), 200)
+    assert.equal(big.rows.length, 200)
+    assert.equal(big.truncated, true)
+  })
+  it('32. Gmail raw (base64url) decodes to the exact bytes', () => {
+    const text = 'Subject: Café\r\n\r\nHi ✓'
+    const raw = Buffer.from(text, 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+    assert.equal(Buffer.from(base64UrlToBytes(raw)).toString('utf8'), text)
+  })
+})
+
+describe('thread presentation', () => {
+  it('33. quoted reply behind "…": main + quoted is the original text', () => {
+    const t = 'Thanks, received.\n\nOn Mon, 16 Nov 2026 at 10:00, Ravi <ravi@customer.example> wrote:\n> The basin arrived cracked.\n> Photo attached.'
+    const r = splitQuoted(t)
+    assert.equal(r.main, 'Thanks, received.')
+    assert.ok(r.quoted?.includes('wrote:') && r.quoted.includes('> Photo attached.'))
+    assert.equal(r.main + r.quoted, t)
+  })
+  it('34. Outlook headers, wrapped "On … wrote:" and trailing "> " lines are quotes too', () => {
+    assert.equal(splitQuoted('Ok.\n-----Original Message-----\nFrom: x').main, 'Ok.')
+    assert.equal(splitQuoted('Ok.\n\nFrom: Ravi <r@x.example>\nSent: Monday\nTo: support').main, 'Ok.')
+    assert.equal(splitQuoted('Ok.\nOn Mon, 16 Nov 2026, Ravi Kumar <ravi@customer.example>\nwrote:\n> hi').main, 'Ok.')
+    assert.equal(splitQuoted('Ok.\n> earlier\n>\n> more').main, 'Ok.')
+  })
+  it('35. nothing hidden when there is no quote, the reply is only a quote, or it is a forward', () => {
+    assert.equal(splitQuoted('Plain email.\nSecond line.').quoted, null)
+    assert.equal(splitQuoted('> only quoted\n> text').quoted, null)
+    assert.equal(splitQuoted('FYI\n---------- Forwarded message ---------\nFrom: Ravi <r@x.example>\nDate: Mon\nSubject: x').quoted, null)
+    assert.equal(splitQuoted('I said > 5 units\nplease').quoted, null)
+  })
+  it('36. two or more collapsed emails in a row fold into one count marker; first, last and open emails always show', () => {
+    const e = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) => ({ id }))
+    const items = threadItems(e, new Set(['f']), false)
+    assert.deepEqual(items.map((i) => (i.kind === 'hidden' ? `+${i.ids.length}` : i.email.id)), ['a', '+4', 'f'])
+    assert.deepEqual(threadItems(e, new Set(['c', 'f']), false).map((i) => (i.kind === 'hidden' ? `+${i.ids.length}` : i.email.id)), ['a', 'b', 'c', '+2', 'f'])
+    assert.equal(threadItems(e, new Set(['f']), true).length, 6)
+    assert.equal(threadItems(e.slice(0, 3), new Set(['c']), false).length, 3)
+  })
+  it('37. stars per email: the starred ones, or the last email when the conversation was starred from the list', () => {
+    const ids = ['a', 'b', 'c']
+    assert.deepEqual([...starredEmails(ids, { starred: true, starred_emails: ['b'] }, true)], ['b'])
+    assert.deepEqual([...starredEmails(ids, { starred: true, starred_emails: [] }, true)], ['c'])
+    assert.equal(starredEmails(ids, { starred: false, starred_emails: ['b'] }, false).size, 0)
+    assert.deepEqual([...starredEmails(ids, null, true)], ['c'])
+  })
+  it('38. original: SPF / DKIM / DMARC verdicts, safe .eml name, link to one email', () => {
+    assert.deepEqual(authResults([{ name: 'Authentication-Results', value: 'mx.google.com; dkim=pass header.i=@x; spf=softfail smtp.mailfrom=x; dmarc=pass (p=NONE)' }]),
+      { dkim: 'PASS', spf: 'SOFTFAIL', dmarc: 'PASS' })
+    assert.equal(emlFileName('Re: invoice 3/4 <final>?'), 'Re  invoice 3 4  final.eml')
+    assert.equal(emlFileName(null), 'email.eml')
+    assert.equal(messageLink('https://erp.example', 'c 1', 'e/2'), 'https://erp.example/support/emails?c=c%201&m=e%2F2')
+  })
+})
+
+describe('per-message tools: wiring and safety', () => {
+  const m = src('supabase/migrations/20261223090000_email_message_tools.sql')
+  it('39. the migration is additive: no email or attachment row written, nothing deleted, no grants on tables', () => {
+    assert.doesNotMatch(m, /update public\.support_email_messages|update public\.support_attachments|delete from|drop table|function public\.support_gmail_|function public\.support_email_thread\(|function public\.support_email_mailbox/)
+    assert.match(m, /add column if not exists starred_emails uuid\[\] not null default '\{\}'/)
+    assert.doesNotMatch(m, /grant [a-z, ]+ on table/i)
+  })
+  it('40. attachments keep the thread\'s visibility rule (sensitive files without a path) and need support.view', () => {
+    assert.match(m, /'storage_path', case when v_sensitive or not a\.is_sensitive then a\.storage_path end/)
+    assert.match(m, /'restricted', a\.is_sensitive and not v_sensitive/)
+    assert.match(m, /support_email_list_attachments[\s\S]*require_permission\('support\.view'\)/)
+    assert.match(m, /support_email_original_target[\s\S]*'raw_allowed', v_sensitive or not exists/)
+  })
+  it('41. files are reached only through short-lived signed links of the private bucket; never public URLs', () => {
+    assert.doesNotMatch(all + src('src/services/email.ts') + src('src/features/support/wa-web/media-urls.ts'), /getPublicUrl/)
+    assert.match(src('src/services/email.ts'), /createSignedUrl\(path, 300, \{ download: fileName \}\)/)
+    assert.match(src('src/services/email.ts'), /createSignedUrls\(paths, 300\)/)
+  })
+  it('42. every email has its own menu; destructive actions ask first and say they move the whole conversation', () => {
+    const msg = src(`${dir}/mail-message.tsx`)
+    for (const id of ['email-menu', 'email-reply', 'email-star', 'email-show-original', 'email-download-original', 'email-copy-link', 'email-mark-unread', 'email-report-spam', 'email-report-phishing', 'email-trash', 'email-show-quoted']) {
+      assert.match(msg, new RegExp(`(data-testid|testId)="${id}"`), id)
+    }
+    const t = src(`${dir}/mail-thread.tsx`)
+    assert.match(t, /onTrash: \(\) => setConfirm\(/)
+    assert.match(t, /onReport: \(kind\) => setConfirm\(/)
+    assert.match(t, /whole conversation moves to Trash/)
+    assert.match(t, /Gmail and Google are not told/)
+  })
+  it('43. "Show original" is read-only through the existing google-gmail-send (gmail.readonly), no new function', () => {
+    const h = src('supabase/functions/google-gmail-send/handler.ts')
+    assert.match(h, /body\.action === 'original'/)
+    assert.match(h, /support_email_original_target/)
+    assert.match(src('supabase/functions/_shared/google/gmail.ts'), /original\(id: string, format: 'metadata' \| 'raw'\)/)
   })
 })

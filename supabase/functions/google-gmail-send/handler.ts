@@ -10,6 +10,8 @@
 //              sync confirms it by its Message-ID.
 //   mark_read  removes Gmail's UNREAD label from the conversation's received emails, only when gmail.modify was
 //              explicitly enabled and granted.
+//   original   "Show original" / "Download original" of one stored email (support.view): its headers, or the whole
+//              message as Gmail keeps it (only for users who may open all its attachments; at most 20 MB). Read-only.
 
 import { Gmail, GmailError } from '../_shared/google/gmail.ts'
 import { BUCKET, corsHeaders, log, type Client } from '../_shared/google/google.ts'
@@ -31,6 +33,7 @@ interface Prepared {
 
 const ALLOWED_EXT = ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'txt', 'csv', 'rtf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp']
 const MAX_TOTAL = 10 * 1048576
+const MAX_ORIGINAL = 20 * 1048576
 const STATE_LABEL: Record<string, string> = { SENT: 'Sent', PENDING: 'Pending', FAILED: 'Failed' }
 
 export async function handle(req: Request, deps: Deps): Promise<Response> {
@@ -61,6 +64,28 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
       return reply(200, { marked: t.data.ids.length })
     } catch (e) {
       return reply(502, { error: e instanceof Error ? e.message : 'Gmail did not update the mailbox.' })
+    }
+  }
+  if (body.action === 'original') {
+    const raw = body.format === 'raw'
+    const t = await caller.rpc<{ account_id: string | null; gmail_message_id: string | null; raw_allowed: boolean }>('support_email_original_target', { p_email: body.email_id })
+    if (t.error) return reply(t.error.code === '42501' ? 403 : 400, { error: t.error.message ?? 'Not allowed.' })
+    if (!t.data?.gmail_message_id) return reply(409, { error: 'This email has no copy in Gmail yet (not sent, or not synced).' })
+    if (!t.data.account_id) return reply(409, { error: 'The support mailbox is not connected.' })
+    if (raw && !t.data.raw_allowed) return reply(403, { error: 'The original includes attachments you are not allowed to open.' })
+    const tok = await accessToken(deps, t.data.account_id)
+    if (!tok.ok) return reply(502, { error: tok.error })
+    try {
+      const m = await new Gmail(deps.fetch, tok.token, deps.sleep).original(t.data.gmail_message_id, raw ? 'raw' : 'metadata')
+      if (raw) {
+        if (!m.raw) return reply(502, { error: 'Gmail did not return the message.' })
+        if (m.raw.length > MAX_ORIGINAL * 4 / 3) return reply(413, { error: 'The original is larger than 20 MB; open it in Gmail.' })
+        return reply(200, { raw: m.raw, size: m.sizeEstimate ?? null })
+      }
+      return reply(200, { headers: (m.payload?.headers ?? []).slice(0, 500).map((h) => ({ name: h.name, value: h.value.slice(0, 8000) })), size: m.sizeEstimate ?? null })
+    } catch (e) {
+      if (e instanceof GmailError && e.status === 404) return reply(404, { error: 'Gmail no longer has this email (deleted from the mailbox).' })
+      return reply(502, { error: e instanceof Error ? e.message : 'Gmail could not be read.' })
     }
   }
   if (body.action !== 'send') return reply(400, { error: 'Unknown action.' })

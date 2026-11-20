@@ -708,7 +708,7 @@ const PHONE_DETAIL = (id) => {
     events: [{ event_name: out ? 'click_to_call' : 'received', from: null, to: out ? 'INITIATED' : 'RINGING', occurred_at: c.started_at, at: c.created_at }] }
 }
 // Google Workspace Gmail (20261212090000). "Sent" only when the mock Gmail accepted the message.
-const GMAIL = { connected: false, sendOutcome: 'PENDING', sendCalls: [], startCalls: 0 }
+const GMAIL = { connected: false, sendOutcome: 'PENDING', sendCalls: [], startCalls: 0, originalCalls: [] }
 const GMAIL_CONFIG = () => ({
   config: { channel_account_id: 'sca-mail', provider: 'GOOGLE_WORKSPACE', mailbox_address: 'support@alton.example', display_name: 'Alton Support', signature: 'Alton Support Team',
     pubsub_topic: 'projects/alton-erp-123/topics/gmail-support', push_enabled: true, mailbox_modify_enabled: false, initial_sync_days: 7, max_attachment_mb: 10,
@@ -732,7 +732,8 @@ const GMAIL_THREAD = [
     skipped_attachments: [{ filename: 'setup.exe', state: 'BLOCKED', reason: '.exe files are not stored (executable or script).' }] },
 ]
 // Email workspace (20261222090000): threads per folder from the conversations, with the mailbox state set by actions.
-const MAILBOX = { web: false, queries: [], actions: [], state: {} }
+// Per-message tools (20261223090000): attachment chips per conversation, per-email stars and reports.
+const MAILBOX = { web: false, queries: [], actions: [], state: {}, files: {}, msg: {}, msgActions: [] }
 const MAILBOX_PAGE = (p = {}) => {
   const base = [
     { id: 'sc-mail', subject: 'Cracked basin', snippet: 'The basin arrived cracked. Photo attached.', from_name: 'Ravi Kumar', from_address: 'ravi@customer.example', unread_count: 1, has_attachment: true,
@@ -1457,7 +1458,8 @@ const api = http.createServer((req, res) => {
   req.on('data', (c) => (raw += c))
   req.on('end', () => {
     const url = new URL(req.url, `http://localhost:${API_PORT}`)
-    const body = raw ? JSON.parse(raw) : null
+    // Storage uploads are multipart (files), not JSON.
+    const body = raw && !(req.headers['content-type'] ?? '').startsWith('multipart/') ? JSON.parse(raw) : null
     const single = (req.headers.accept ?? '').includes('vnd.pgrst.object')
     // Product Master list / detail / export read the view product_master_list (migration 20261128090000); logged under the
     // products path so the list assertions apply to both, with the relation kept for the checks that need it.
@@ -1559,6 +1561,17 @@ const api = http.createServer((req, res) => {
       const bucket = url.pathname.split('/').pop()
       return send(res, 200, (body?.paths ?? []).map((p) => ({ path: p, error: null, signedURL: `/object/sign/${bucket}/${p}?token=smoke` })))
     }
+    if (req.method === 'POST' && /^\/storage\/v1\/object\/sign\/support-attachments\/.+$/.test(url.pathname)) {
+      return send(res, 200, { signedURL: `${url.pathname.slice('/storage/v1'.length)}?token=smoke` })
+    }
+    // Email outbox upload (forward copies the original attachments; compose uploads picked files).
+    if (req.method === 'POST' && /^\/storage\/v1\/object\/support-attachments\/.+$/.test(url.pathname)) {
+      return send(res, 200, { Key: url.pathname.slice('/storage/v1/object/'.length), Id: 'smoke-upload' })
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/storage/v1/object/sign/') && url.pathname.endsWith('.csv')) {
+      res.writeHead(200, { 'Content-Type': 'text/csv', 'Access-Control-Allow-Origin': '*' })
+      return res.end('Item,Qty\nBasin,2\n')
+    }
     if (req.method === 'GET' && url.pathname.startsWith('/storage/v1/object/sign/')) {
       res.writeHead(200, { 'Content-Type': 'image/png', 'Access-Control-Allow-Origin': '*' })
       return res.end(Buffer.from(SMOKE_PNG, 'base64'))
@@ -1631,6 +1644,14 @@ const api = http.createServer((req, res) => {
       if (body?.action === 'test') return send(res, 200, { ok: true, message: 'Connected: Gmail answered for support@alton.example.' })
       if (body?.action === 'disconnect') { GMAIL.connected = false; return send(res, 200, { ok: true, revoked: true }) }
       return send(res, 400, { error: 'Unknown action.' })
+    }
+    if (url.pathname === '/functions/v1/google-gmail-send' && body?.action === 'original') {
+      if (!currentUser || !has('support.view')) return send(res, 403, { error: 'requires support.view' })
+      GMAIL.originalCalls.push(body)
+      if (body.format === 'raw') return send(res, 200, { raw: Buffer.from('Subject: Cracked basin\r\n\r\nThe basin arrived cracked.').toString('base64url'), size: 50 })
+      return send(res, 200, { size: 2048, headers: [{ name: 'Received', value: 'from mail.customer.example by mx.google.com' },
+        { name: 'Authentication-Results', value: 'mx.google.com; dkim=pass header.i=@customer.example; spf=pass smtp.mailfrom=ravi@customer.example; dmarc=pass (p=NONE)' },
+        { name: 'DKIM-Signature', value: 'v=1; a=rsa-sha256; d=customer.example' }, { name: 'Message-ID', value: '<aaaa000001@customer.example>' }] })
     }
     if (url.pathname === '/functions/v1/google-gmail-send') {
       if (!currentUser || !has('support.reply')) return send(res, 403, { error: 'requires support.reply' })
@@ -2231,6 +2252,24 @@ const api = http.createServer((req, res) => {
             if (['ARCHIVE', 'INBOX', 'SPAM', 'TRASH'].includes(body.p_action)) st.folder = body.p_action
           }
           return send(res, 200, { updated: body.p_ids.length, action: body.p_action })
+        }
+        case 'support_email_list_attachments':
+          if (!MAILBOX.web) return send(res, 404, { code: 'PGRST202', message: 'Could not find the function public.support_email_list_attachments' })
+          return send(res, 200, Object.fromEntries((body.p_ids ?? []).filter((id) => MAILBOX.files[id]).map((id) => [id, MAILBOX.files[id]])))
+        case 'support_email_message_state':
+          if (!MAILBOX.web) return send(res, 404, { code: 'PGRST202', message: 'Could not find the function public.support_email_message_state' })
+          return send(res, 200, MAILBOX.msg[body.p_conversation] ?? { starred: false, starred_emails: [] })
+        case 'support_email_message_action': {
+          if (!MAILBOX.web) return send(res, 404, { code: 'PGRST202', message: 'Could not find the function public.support_email_message_action' })
+          if (!has('support.reply')) return send(res, 403, { code: '42501', message: 'requires support.reply' })
+          MAILBOX.msgActions.push(body)
+          const st = MAILBOX.msg['sc-mail'] ?? (MAILBOX.msg['sc-mail'] = { starred: false, starred_emails: [] })
+          if (body.p_action === 'STAR') { st.starred_emails = st.starred ? [...new Set([...st.starred_emails, body.p_email])] : [body.p_email]; st.starred = true }
+          if (body.p_action === 'UNSTAR') { st.starred_emails = st.starred_emails.filter((x) => x !== body.p_email); st.starred = st.starred_emails.length > 0 }
+          const box = MAILBOX.state['sc-mail'] ?? (MAILBOX.state['sc-mail'] = { starred: false, important: false, folder: 'INBOX' })
+          box.starred = st.starred
+          if (body.p_action.startsWith('REPORT_')) box.folder = 'SPAM'
+          return send(res, 200, { ...st, folder: box.folder, action: body.p_action, email_id: body.p_email, conversation_id: 'sc-mail' })
         }
         case 'erp_form_drafts_mine':
           return send(res, 200, [...formDrafts.entries()].filter(([k, r]) => k.startsWith(`${currentUser?.id}|`) && r.status === 'draft')
@@ -3122,13 +3161,15 @@ const fill = (selector, value) =>
   })()`)
 /** Real mouse click at the centre of the first element matching a selector (optionally containing text). */
 async function click(selector, text) {
-  const rect = await evaluate(`(() => {
+  // Measured after scrolling has settled (two frames), so a late layout change does not move the target under the pointer.
+  const rect = await evaluate(`(async () => {
     const els = [...document.querySelectorAll(${JSON.stringify(selector)})]
       .filter((e) => ${text ? `e.innerText.trim().includes(${JSON.stringify(text)})` : 'true'})
       .filter((e) => e.getBoundingClientRect().width > 0);
     const el = els[0];
     if (!el) return null;
     el.scrollIntoView({ block: 'center' });
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     const r = el.getBoundingClientRect();
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
   })()`)
@@ -8180,6 +8221,7 @@ await step('Email workspace: rail, folders with counts, labels, list rows with s
     for (let i = 0; i < 30 && GMAIL.sendCalls.length === n0; i++) await sleep(100)
     const fw = GMAIL.sendCalls.at(-1)
     assert(fw.mode === 'NEW' && fw.subject === 'Fwd: Cracked basin' && fw.body.includes('From: Ravi Kumar <ravi@customer.example>') && fw.to.join() === 'warehouse@alton.example', `forward ${JSON.stringify(fw).slice(0, 300)}`)
+    assert(fw.attachments.length === 1 && fw.attachments[0].file_name === 'photo.jpg' && fw.attachments[0].path.includes('/outbox/'), `forward copies the attachment: ${JSON.stringify(fw.attachments)}`)
     await waitFor(`document.querySelector('[data-testid=email-send-result]')?.dataset.state === 'SENT'`, 'forward sent')
     await click('[data-testid=email-compose-close]')
 
@@ -8239,6 +8281,173 @@ await step('Email workspace: rail, folders with counts, labels, list rows with s
     SUPPORT_INBOX.splice(SUPPORT_INBOX.indexOf(mailConv), 1)
     emailChannel.status = before
     MAILBOX.web = false; MAILBOX.state = {}; GMAIL.connected = false; GMAIL.sendOutcome = 'PENDING'
+  }
+})
+
+await step('Email message tools: attachment chips in the list, preview with next / previous, thread with folded earlier emails, quoted text behind "…", per-email menu (show original, star, report phishing, trash with confirmation, copy link), download link', async () => {
+  const PERMS = ['support.view', 'support.manage_tickets', 'support.assign', 'support.reply', 'support.manage_integrations']
+  USERS['manager@test.invalid'].permissions.push(...PERMS)
+  const mailConv = supportConv('sc-mail', 'EMAIL', { subject: 'Cracked basin', customer_id: 'scu1', last_message_preview: 'The basin arrived cracked.' })
+  SUPPORT_INBOX.push(mailConv)
+  const emailChannel = SUPPORT_CHANNELS.find((c) => c.channel === 'EMAIL')
+  const before = emailChannel.status
+  const P = (n) => `${COMPANY_ID}/email/em2/${n}`
+  const file = (id, file_name, content_type, size_bytes, path = P(file_name)) => ({ id, file_name, content_type, size_bytes, inline: false, storage_path: path, restricted: false })
+  const earlier = (id, h, body) => ({ ...GMAIL_THREAD[0], id, message_id: `m-${id}`, body_text: body, at: new Date(Date.parse(NOW) - h * 3600000).toISOString(), unread: false,
+    gmail_message_id: `${id}000000`, attachments: [], skipped_attachments: [] })
+  const em2 = { ...GMAIL_THREAD[0], id: 'em2', message_id: 'm-em2', cc: [], unread: false, at: new Date(Date.parse(NOW) + 60000).toISOString(), gmail_message_id: 'eeee000002', has_html: false,
+    body_text: 'Any update on the replacement?\n\nOn Mon, 16 Nov 2026 at 10:00, Support <support@alton.example> wrote:\n> We are checking with the warehouse.', skipped_attachments: [],
+    attachments: [file('a-pdf', 'invoice.pdf', 'application/pdf', 4096), file('a-mp4', 'unboxing.mp4', 'video/mp4', 900000), file('a-csv', 'items.csv', 'text/csv', 40),
+      file('a-docx', 'Quarterly damage report for the northern region.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 12000),
+      { ...file('a-sens', 'bank-details.png', 'image/png', 300), storage_path: null, restricted: true }] }
+  const added = [earlier('e0a', 30, 'First message about the basin.'), earlier('e0b', 20, 'Second message.'), earlier('e0c', 10, 'Third message.')]
+  GMAIL_THREAD.unshift(...added)
+  GMAIL_THREAD.push(em2)
+  MAILBOX.web = true; MAILBOX.state = {}; MAILBOX.msg = {}; MAILBOX.msgActions = []; GMAIL.connected = true; GMAIL.sendOutcome = 'SENT'; emailChannel.status = 'CONNECTED'
+  MAILBOX.files = { 'sc-mail': { count: 6, items: [
+    { ...file('a-jpg', 'photo.jpg', 'image/jpeg', 20480, `${COMPANY_ID}/email/em1/1-photo.jpg`), email_id: 'em1' }, { ...file('a-png', 'damage-close-up.png', 'image/png', 9000), email_id: 'em2' },
+    { ...file('a-pdf', 'invoice.pdf', 'application/pdf', 4096), email_id: 'em2' }, { ...file('a-mp4', 'unboxing.mp4', 'video/mp4', 900000), email_id: 'em2' },
+    { ...file('a-csv', 'items.csv', 'text/csv', 40), email_id: 'em2' }] } }
+  try {
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+    await setViewport(1440, 900)
+
+    // List: three chips (thumbnail for images, icon otherwise) and "+3"; the full name is in the label.
+    await goto('/support/emails')
+    await waitFor(`document.querySelectorAll('[data-testid=mail-row-sc-mail] [data-testid=mail-attachment-chip]').length === 3`, 'attachment chips')
+    assert(await evaluate(`document.querySelector('[data-testid=mail-row-attachments-more]').innerText === '+3'
+      && [...document.querySelectorAll('[data-testid=mail-attachment-chip]')].map((c) => c.getAttribute('aria-label')).join('|').includes('invoice.pdf (PDF · 4.0 KB)')`), 'chip labels and +3')
+    assert(rpcCalls('support_email_list_attachments').at(-1).body.p_ids.join() === 'sc-mail', 'one attachment request for the rows with files')
+    await waitFor(`!!document.querySelector('[data-testid=mail-attachment-chip] img[src*="/object/sign/"]')`, 'image thumbnail on the chip')
+    await screenshot('261-email-list-attachment-chips')
+
+    // Preview from a chip: the image, next with the arrow key and the button, PDF in the viewer, Escape closes without opening the thread.
+    await click('[data-testid=mail-attachment-chip]')
+    await waitFor(`!!document.querySelector('[data-testid=attachment-preview-image]') && document.querySelector('[data-testid=attachment-preview]').innerText.includes('1 of 5')`, 'image preview')
+    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 })
+    await waitFor(`document.querySelector('[data-testid=attachment-preview]').innerText.includes('damage-close-up.png') && document.querySelector('[data-testid=attachment-preview]').innerText.includes('2 of 5')`, 'next with the arrow key')
+    await click('[data-testid=attachment-preview-next]')
+    await waitFor(`!!document.querySelector('[data-testid=attachment-preview-pdf]')`, 'PDF in the viewer')
+    await click('[data-testid=attachment-preview-next]')
+    await click('[data-testid=attachment-preview-next]')
+    await waitFor(`!!document.querySelector('[data-testid=attachment-preview-table]') && document.querySelector('[data-testid=attachment-preview-table]').innerText.includes('Basin')`, 'CSV as a table')
+    await click('[data-testid=attachment-preview-prev]')
+    await waitFor(`!!document.querySelector('[data-testid=attachment-preview-video], [data-testid=attachment-preview-none]')`, 'video (or a download offer when the browser cannot play it)')
+    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+    await waitFor(`!document.querySelector('[data-testid=attachment-preview]')`, 'Escape closes the preview')
+    assert(!/[?&]c=/.test(await evaluate('location.search')), 'a chip click does not open the thread')
+
+    // Thread: first email, a round "2" for the two folded ones, the unread and the last email open.
+    // The row itself (its middle may be an attachment chip, which opens the preview instead).
+    await evaluate(`document.querySelector('[data-testid=mail-row-sc-mail]').click()`)
+    await waitFor(`!!document.querySelector('[data-testid=mail-thread-hidden]') && !!document.querySelector('[data-testid=email-em2][data-expanded=true]')`, 'thread with folded emails')
+    assert(await evaluate(`document.querySelector('[data-testid=mail-thread-hidden]').innerText === '2' && !!document.querySelector('[data-testid=email-e0a][data-expanded=false]')
+      && !document.querySelector('[data-testid=email-e0b]') && !!document.querySelector('[data-testid=email-em1][data-expanded=true]')`), 'folded layout')
+    // Quoted reply behind "…", revealed with the original text.
+    assert(await evaluate(`(() => { const b = document.querySelector('[data-testid=email-em2] [data-testid=email-body]').innerText; return b.includes('Any update') && !b.includes('checking with the warehouse') })()`), 'quote hidden')
+    await click('[data-testid=email-em2] [data-testid=email-show-quoted]')
+    await waitFor(`document.querySelector('[data-testid=email-em2] [data-testid=email-body]').innerText.includes('> We are checking with the warehouse.')`, 'quote shown')
+    // Attachments below the email: one card each (restricted one without a link), long names in full on hover.
+    assert(await evaluate(`document.querySelectorAll('[data-testid=email-em2] [data-testid=email-attachment]').length === 4
+      && document.querySelectorAll('[data-testid=email-em2] [data-testid=email-attachment-restricted]').length === 1
+      && !!document.querySelector('[data-testid=email-em2] [title="Quarterly damage report for the northern region.docx"]')`), 'attachment cards')
+    await screenshot('262-email-thread-tools')
+    // Download: a short-lived signed link that asks the browser to download (captured instead of followed).
+    await evaluate(`window.__dl = []; HTMLAnchorElement.prototype.click = function () { window.__dl.push(this.href + '|' + this.download) }`)
+    await evaluate(`document.querySelector('[data-testid=email-em2] [data-testid=email-attachment-download]').click()`)
+    await waitFor(`window.__dl.length === 1`, 'download link')
+    const dl = await evaluate('window.__dl[0]')
+    assert(/\/object\/sign\/support-attachments\/.*invoice\.pdf\?token=smoke&download=invoice\.pdf\|invoice\.pdf$/.test(dl), `download link ${dl}`)
+    // A docx has no preview: the viewer offers the download.
+    await evaluate(`[...document.querySelectorAll('[data-testid=email-em2] [data-testid=email-attachment] > button')][3].click()`)
+    await waitFor(`!!document.querySelector('[data-testid=attachment-preview-none]') && document.querySelector('[data-testid=attachment-preview-none]').innerText.includes('No preview available')`, 'download offer')
+    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+    await waitFor(`!document.querySelector('[data-testid=attachment-preview]')`, 'closed')
+
+    // Folded emails: the "2" reveals them; Expand all / Collapse all.
+    await click('[data-testid=mail-thread-hidden]')
+    await waitFor(`!!document.querySelector('[data-testid=email-e0b][data-expanded=false]') && !!document.querySelector('[data-testid=email-e0c][data-expanded=false]')`, 'revealed')
+    await click('[data-testid=mail-expand-all]')
+    await waitFor(`document.querySelectorAll('[data-testid=email-thread] article[data-expanded=true]').length === 5`, 'all expanded')
+    await click('[data-testid=mail-expand-all]')
+    await waitFor(`document.querySelectorAll('[data-testid=email-thread] article[data-expanded=true]').length === 2 && !!document.querySelector('[data-testid=mail-thread-hidden]')`, 'collapsed again')
+
+    // Each email has its own toolbar and menu; Show original reads Gmail's headers through google-gmail-send.
+    assert(await evaluate(`document.querySelectorAll('[data-testid=email-menu]').length === 2 && document.querySelectorAll('[data-testid=email-toolbar]').length === 2`), 'a menu per open email')
+    await click('[data-testid=email-em1] [data-testid=email-menu]')
+    await waitFor(`!!document.querySelector('[data-testid=email-menu-content]')`, 'menu open')
+    assert(await evaluate(bodyHasAll('Reply all', 'Forward', 'Print', 'Download message', 'Show original', 'Copy link to this email', 'Mark as unread', 'Add star', 'Report spam', 'Report phishing', 'Move to Trash')), 'menu items')
+    await click('[data-testid=email-show-original]')
+    await waitFor(`!!document.querySelector('[data-testid=email-original-headers]') && document.querySelector('[data-testid=email-original-headers]').innerText.includes('DKIM-Signature')`, 'original headers')
+    assert(GMAIL.originalCalls.at(-1).email_id === 'em1' && GMAIL.originalCalls.at(-1).format === undefined, 'headers asked for em1 only')
+    assert(await evaluate(bodyHasAll('Message ID', '<aaaa000001@customer.example>', 'PASS')), 'summary and verdicts')
+    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+    await waitFor(`!document.querySelector('[data-testid=email-original]')`, 'original closed')
+
+    // Star one email (not the conversation).
+    const convActs = MAILBOX.actions.length
+    await click('[data-testid=email-em2] [data-testid=email-star]')
+    for (let i = 0; i < 30 && !MAILBOX.msgActions.length; i++) await sleep(100)
+    assert(MAILBOX.msgActions.at(-1).p_email === 'em2' && MAILBOX.msgActions.at(-1).p_action === 'STAR' && MAILBOX.actions.length === convActs, 'star on em2 only (not the conversation)')
+    await waitFor(`!!document.querySelector('[data-testid=email-em2] [data-testid=email-star][aria-label=Starred]') && !!document.querySelector('[data-testid=email-em1] [data-testid=email-star][aria-label="Not starred"]')`, 'em2 starred, em1 not')
+
+    // Copy link to one email, then open it: that email is shown expanded.
+    await evaluate(`window.__copied = []; Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: (t) => { window.__copied.push(t); return Promise.resolve() } } })`)
+    await click('[data-testid=email-em1] [data-testid=email-menu]')
+    await click('[data-testid=email-copy-link]')
+    await waitFor(`window.__copied.length === 1 && document.querySelector('[data-testid=mail-thread-info]')?.innerText === 'Link copied.'`, 'link copied')
+    assert(/\/support\/emails\?c=sc-mail&m=em1$/.test(await evaluate('window.__copied[0]')), 'message link')
+    await goto('/support/emails?c=sc-mail&m=e0b')
+    await waitFor(`!!document.querySelector('[data-testid=email-e0b][data-expanded=true]')`, 'linked email expanded')
+
+    // Trash asks first; Cancel does nothing.
+    await click('[data-testid=email-em2] [data-testid=email-menu]')
+    await click('[data-testid=email-trash]')
+    await waitFor(bodyHasAll('Move this conversation to Trash?', 'Support history is never deleted'), 'trash confirmation')
+    const nActs = MAILBOX.actions.length
+    await click('button', 'Cancel')
+    await waitFor(`!document.querySelector('[role=alertdialog]')`, 'cancelled')
+    assert(MAILBOX.actions.length === nActs, 'nothing moved on cancel')
+    // Report phishing asks first, records the single email and leaves the thread.
+    await click('[data-testid=email-em1] [data-testid=email-menu]')
+    await click('[data-testid=email-report-phishing]')
+    await waitFor(bodyHasAll('Report phishing?', 'Gmail and Google are not told'), 'phishing confirmation')
+    await click('[role=alertdialog] button', 'Report phishing')
+    for (let i = 0; i < 30 && MAILBOX.msgActions.at(-1)?.p_action !== 'REPORT_PHISHING'; i++) await sleep(100)
+    assert(MAILBOX.msgActions.at(-1).p_email === 'em1', 'phishing report for em1')
+    await waitFor(`!document.querySelector('[data-testid=mail-thread]')`, 'back to the list')
+    // Trash confirmed: the conversation moves to Trash.
+    await goto('/support/emails?folder=all&c=sc-mail')
+    await waitFor(`!!document.querySelector('[data-testid=email-em2] [data-testid=email-menu]')`, 'thread again')
+    await click('[data-testid=email-em2] [data-testid=email-menu]')
+    await click('[data-testid=email-trash]')
+    await click('[role=alertdialog] button', 'Move to Trash')
+    for (let i = 0; i < 30 && MAILBOX.actions.at(-1)?.action !== 'TRASH'; i++) await sleep(100)
+    assert(MAILBOX.actions.at(-1).ids.join() === 'sc-mail', 'trash request')
+    await waitFor(`!document.querySelector('[data-testid=mail-thread]')`, 'back to the list after Trash')
+
+    // Phone: chips wrap, no horizontal scroll in the list or the thread.
+    MAILBOX.state = {}
+    await setViewport(390, 844)
+    await goto('/support/emails?folder=all')
+    await waitFor(`!!document.querySelector('[data-testid=mail-row-sc-mail] [data-testid=mail-attachment-chip]')`, 'mobile chips')
+    assert(await noHorizontalScroll(), 'mobile list scrolls horizontally')
+    // The row itself (its middle may be an attachment chip, which opens the preview instead).
+    await evaluate(`document.querySelector('[data-testid=mail-row-sc-mail]').click()`)
+    await waitFor(`!!document.querySelector('[data-testid=email-em2] [data-testid=email-attachment]')`, 'mobile thread')
+    assert(await noHorizontalScroll(), 'mobile thread scrolls horizontally')
+    assert(await evaluate(`[...document.querySelectorAll('[data-testid=email-menu]')].every((b) => b.getBoundingClientRect().right <= innerWidth)`), 'the email menu is on screen (not clipped)')
+    await screenshot('263-email-tools-mobile')
+    await cdp('Emulation.clearDeviceMetricsOverride')
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+    SUPPORT_INBOX.splice(SUPPORT_INBOX.indexOf(mailConv), 1)
+    GMAIL_THREAD.splice(0, added.length)
+    GMAIL_THREAD.splice(GMAIL_THREAD.indexOf(em2), 1)
+    emailChannel.status = before
+    MAILBOX.web = false; MAILBOX.state = {}; MAILBOX.files = {}; GMAIL.connected = false
   }
 })
 

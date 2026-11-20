@@ -184,6 +184,7 @@ export function editorToMarkup(root: EditorNode): { text: string; formatted: boo
 export function unescapeMarkup(s: string): string { return s.replace(/\\([\\*[\]+])/g, '$1') }
 
 // ---- Reply / forward ------------------------------------------------------------------------------
+export const addrs = (list: { email: string; name: string | null }[]) => list.map((a) => (a.name ? `${a.name} <${a.email}>` : a.email)).join(', ')
 const who = (e: Pick<ThreadEmail, 'from_name' | 'from_address'>) => (e.from_name ? `${e.from_name} <${e.from_address}>` : e.from_address ?? 'unknown sender')
 /** "On 12 Nov 2026, 10:42 am, Ravi <ravi@x> wrote:" plus the text quoted with "> ". */
 export function quoteForReply(e: ThreadEmail, when: string): string {
@@ -215,3 +216,77 @@ const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
 export function editorHtml(text: string, formatted: boolean): string {
   return formatted ? markdownToHtml(text) : text.split('\n').map((l) => `<div>${escapeHtml(l) || '<br>'}</div>`).join('')
 }
+
+// ---- Thread presentation (Gmail-style) ---------------------------------------------------------
+/**
+ * Splits off the quoted earlier conversation at the end of a reply ("On … wrote:", Outlook's "-----Original Message-----"
+ * or "From: / Sent:" block, or trailing "> " lines) so it can sit behind a "…" button. A forwarded message is not hidden.
+ * The text is never changed: main + quoted is the original.
+ */
+export function splitQuoted(text: string): { main: string; quoted: string | null } {
+  const lines = text.split('\n')
+  let at = -1
+  for (let i = 1; i < lines.length && at < 0; i++) {
+    const l = lines[i].trim()
+    const next = (lines[i + 1] ?? '').trim()
+    if (/^On\b.{4,300}\bwrote:$/i.test(l) || (/^On\b.{4,300}/i.test(l) && /^.{0,200}wrote:$/i.test(next) && !/wrote:$/i.test(l))) at = i
+    else if (/^-{2,}\s*Original Message\s*-{2,}$/i.test(l)) at = i
+    else if (/^_{10,}$/.test(l) && /^From:\s/i.test(next)) at = i
+    else if (/^From:\s.+/i.test(l) && lines.slice(i + 1, i + 4).some((x) => /^(Sent|Date):\s/i.test(x.trim())) && !/forwarded message/i.test(lines[i - 1] ?? '')) at = i
+    else if (/^>/.test(l) && lines.slice(i).every((x) => !x.trim() || /^>/.test(x.trim()))) at = i
+  }
+  if (at < 0) return { main: text, quoted: null }
+  const main = lines.slice(0, at).join('\n')
+  // Something of the sender's own must remain (a reply that is only a quote is shown whole).
+  if (!lines.slice(0, at).some((x) => x.trim() && !/^>/.test(x.trim()))) return { main: text, quoted: null }
+  return { main: main.replace(/\s+$/, ''), quoted: text.slice(main.replace(/\s+$/, '').length) }
+}
+
+export type ThreadItem<E> = { kind: 'email'; email: E } | { kind: 'hidden'; ids: string[] }
+/**
+ * Gmail's layout: two or more collapsed emails in a row (after the first one) fold into one round "N" marker, until it
+ * is clicked. Expanded emails and the first email always show.
+ */
+export function threadItems<E extends { id: string }>(emails: E[], expanded: Set<string>, revealed: boolean): ThreadItem<E>[] {
+  const out: ThreadItem<E>[] = []
+  let run: E[] = []
+  const flush = () => {
+    if (run.length >= 2 && !revealed) out.push({ kind: 'hidden', ids: run.map((e) => e.id) })
+    else run.forEach((email) => out.push({ kind: 'email', email }))
+    run = []
+  }
+  emails.forEach((e, i) => {
+    if (i > 0 && i < emails.length - 1 && !expanded.has(e.id)) { run.push(e); return }
+    flush()
+    out.push({ kind: 'email', email: e })
+  })
+  flush()
+  return out
+}
+
+/** Emails shown with a star: the starred ones of a starred conversation, else its last email (starred from the list). */
+export function starredEmails(emailIds: string[], state: { starred: boolean; starred_emails: string[] } | null, conversationStarred: boolean): Set<string> {
+  const on = state ? state.starred : conversationStarred
+  if (!on || !emailIds.length) return new Set()
+  const mine = (state?.starred_emails ?? []).filter((id) => emailIds.includes(id))
+  return new Set(mine.length ? mine : [emailIds[emailIds.length - 1]])
+}
+
+/** SPF / DKIM / DMARC results from Authentication-Results (the receiving server's verdict, as Gmail shows it). */
+export function authResults(headers: { name: string; value: string }[]): { spf?: string; dkim?: string; dmarc?: string } {
+  const out: { spf?: string; dkim?: string; dmarc?: string } = {}
+  for (const h of headers.filter((x) => x.name.toLowerCase() === 'authentication-results')) {
+    for (const m of h.value.matchAll(/\b(spf|dkim|dmarc)=([a-z]+)/gi)) {
+      const k = m[1].toLowerCase() as 'spf' | 'dkim' | 'dmarc'
+      out[k] ??= m[2].toUpperCase()
+    }
+  }
+  return out
+}
+
+/** "Cracked basin.eml": a safe file name for "Download original". */
+export const emlFileName = (subject: string | null) => `${(subject ?? '').replace(/[\\/:*?"<>|\r\n\t]+/g, ' ').trim().slice(0, 80) || 'email'}.eml`
+
+/** Link to one email inside its conversation (opens the thread with that email expanded). */
+export const messageLink = (origin: string, conversationId: string, emailId: string) =>
+  `${origin}/support/emails?c=${encodeURIComponent(conversationId)}&m=${encodeURIComponent(emailId)}`

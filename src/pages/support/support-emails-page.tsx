@@ -68,7 +68,8 @@ export default function SupportEmailsPage() {
   const q = params.get('q') ?? ''
   const pageParam = params.get('page') ?? '0'
   const selectedId = params.get('c') ?? ''
-  const setUrl = useCallback((patch: Partial<Record<'folder' | 'label' | 'q' | 'page' | 'c', string>>) => {
+  const focusEmail = params.get('m') ?? ''
+  const setUrl = useCallback((patch: Partial<Record<'folder' | 'label' | 'q' | 'page' | 'c' | 'm', string>>) => {
     setParams((prev) => {
       const next = new URLSearchParams(prev)
       for (const [k, v] of Object.entries(patch)) {
@@ -80,7 +81,7 @@ export default function SupportEmailsPage() {
   }, [setParams])
   const setQ = (v: string) => setUrl({ q: v, page: '0' })
   const setPageParam = (v: string) => setUrl({ page: v })
-  const setSelectedId = (v: string) => setUrl({ c: v })
+  const setSelectedId = (v: string) => setUrl({ c: v, m: '' })
   const up = folderParam.toUpperCase()
   const folder: MailFolder = isMailFolder(up) ? (up === 'LABEL' && !label ? 'INBOX' : up) : 'INBOX'
   const offset = Math.max(0, Number(pageParam) || 0) * LIMIT
@@ -100,7 +101,7 @@ export default function SupportEmailsPage() {
   const page = list.data ?? undefined
   const legacy = Boolean(page?.legacy)
 
-  const go = (f: MailFolder, l = '') => { setUrl({ folder: f.toLowerCase(), label: l, page: '0', c: '' }); setNavOpen(false) }
+  const go = (f: MailFolder, l = '') => { setUrl({ folder: f.toLowerCase(), label: l, page: '0', c: '', m: '' }); setNavOpen(false) }
   const act: Act = async (ids, action, p) => {
     setNotice(null)
     try {
@@ -135,7 +136,7 @@ export default function SupportEmailsPage() {
       )}
       <main className="flex min-w-0 flex-1 flex-col pr-2 pb-2 pl-2 lg:pl-0 lg:pr-4">
         <div className="flex h-16 shrink-0 items-center gap-3">
-          <MailSearchBar value={q} onSearch={(t) => setUrl({ q: t, page: '0', c: '' })} onMenu={() => setNavOpen(true)} />
+          <MailSearchBar value={q} onSearch={(t) => setUrl({ q: t, page: '0', c: '', m: '' })} onMenu={() => setNavOpen(true)} />
           <span className="hidden sm:block"><PresenceControl compact /></span>
         </div>
         {(hasFilters(search) || legacy || notice) && (
@@ -152,7 +153,7 @@ export default function SupportEmailsPage() {
         )}
         <div className={cn('flex min-h-0 flex-1 overflow-hidden rounded-2xl bg-white', selectedId && 'max-md:fixed max-md:inset-0 max-md:z-40 max-md:rounded-none')}>
           {selectedId ? (
-            <MailThread key={selectedId} id={selectedId} legacy={legacy} row={row} folder={folder} act={act} labels={page?.labels ?? []} timezone={tz}
+            <MailThread key={selectedId} id={selectedId} focusId={focusEmail || null} legacy={legacy} row={row} folder={folder} act={act} labels={page?.labels ?? []} timezone={tz}
               onBack={() => setSelectedId('')} onChanged={list.reload} detailsOpen={detailsOpen} setDetailsOpen={setDetailsOpen}
               onReply={(mode, e, customerId) => setComposeTarget({ mode, replyTo: e, conversationId: selectedId, customerId })} />
           ) : folder === 'DRAFTS' ? (

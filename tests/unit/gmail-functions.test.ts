@@ -545,12 +545,14 @@ describe('google-gmail-send', () => {
     subject: 'Re: Cracked basin', body: 'Replacement on its way.', rfc_message_id: '<abc.alton@alton.example>', in_reply_to: '<aaaa000002@customer.example>',
     references: '<aaaa000001@customer.example> <aaaa000002@customer.example>', thread_id: 'thr000001',
     attachments: [{ id: 'a1', path: `${COMPANY}/outbox/k/invoice.pdf`, file_name: 'invoice.pdf', content_type: 'application/pdf', size_bytes: 3 }] }
-  const setup = async (o: { prepared?: unknown; prepareError?: { code?: string; message?: string }; send?: (h: Hit) => Response; noFile?: boolean; token?: (h: Hit) => Response | null } = {}) => {
+  const setup = async (o: { prepared?: unknown; prepareError?: { code?: string; message?: string }; send?: (h: Hit) => Response; noFile?: boolean; token?: (h: Hit) => Response | null;
+    original?: { data?: unknown; error?: { code?: string; message?: string } } } = {}) => {
     const creds = await storedCreds()
     const store = new Map<string, Uint8Array>()
     if (!o.noFile) store.set(PREPARED.attachments[0].path, new Uint8Array([37, 80, 68]))
     const c = fakeClient((fn) => {
       if (fn === 'support_gmail_send_prepare') return o.prepareError ? { error: o.prepareError } : { data: o.prepared ?? PREPARED }
+      if (fn === 'support_email_original_target') return o.original ?? {}
       if (fn === 'support_gmail_runtime') return { data: RUNTIME }
       if (fn === 'support_gmail_credentials') return { data: creds }
       return {}
@@ -624,6 +626,41 @@ describe('google-gmail-send', () => {
     const body = await (await send(post(BODY), d)).json()
     assert.equal(body.send_state, 'FAILED')
     assert.equal(c.called('support_gmail_reauth_required').length, 1)
+  })
+
+  // "Show original" / "Download original" (20261223090000): read-only, permission and visibility checked by the database.
+  const TARGET = { account_id: ACCOUNT, gmail_message_id: 'gm00000001', raw_allowed: true }
+  const orig = (h: Hit) => (h.url.includes('/messages/gm00000001?format=metadata')
+    ? json(200, { id: 'gm00000001', sizeEstimate: 1234, payload: { headers: [{ name: 'Received', value: 'from mx.example' }, { name: 'DKIM-Signature', value: 'v=1; a=rsa-sha256' }] } })
+    : h.url.includes('/messages/gm00000001?format=raw') ? json(200, { id: 'gm00000001', sizeEstimate: 20, raw: 'U3ViamVjdDogSGkNCg0KSGVsbG8' }) : null)
+  it('original headers: read with format=metadata, nothing written', async () => {
+    const { d, c, g } = await setup({ original: { data: TARGET }, token: orig })
+    const r = await send(post({ action: 'original', email_id: EMAIL_ID }), d)
+    assert.equal(r.status, 200)
+    const body = await r.json()
+    assert.deepEqual(body.headers.map((h: { name: string }) => h.name), ['Received', 'DKIM-Signature'])
+    assert.equal(c.called('support_email_original_target')[0].args.p_email, EMAIL_ID)
+    assert.ok(g.hits.every((h) => h.method !== 'POST' || h.url === GOOGLE.token))
+    assert.equal(c.called('support_gmail_send_result').length + c.called('support_gmail_send_prepare').length, 0)
+  })
+  it('original message: raw returned only when every attachment may be opened', async () => {
+    const ok = await setup({ original: { data: TARGET }, token: orig })
+    const body = await (await send(post({ action: 'original', email_id: EMAIL_ID, format: 'raw' }), ok.d)).json()
+    assert.equal(Buffer.from(b64urlToBytes(body.raw)).toString('utf8'), 'Subject: Hi\r\n\r\nHello')
+    const no = await setup({ original: { data: { ...TARGET, raw_allowed: false } }, token: orig })
+    const r = await send(post({ action: 'original', email_id: EMAIL_ID, format: 'raw' }), no.d)
+    assert.equal(r.status, 403)
+    assert.ok(!no.g.hits.some((h) => h.url.includes('format=raw')))
+  })
+  it('original: no Gmail copy, refused permission, or Gmail no longer has it', async () => {
+    const none = await setup({ original: { data: { ...TARGET, gmail_message_id: null } } })
+    assert.equal((await send(post({ action: 'original', email_id: EMAIL_ID }), none.d)).status, 409)
+    const denied = await setup({ original: { error: { code: '42501', message: 'requires support.view' } } })
+    assert.equal((await send(post({ action: 'original', email_id: EMAIL_ID }), denied.d)).status, 403)
+    const gone = await setup({ original: { data: TARGET }, token: (h) => (h.url.includes('/messages/gm00000001') ? json(404, { error: { message: 'Not Found' } }) : null) })
+    const r = await send(post({ action: 'original', email_id: EMAIL_ID }), gone.d)
+    assert.equal(r.status, 404)
+    assert.match((await r.json()).error, /no longer has/)
   })
 })
 

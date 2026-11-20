@@ -34,12 +34,14 @@ const addrs = (list: { email: string; name: string | null }[]) => list.map((a) =
  * Sanitised HTML (cleaned on the server) in a sandboxed frame: no scripts, no same-origin access, no remote
  * content (CSP), links open in a new window.
  */
-export function EmailHtmlFrame({ emailId }: { emailId: string }) {
+// Quoted earlier replies as Gmail, Outlook, Apple Mail and Yahoo mark them (hidden behind the email workspace's "…").
+const QUOTED_CSS = '.gmail_quote,blockquote[type=cite],.yahoo_quoted,#divRplyFwdMsg,#divRplyFwdMsg~*,#appendonsend~*{display:none!important}'
+export function EmailHtmlFrame({ emailId, hideQuoted = false }: { emailId: string; hideQuoted?: boolean }) {
   const q = useAsync(() => fetchEmailHtml(emailId), [emailId])
   if (q.loading) return <p className="text-xs text-muted-foreground">Loading formatted view…</p>
   if (q.error || !q.data) return <p className="text-xs text-muted-foreground">The formatted version is not available.</p>
   const doc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">`
-    + `<base target="_blank"><style>body{font:14px/1.5 system-ui,sans-serif;margin:8px;color:#111;word-wrap:break-word}table{max-width:100%}blockquote{border-left:3px solid #ddd;margin:0;padding-left:8px;color:#555}</style></head>`
+    + `<base target="_blank"><style>body{font:14px/1.5 system-ui,sans-serif;margin:8px;color:#111;word-wrap:break-word}table{max-width:100%}blockquote{border-left:3px solid #ddd;margin:0;padding-left:8px;color:#555}${hideQuoted ? QUOTED_CSS : ''}</style></head>`
     + `<body>${q.data}</body></html>`
   return <iframe title="Formatted email" sandbox="allow-popups allow-popups-to-escape-sandbox" srcDoc={doc} referrerPolicy="no-referrer"
     className="h-80 w-full resize-y rounded-md border bg-white" data-testid="email-html-frame" />

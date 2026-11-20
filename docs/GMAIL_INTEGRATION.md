@@ -191,3 +191,51 @@ the same type and size checks as files you attach yourself.
 Until the migration is applied, the screen shows the unified inbox's email conversations, without folders, stars or
 labels. **Deploy** the migration first, then `google-gmail-send` (for formatted emails), then the frontend.
 Checks: `npm run test:db:email-mailbox`, `tests/unit/email-workspace.test.ts`, and the smoke steps "Support email (Gmail)" and "Email workspace".
+
+## Attachments and per-email tools (migration 20261223090000)
+
+**Attachments**
+
+- **List rows** show up to three chips under the subject, plus "+N": an icon or a small thumbnail, a shortened name, and the full name, type and size on hover. Clicking a chip opens the preview without opening the thread.
+- **In a thread**, each email shows its files as cards: images and videos with a thumbnail, other files with a type icon, and Preview / Download.
+- **The viewer** (Escape closes it; arrow keys or buttons move between files) shows:
+  - images: JPG, PNG, WEBP, GIF;
+  - PDFs, in the browser's own viewer;
+  - MP4, WebM and MOV video;
+  - CSV as a table and text files as text, up to 2 MB.
+- **Other files** (DOC/DOCX, XLS/XLSX, ZIP, HEIC, …) offer Download.
+- **Links:** every file is reached through a 5-minute signed link of the private support bucket, created with the user's own session. The bucket's policies apply, and sensitive files appear as "Restricted" without a link, as in the thread. Nothing is uploaded or copied to render a conversation.
+
+**Thread layout**
+
+- Earlier emails are compact cards. Two or more in a row fold into a round count, which you click to show them.
+- Unread emails, the last email, and an email opened from a link are expanded.
+- Expand all / Collapse all is in the toolbar.
+- A quoted earlier reply ("On … wrote:", Outlook's headers, trailing "> " lines) sits behind a "…" button. In the formatted view, the quoted blocks that mail programs mark are hidden the same way. A forwarded message is never hidden.
+
+**Each open email** has Star, Reply and a ⋮ menu: Reply, Reply all, Forward, Print, Download message, Show original, Copy link to this email, Formatted / Plain text, Message details, Mark as unread, Add / Remove star, Report spam, Report phishing and Move to Trash.
+
+- **Star** marks that email. The conversation is starred while one of its emails is.
+- **Report spam / phishing** records the single email in the audit log. The whole conversation then moves to Spam in the ERP; Google is not told.
+- **Move to Trash** moves the whole conversation, because single emails cannot be removed from one; nothing is deleted.
+- Both of those ask for confirmation first.
+- **Mark as unread** returns to the list, as Gmail does.
+- **Show original / Download message** read Gmail's copy through `google-gmail-send` (action `original`, gmail.readonly, read-only):
+  - the headers, with the SPF / DKIM / DMARC verdicts;
+  - or the whole `.eml`, at most 20 MB, only for users allowed to open all of its attachments.
+  - They are offered once Gmail has the email (sent and synced).
+- **Emoji reactions** are not offered: the connected mailbox cannot send Gmail's reaction format.
+
+**Migration 20261223090000** (additive; rollback in `supabase/rollback/`):
+
+- column `support_email_thread_state.starred_emails`;
+- `support_email_list_attachments(ids)` (support.view, read-only, at most 100 conversations);
+- `support_email_message_state(conversation)` (support.view, read-only);
+- `support_email_message_action(email, action)` (support.reply; STAR, UNSTAR, REPORT_SPAM, REPORT_PHISHING; audited);
+- `support_email_original_target(email)` (support.view, read-only; used by `google-gmail-send`).
+
+There is no new table, so the reset allowlist is unchanged. Before this migration the list keeps the paperclip, the star stays on the conversation, and "Report phishing" is not offered.
+
+**Deploy** 20261222090000, then 20261223090000, then `google-gmail-send`, then the frontend.
+
+Checks: `npm run test:db:email-message-tools`, `tests/unit/email-workspace.test.ts` and `tests/unit/gmail-functions.test.ts`, and the smoke step "Email message tools".

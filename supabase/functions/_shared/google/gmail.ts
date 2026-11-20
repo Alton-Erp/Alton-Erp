@@ -80,6 +80,11 @@ export class Gmail {
     if (!ID.test(id)) throw new GmailError(400, 'Invalid message id.')
     return this.call<GmailMessage>('GET', `/messages/${id}?format=full`)
   }
+  /** "Show original": headers only (metadata) or the whole RFC 822 message (raw, base64url). Read-only (gmail.readonly). */
+  original(id: string, format: 'metadata' | 'raw') {
+    if (!ID.test(id)) throw new GmailError(400, 'Invalid message id.')
+    return this.call<GmailMessage & { raw?: string }>('GET', `/messages/${id}?format=${format}`)
+  }
   attachment(messageId: string, attachmentId: string) {
     if (!ID.test(messageId) || !ATTACHMENT_ID.test(attachmentId)) throw new GmailError(400, 'Invalid attachment id.')
     return this.call<{ size?: number; data?: string }>('GET', `/messages/${messageId}/attachments/${attachmentId}`)

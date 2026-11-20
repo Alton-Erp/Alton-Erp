@@ -183,3 +183,50 @@ export async function fetchEmailDrafts(): Promise<EmailDraftRow[]> {
 export const saveEmailDraft = (scope: string, data: EmailDraftData, expectedVersion: number) =>
   saveFormDraft({ formKey: 'support.email', recordId: null, scope }, data, null, expectedVersion)
 export const closeEmailDraft = (scope: string, status: 'submitted' | 'discarded') => closeFormDraft({ formKey: 'support.email', recordId: null, scope }, status)
+
+// ---- Per-message tools (migration 20261223090000) --------------------------------------------
+export interface MailAttachment {
+  id: string; file_name: string; content_type: string | null; size_bytes: number | null; storage_path: string | null; restricted: boolean
+  /** The email it came with (list chips only). */
+  email_id?: string
+}
+export interface RowAttachments { count: number; items: MailAttachment[] }
+/** Attachment chips of the list rows (at most 8 per conversation, newest email first). Empty before the migration. */
+export async function fetchListAttachments(ids: string[]): Promise<Record<string, RowAttachments>> {
+  if (!ids.length) return {}
+  try {
+    return (await rpc<Record<string, RowAttachments> | null>('support_email_list_attachments', { p_ids: ids.slice(0, 100) })) ?? {}
+  } catch (e) {
+    if (missingFunction(e)) return {}
+    throw e
+  }
+}
+export interface MessageState { starred: boolean; starred_emails: string[] }
+/** Which emails of a conversation carry the star; null before the migration (only the conversation's star exists). */
+export async function fetchMessageState(conversationId: string): Promise<MessageState | null> {
+  try {
+    return await rpc<MessageState>('support_email_message_state', { p_conversation: conversationId })
+  } catch (e) {
+    if (missingFunction(e)) return null
+    throw e
+  }
+}
+export type MessageAction = 'STAR' | 'UNSTAR' | 'REPORT_SPAM' | 'REPORT_PHISHING'
+export const messageAction = (emailId: string, action: MessageAction) =>
+  rpc<MessageState & { folder: string }>('support_email_message_action', { p_email: emailId, p_action: action })
+export interface OriginalHeaders { headers: { name: string; value: string }[]; size: number | null }
+/** Gmail's own copy of the email (read-only, through google-gmail-send): headers, or the whole message base64url-encoded. */
+export const fetchOriginalHeaders = (emailId: string) => invoke<OriginalHeaders>('google-gmail-send', { action: 'original', email_id: emailId })
+export const fetchOriginalRaw = (emailId: string) => invoke<{ raw: string; size: number | null }>('google-gmail-send', { action: 'original', email_id: emailId, format: 'raw' })
+/** A 5-minute signed link that downloads (Content-Disposition: attachment) instead of opening the file. */
+export async function attachmentDownloadUrl(path: string, fileName: string): Promise<string> {
+  const { data, error } = await requireSupabase().storage.from(SUPPORT_BUCKET).createSignedUrl(path, 300, { download: fileName })
+  if (error) throw error
+  return data.signedUrl
+}
+/** Several 5-minute signed links in one request (list thumbnails). Paths the user may not read come back without a URL. */
+export async function attachmentUrls(paths: string[]): Promise<Record<string, string>> {
+  const { data, error } = await requireSupabase().storage.from(SUPPORT_BUCKET).createSignedUrls(paths, 300)
+  if (error) throw error
+  return Object.fromEntries((data ?? []).flatMap((d) => (d.signedUrl && d.path ? [[d.path, d.signedUrl] as const] : [])))
+}
