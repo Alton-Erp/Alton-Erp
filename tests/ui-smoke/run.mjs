@@ -732,7 +732,7 @@ const GMAIL_THREAD = [
     skipped_attachments: [{ filename: 'setup.exe', state: 'BLOCKED', reason: '.exe files are not stored (executable or script).' }] },
 ]
 // Meta WhatsApp Cloud API (20261213090000). Pending until the (mock) Meta status webhook says otherwise.
-const WA = { state: 'MIGRATION_REQUIRED', enabled: false, windowOpen: true, sendCalls: [], templateCalls: [], checklist: [], preflight: null }
+const WA = { state: 'MIGRATION_REQUIRED', enabled: false, windowOpen: true, sendCalls: [], templateCalls: [], checklist: [], preflight: null, web: false, prefs: {}, prefCalls: [] }
 const WA_ITEMS = [['number_path_confirmed', true], ['cloud_api_eligibility', true], ['migration_completed', true], ['coexistence_approved', false], ['previous_routing_retired', true],
   ['system_user_token', true], ['webhook_subscribed', true], ['templates_reviewed', false]]
 const WA_CONFIG = () => ({
@@ -770,6 +770,26 @@ const WA_THREAD = () => ({
       error_detail: null, media_state: 'NONE', media_error: null, media_filename: null, media_mime: null, location: { latitude: 19.07, longitude: 72.87, name: 'Site', address: 'Mumbai' },
       context_wa_message_id: null, wa_message_id: 'wamid.LOC1', template_name: null, author: null, attachment: null }],
 })
+// WhatsApp Web screen (20261221090000)
+const WA_WEB_INBOX = (body) => {
+  const last = { 'sc-wa': { direction: 'OUTBOUND', status: 'FAILED', type: 'text' }, sc1: { direction: 'OUTBOUND', status: 'READ', type: 'text' } }
+  let rows = SUPPORT_INBOX.filter((r) => r.channel === 'WHATSAPP').map((r) => ({ ...r, pinned: false, muted: false, favorite: false, ...(WA.prefs[r.id] ?? {}),
+    profile_name: 'Ravi Kumar', wa_id: '919876543210', window_open: WA.windowOpen, last_message: last[r.id] ?? null }))
+  const counts = { ALL: rows.length, UNREAD: rows.filter((r) => r.unread_count > 0).length, FAVORITES: rows.filter((r) => r.favorite).length, MINE: rows.filter((r) => r.assigned_agent_id === 'sag1').length }
+  rows = rows.filter((r) => body.p_view === 'UNREAD' ? r.unread_count > 0 : body.p_view === 'FAVORITES' ? r.favorite : body.p_view === 'MINE' ? r.assigned_agent_id === 'sag1' : true)
+    .filter((r) => !body.p_search || JSON.stringify(r).toLowerCase().includes(String(body.p_search).toLowerCase()))
+    .sort((a, b) => Number(b.pinned) - Number(a.pinned))
+  return { total: rows.length, me: 'sag1', rows, counts }
+}
+const WA_MESSAGE_INFO = (id) => {
+  const m = WA_THREAD().messages.find((x) => x.id === id)
+  if (!m) return null
+  const receipts = m.status === 'READ' ? [{ status: 'SENT', at: NOW }, { status: 'DELIVERED', at: NOW }, { status: 'READ', at: NOW }]
+    : m.status === 'FAILED' ? [{ status: 'FAILED', at: NOW, error_code: 131026, error_title: 'Message undeliverable', error_detail: 'Receiver is incapable of receiving this message' }] : []
+  return { id: m.id, direction: m.direction, status: m.status, status_at: m.status_at, type: m.type, at: m.at, created_at: m.at, accepted_by_meta: Boolean(m.wa_message_id),
+    template_name: null, error_code: m.error_code, error_title: m.error_title, error_detail: m.error_detail,
+    receipts: receipts.map((r) => ({ error_code: null, error_title: null, error_detail: null, ...r })) }
+}
 // Unified support (20261214090000)
 const UNI = { rulesSaves: [], calendarSaves: [], healthTests: 0 }
 const UNI_SETTINGS = () => ({
@@ -2197,6 +2217,21 @@ const api = http.createServer((req, res) => {
           return send(res, 200, { setup_state: WA.state, enabled: WA.enabled, display_phone_number: '+9118001234567', can_send: WA.enabled && has('support.reply') })
         case 'support_whatsapp_thread':
           return send(res, 200, body.p_conversation === 'sc-wa' ? WA_THREAD() : null)
+        // WhatsApp Web screen (20261221090000); served only by its own step, so other steps see the pre-migration fallback.
+        case 'support_whatsapp_inbox':
+          if (!WA.web) return send(res, 404, { code: 'PGRST202', message: 'Could not find the function public.support_whatsapp_inbox' })
+          return send(res, 200, WA_WEB_INBOX(body))
+        case 'support_conversation_pref_set': {
+          if (!WA.web) return send(res, 404, { code: 'PGRST202', message: 'Could not find the function public.support_conversation_pref_set' })
+          WA.prefCalls.push(body)
+          const cur = WA.prefs[body.p_conversation] ?? { pinned: false, muted: false, favorite: false }
+          const next = { pinned: body.p_pinned ?? cur.pinned, muted: body.p_muted ?? cur.muted, favorite: body.p_favorite ?? cur.favorite }
+          WA.prefs[body.p_conversation] = next
+          return send(res, 200, next)
+        }
+        case 'support_whatsapp_message_info':
+          if (!WA.web) return send(res, 404, { code: 'PGRST202', message: 'Could not find the function public.support_whatsapp_message_info' })
+          return send(res, 200, WA_MESSAGE_INFO(body.p_id))
         case 'support_whatsapp_templates_list':
           return send(res, 200, WA_TEMPLATES)
         case 'support_automation_settings_get':
@@ -8114,6 +8149,150 @@ await step('Support WhatsApp (Meta Cloud API): Settings > WhatsApp preflight and
     SUPPORT_INBOX.splice(SUPPORT_INBOX.indexOf(waConv), 1)
     waChannel.status = before
     WA.enabled = false; WA.state = 'MIGRATION_REQUIRED'; WA.windowOpen = true
+  }
+})
+
+await step('WhatsApp Web screen: three panels, filters and pins, ticks only from Meta, emoji + Enter to send, reply, safe retry, message info, notes never sent, ticket / customer views, phone layout', async () => {
+  const PERMS = ['support.view', 'support.manage_tickets', 'support.assign', 'support.reply', 'support.manage_integrations']
+  USERS['manager@test.invalid'].permissions.push(...PERMS)
+  const waConv = supportConv('sc-wa', 'WHATSAPP', { subject: null, customer_id: 'scu1', last_message_preview: 'Are you there?', unread_count: 1 })
+  SUPPORT_INBOX.push(waConv)
+  const waChannel = SUPPORT_CHANNELS.find((c) => c.channel === 'WHATSAPP')
+  const before = waChannel.status
+  WA.web = true; WA.enabled = true; WA.state = 'CONNECTED'; WA.windowOpen = true; WA.prefs = {}; waChannel.status = 'CONNECTED'
+  try {
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+    await setViewport(1440, 900)
+
+    // List: WhatsApp-only list from the server, filters, Groups disabled, connection shown.
+    await goto('/support/whatsapp')
+    await waitFor(`!!document.querySelector('[data-testid=wa-web] [data-testid=inbox-list]') && !!document.querySelector('[data-testid=conversation-sc-wa]')`, 'conversation list')
+    assert(rpcCalls('support_whatsapp_inbox').at(-1).body.p_view === 'ALL', 'list from support_whatsapp_inbox')
+    assert(await evaluate(`document.querySelector('[data-testid=wa-filter-GROUPS]').disabled && document.querySelector('[data-testid=wa-setup-state]').innerText.includes('WhatsApp on')`), 'groups disabled / connection')
+    assert(await evaluate(`!!document.querySelector('[data-testid=wa-empty]')`), 'empty state before a chat is chosen')
+    await click('[data-testid=wa-filter-UNREAD]')
+    for (let i = 0; i < 30 && rpcCalls('support_whatsapp_inbox').at(-1)?.body.p_view !== 'UNREAD'; i++) await sleep(100)
+    assert(rpcCalls('support_whatsapp_inbox').at(-1).body.p_view === 'UNREAD', 'unread filter on the server')
+    await click('[data-testid=wa-filter-ALL]')
+    // Context menu: pin (personal preference through the server), shown with a pin and listed first.
+    await waitFor(`!!document.querySelector('[data-testid=conversation-sc-wa]')`, 'row')
+    await evaluate(`document.querySelector('[data-testid=conversation-sc-wa]').closest('li').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 200, clientY: 200 }))`)
+    await waitFor(`[...document.querySelectorAll('[role=menuitem]')].some((e) => e.innerText.includes('Pin chat'))`, 'context menu')
+    await click('[role=menuitem]', 'Pin chat')
+    await waitFor(`!!document.querySelector('[data-testid=conversation-sc-wa] [aria-label=Pinned]')`, 'pinned')
+    assert(WA.prefCalls.at(-1).p_conversation === 'sc-wa' && WA.prefCalls.at(-1).p_pinned === true, `pin request ${JSON.stringify(WA.prefCalls.at(-1))}`)
+    assert(await evaluate(`document.querySelector('[data-testid=inbox-list] [data-wa-row]').dataset.testid === 'conversation-sc-wa'`), 'pinned first')
+    // List tick of the last outbound message comes from its status, never "read" by default.
+    assert(await evaluate(`document.querySelector('[data-testid=conversation-sc-wa] [data-testid=wa-status]').dataset.tick === 'FAILED'
+      && document.querySelector('[data-testid=conversation-sc1] [data-testid=wa-status]').dataset.tick === 'READ'`), 'list ticks')
+
+    // Chat: three panels on desktop, date separator, ticks, failure with Meta's code, media download prompt, location.
+    await click('[data-testid=conversation-sc-wa]')
+    await waitFor(`!!document.querySelector('[data-testid=wa-panel]') && !!document.querySelector('[data-testid=wa-wm4]')`, 'chat')
+    await waitFor(`!!document.querySelector('[data-testid=wa-info]')`, 'contact drawer open on desktop')
+    assert(await evaluate(`[...document.querySelectorAll('[data-testid=wa-day]')].some((d) => d.innerText === 'TODAY')`), 'date separator')
+    assert(await evaluate(`document.querySelector('[data-testid=wa-wm3] [data-testid=wa-status]').dataset.tick === 'READ' && document.querySelector('[data-testid=wa-wm4] [data-testid=wa-status]').dataset.tick === 'FAILED'
+      && !document.querySelector('[data-testid=wa-wm1] [data-testid=wa-status]')`), 'ticks only on outgoing, from the status')
+    assert(await evaluate(bodyHasAll('Message undeliverable (131026)', 'Media not downloaded yet.', 'Site, Mumbai', 'Customer service window open')), 'chat content')
+    assert(await evaluate(`!!document.querySelector('[data-testid=wa-wm3] [data-testid=wa-quote]')`), 'reply preview on the quoted message')
+    for (let i = 0; i < 30 && rpcCalls('support_conversation_mark_read').at(-1)?.body.p_id !== 'sc-wa'; i++) await sleep(100)
+    assert(rpcCalls('support_conversation_mark_read').at(-1)?.body.p_id === 'sc-wa', 'opening marks the conversation read')
+    await screenshot('256-whatsapp-web-desktop')
+
+    // Emoji picker inserts at the caret; Shift+Enter does not send; Enter sends once.
+    const n0 = WA.sendCalls.length
+    await fill('[data-testid=wa-composer] textarea', 'Replacement leaves today ')
+    await click('[data-testid=wa-emoji]')
+    await waitFor(`!!document.querySelector('[data-testid=wa-emoji-picker]')`, 'emoji picker')
+    await fill('[data-testid=wa-emoji-search]', 'thumbs up')
+    await waitFor(`!!document.querySelector('[data-testid=wa-emoji-picker] button[data-emoji="\u{1F44D}"]')`, 'emoji search')
+    await click('[data-testid=wa-emoji-picker] button[data-emoji="\u{1F44D}"]')
+    await waitFor(`document.querySelector('[data-testid=wa-composer] textarea').value === 'Replacement leaves today \u{1F44D}'`, 'emoji inserted')
+    await evaluate(`document.querySelector('[data-testid=wa-composer] textarea').focus()`)
+    for (const type of ['keyDown', 'keyUp']) await cdp('Input.dispatchKeyEvent', { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, modifiers: 8 })
+    await sleep(400)
+    assert(WA.sendCalls.length === n0, 'Shift+Enter sent the message')
+    await press('[data-testid=wa-composer] textarea', 'Enter')
+    await waitFor(`document.querySelector('[data-testid=wa-notice]')?.innerText.includes('Accepted by Meta')`, 'sent with Enter')
+    assert(WA.sendCalls.length - n0 === 1 && WA.sendCalls.at(-1).text === 'Replacement leaves today \u{1F44D}', `enter send ${JSON.stringify(WA.sendCalls.at(-1))}`)
+
+    // Reply to a message: preview, cancel button, reply_to sent. Unsupported actions are disabled.
+    await evaluate(`document.querySelector('[data-testid=wa-wm1] button[aria-label="Message options"]').style.opacity = '1'`)
+    await click('[data-testid=wa-wm1] button[aria-label="Message options"]')
+    await waitFor(`[...document.querySelectorAll('[role=menuitem]')].some((e) => e.innerText.includes('Reply'))`, 'message menu')
+    assert(await evaluate(`[...document.querySelectorAll('[role=menuitem]')].filter((e) => /React|Forward|Delete/.test(e.innerText)).length === 3
+      && [...document.querySelectorAll('[role=menuitem]')].filter((e) => /React|Forward|Delete/.test(e.innerText)).every((e) => e.hasAttribute('data-disabled'))`), 'unsupported actions disabled')
+    await click('[role=menuitem]', 'Reply')
+    await waitFor(`document.querySelector('[data-testid=wa-reply-preview]')?.innerText.includes('The basin arrived cracked')`, 'reply preview')
+    await fill('[data-testid=wa-composer] textarea', 'Sorry about that')
+    await click('[data-testid=wa-send]')
+    for (let i = 0; i < 30 && WA.sendCalls.at(-1)?.text !== 'Sorry about that'; i++) await sleep(100)
+    assert(WA.sendCalls.at(-1).reply_to === 'wm1', `reply_to ${JSON.stringify(WA.sendCalls.at(-1))}`)
+    await waitFor(`!document.querySelector('[data-testid=wa-reply-preview]')`, 'reply preview cleared')
+
+    // Safe retry: only the message Meta reported FAILED; a new message with a new key, offered once.
+    const keys = new Set(WA.sendCalls.map((c) => c.idempotency_key))
+    await click('[data-testid=wa-wm4] [data-testid=wa-retry]')
+    for (let i = 0; i < 30 && WA.sendCalls.at(-1)?.text !== 'Are you there?'; i++) await sleep(100)
+    assert(WA.sendCalls.at(-1).text === 'Are you there?' && !keys.has(WA.sendCalls.at(-1).idempotency_key), `retry is a new request: ${JSON.stringify(WA.sendCalls.at(-1))}`)
+    await waitFor(`!document.querySelector('[data-testid=wa-wm4] [data-testid=wa-retry]')`, 'retry offered once')
+    assert(!(await evaluate(`!!document.querySelector('[data-testid=wa-wm3] [data-testid=wa-retry]')`)), 'retry offered on a read message')
+
+    // Message info: receipt times as Meta reported them.
+    await evaluate(`document.querySelector('[data-testid=wa-wm3] button[aria-label="Message options"]').style.opacity = '1'`)
+    await click('[data-testid=wa-wm3] button[aria-label="Message options"]')
+    await waitFor(`[...document.querySelectorAll('[role=menuitem]')].some((e) => e.innerText.includes('Message info'))`, 'menu')
+    await click('[role=menuitem]', 'Message info')
+    await waitFor(`!!document.querySelector('[data-testid=wa-info-read]') && !document.querySelector('[data-testid=wa-info-read]').innerText.includes('Not reported')`, 'message info')
+    assert(rpcCalls('support_whatsapp_message_info').at(-1).body.p_id === 'wm3', 'message info request')
+    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' })
+    await waitFor(`!document.querySelector('[data-testid=wa-message-info]')`, 'closed')
+
+    // Search inside the conversation.
+    await click('[data-testid=wa-search-toggle]')
+    await fill('[data-testid=wa-search] input', 'CRACKED')
+    await waitFor(`document.querySelector('[data-testid=wa-search]').innerText.includes('1 of 1') && !!document.querySelector('[data-testid=wa-wm1] mark')`, 'search hit')
+
+    // Internal note: saved as a note, never sent on WhatsApp.
+    const sends = WA.sendCalls.length
+    await fill('[data-testid=wa-note-input]', 'Customer prefers morning calls')
+    await click('[data-testid=wa-note-add]')
+    for (let i = 0; i < 30 && rpcCalls('support_note_add').at(-1)?.body.p_body !== 'Customer prefers morning calls'; i++) await sleep(100)
+    assert(rpcCalls('support_note_add').at(-1).body.p_target === 'CONVERSATION' && WA.sendCalls.length === sends, 'note not sent to WhatsApp')
+    assert(await evaluate(bodyHasAll('never sent to the customer on WhatsApp', 'Checked stock for a replacement')), 'notes listed and labelled')
+
+    // Ticket and customer views.
+    await click('[data-testid=wa-view-ticket]')
+    await waitFor(`!!document.querySelector('[data-testid=wa-pane-ticket] [data-testid=create-ticket-from-conversation]')`, 'ticket view')
+    await click('[data-testid=wa-view-customer]')
+    await waitFor(`!!document.querySelector('[data-testid=wa-pane-customer] [data-testid=wa-erp-customer]')`, 'customer view')
+    await click('[data-testid=wa-view-chat]')
+    await waitFor(`!!document.querySelector('[data-testid=wa-messages]')`, 'back to chat')
+
+    // Window closes: no free-form composer any more, approved template only (picked up by polling).
+    WA.windowOpen = false
+    await waitFor(`document.querySelector('[data-testid=wa-window]')?.dataset.open === 'false' && !!document.querySelector('[data-testid=wa-template-open]') && !document.querySelector('[data-testid=wa-send]')`, 'window closed (polled)', 15000)
+    WA.windowOpen = true
+
+    // Phone: list first, then the chat full screen with a back button; no horizontal scroll.
+    await setViewport(390, 844)
+    await goto('/support/whatsapp')
+    await waitFor(`!!document.querySelector('[data-testid=conversation-sc-wa]')`, 'mobile list')
+    assert(await noHorizontalScroll(), 'mobile list scrolls horizontally')
+    await click('[data-testid=conversation-sc-wa]')
+    await waitFor(`!!document.querySelector('[data-testid=wa-panel]') && document.querySelector('[data-testid=wa-panel]').getBoundingClientRect().width >= 380`, 'mobile chat full screen')
+    assert(await noHorizontalScroll(), 'mobile chat scrolls horizontally')
+    await screenshot('257-whatsapp-web-mobile')
+    await click('button[aria-label="Back to conversations"]')
+    await waitFor(`!document.querySelector('[data-testid=wa-panel]') && !!document.querySelector('[data-testid=conversation-sc-wa]')`, 'back to list')
+    await cdp('Emulation.clearDeviceMetricsOverride')
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+    SUPPORT_INBOX.splice(SUPPORT_INBOX.indexOf(waConv), 1)
+    waChannel.status = before
+    WA.web = false; WA.enabled = false; WA.state = 'MIGRATION_REQUIRED'; WA.windowOpen = true; WA.prefs = {}
   }
 })
 

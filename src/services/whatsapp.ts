@@ -2,7 +2,7 @@ import { FunctionsHttpError } from '@supabase/supabase-js'
 
 import { describeDataError } from '@/lib/errors'
 import { requireSupabase } from '@/lib/supabase'
-import { SUPPORT_BUCKET } from '@/services/support'
+import { fetchInbox, SUPPORT_BUCKET, type InboxRow } from '@/services/support'
 
 /**
  * Meta WhatsApp Cloud API (migration 20261213090000). The browser never sees the access token, app secret or
@@ -120,4 +120,51 @@ export async function uploadWaFile(companyId: string, key: string, file: File) {
   const { error } = await requireSupabase().storage.from(SUPPORT_BUCKET).upload(path, file, { contentType: file.type || undefined, upsert: false })
   if (error) throw error
   return { path, file_name: file.name, content_type: file.type || null, size_bytes: file.size }
+}
+
+// ---- WhatsApp Web-style screen (migration 20261221090000) --------------------------------
+export type WaInboxView = 'ALL' | 'UNREAD' | 'FAVORITES' | 'MINE' | 'UNASSIGNED' | 'OPEN' | 'PENDING' | 'RESOLVED'
+export interface WaInboxRow extends InboxRow {
+  pinned: boolean; muted: boolean; favorite: boolean; profile_name: string | null; wa_id: string | null; window_open: boolean
+  last_message: { direction: 'INBOUND' | 'OUTBOUND'; status: WaStatus; type: string } | null
+}
+export interface WaInboxPage { total: number; me: string | null; rows: WaInboxRow[]; counts: Record<string, number>; legacy?: boolean }
+
+const missingFunction = (e: unknown) => {
+  const x = e as { code?: string; message?: string } | null
+  return x?.code === 'PGRST202' || x?.code === '42883' || /could not find the function/i.test(x?.message ?? '')
+}
+
+/**
+ * WhatsApp conversations: pinned first, Unread / Favourites on the server. Before the migration is applied it falls back
+ * to the unified inbox (no pins, favourites or list ticks; Unread and Favourites then show nothing rather than a guess).
+ */
+export async function fetchWaInbox(view: WaInboxView, opts: { search?: string; limit: number; offset: number }): Promise<WaInboxPage> {
+  try {
+    const page = await rpc<WaInboxPage | null>('support_whatsapp_inbox', { p_view: view, p_search: opts.search?.trim() || null, p_limit: opts.limit, p_offset: opts.offset })
+    if (page) return page
+  } catch (e) {
+    if (!missingFunction(e)) throw e
+  }
+  if (view === 'UNREAD' || view === 'FAVORITES') return { total: 0, me: null, rows: [], counts: {}, legacy: true }
+  const page = await fetchInbox(view, { channel: 'WHATSAPP', search: opts.search, limit: opts.limit, offset: opts.offset })
+  return { ...page, legacy: true, rows: page.rows.map((r) => ({ ...r, pinned: false, muted: false, favorite: false, profile_name: null, wa_id: null, window_open: false, last_message: null })) }
+}
+export const setConversationPref = (conversationId: string, p: { pinned?: boolean; muted?: boolean; favorite?: boolean }) =>
+  rpc<{ pinned: boolean; muted: boolean; favorite: boolean }>('support_conversation_pref_set', {
+    p_conversation: conversationId, p_pinned: p.pinned ?? null, p_muted: p.muted ?? null, p_favorite: p.favorite ?? null })
+
+export interface WaReceipt { status: 'SENT' | 'DELIVERED' | 'READ' | 'FAILED' | 'PLAYED'; at: string | null; error_code: number | null; error_title: string | null; error_detail: string | null }
+export interface WaMessageInfo {
+  id: string; direction: 'INBOUND' | 'OUTBOUND'; status: WaStatus; status_at: string | null; type: string; at: string; created_at: string; accepted_by_meta: boolean
+  template_name: string | null; error_code: number | null; error_title: string | null; error_detail: string | null; receipts: WaReceipt[]
+}
+/** Delivery receipts exactly as Meta reported them; null before the migration (the dialog then shows the current status only). */
+export async function fetchWaMessageInfo(id: string): Promise<WaMessageInfo | null> {
+  try {
+    return await rpc<WaMessageInfo | null>('support_whatsapp_message_info', { p_id: id })
+  } catch (e) {
+    if (missingFunction(e)) return null
+    throw e
+  }
 }

@@ -193,3 +193,52 @@ the migration changes no state by itself.
 - Signed events that Meta sends for this phone number under another WABA id are reported as the wrong account.
 - **Secrets:** `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_APP_SECRET` (the Meta app secret; webhook signatures),
   `WHATSAPP_VERIFY_TOKEN` and `WHATSAPP_CRON_SECRET`. Only whether the app secret is set is recorded.
+
+## WhatsApp Web-style support screen (migration 20261221090000)
+
+`/support/whatsapp` is laid out like WhatsApp Web: conversations on the left, the chat in the middle, and contact / ticket
+information in a drawer on the right. On a tablet the drawer opens over the chat; on a phone the list comes first and the
+chat opens full screen. Receiving (`whatsapp-webhook`), sending (`whatsapp-send-message`, `whatsapp-send-template`) and
+status processing are unchanged; the screen only reads through permission-checked functions.
+
+**Delivery ticks** come only from the stored status, which only Meta's status webhooks move:
+
+| Status | Shown as |
+|---|---|
+| `PENDING` (queued, or accepted by Meta but no "sent" status yet) | clock |
+| `SENT` | one grey tick |
+| `DELIVERED` | two grey ticks |
+| `READ` (Meta read receipt; `played` for voice counts as read) | two blue ticks |
+| `FAILED` | red error with Meta's code and reason |
+
+Message info shows the time of each receipt Meta reported (`support_whatsapp_statuses`); a receipt Meta did not send
+is shown as "Not reported". **Send again** is offered only for a text that Meta reported as `FAILED`, inside the 24-hour
+window, once: it sends a new message with a new idempotency key (the failed one stays in the history). A message that
+Meta did not confirm (`Not confirmed`) is never resent from the screen.
+
+**Supported here:** replying to a message, copying (one or several selected messages), searching in the conversation,
+viewing and downloading images, video, audio and documents, the emoji picker (no third-party package), Enter to send and
+Shift+Enter for a new line, approved templates, pin / mute / favourite, and the Unread / Favourites / Assigned to me filters
+(the unified inbox's Unassigned / Open / Pending / Resolved filters are under "More"). Internal notes are saved with
+`support_note_add` and are never sent to the customer.
+
+**Shown as not supported (disabled, with the reason):** sending reactions, forwarding, deleting messages, audio uploads
+and groups. Received reactions appear as their own line ("Ravi reacted 👍"): the webhook does not store which message
+they target. Online / last seen is not shown: the Cloud API does not provide it.
+
+**Updates** arrive by polling (chat every 5 s, details every 10 s, list every 15 s, only while the tab is visible).
+The WhatsApp tables have no client grants, so Supabase Realtime cannot stream them.
+
+**Migration 20261221090000** (additive; rollback in `supabase/rollback/`):
+
+- table `support_conversation_prefs`: pin / mute / favourite per user and conversation. It has no app grants and is in the
+  ERP reset allowlist, which now has 130 tables (forced reset: 137). "Mute" changes only how the list shows the conversation;
+  ERP notifications are not affected.
+- `public.support_whatsapp_inbox(view, search, limit, offset)`: WhatsApp conversations, pinned first. Its views are
+  ALL / UNREAD / FAVORITES / MINE / UNASSIGNED / OPEN / PENDING / RESOLVED.
+- `public.support_conversation_pref_set`: you can pin at most 3 conversations.
+- `public.support_whatsapp_message_info`: the receipts for one message.
+
+Until the migration is applied, the screen falls back to `support_inbox`. Pins and list ticks are not shown then, and
+Unread and Favourites stay empty (nothing is guessed). Checks: `npm run test:db:whatsapp-web`,
+`tests/unit/whatsapp-web.test.ts`, and the smoke step "WhatsApp Web screen".

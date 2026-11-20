@@ -12,10 +12,10 @@ import {
 const root = path.resolve(import.meta.dirname, '..', '..')
 
 describe('V2 navigation scope', () => {
-  it('has exactly the nine approved sections, in order', () => {
+  it('has exactly the approved sections, in order (Support Centre added at the owner’s request)', () => {
     assert.deepEqual(NAV_GROUPS.map((g) => g.label), [
       'Management Dashboard', 'Product Master & BOM', 'Inventory Management', 'Purchase & GRN',
-      'Production & Outsourcing', 'Sales & Orders', 'Billing & Invoicing', 'Ledger', 'Reports & Settings',
+      'Production & Outsourcing', 'Sales & Orders', 'Billing & Invoicing', 'Ledger', 'Support Centre', 'Reports & Settings',
     ])
     for (const g of NAV_GROUPS) assert.ok(NAV_ITEMS.some((i) => i.group === g.id), `${g.label} has no page`)
   })
@@ -29,6 +29,8 @@ describe('V2 navigation scope', () => {
     assert.deepEqual(titles('billing'), ['Invoice Dashboard', 'Sales Invoices', 'Create Invoice', 'Invoice Register', 'Customer Payments', 'Payment Allocation',
       'Outstanding Receivables', 'Receivables Ageing', 'Credit Notes', 'Debit Notes', 'Customer Statements', 'GST Summary', 'Billing Reports', 'Invoice Settings'])
     assert.deepEqual(titles('ledger'), ['Ledger Dashboard', 'Customer & Supplier Ledger', 'Customer Ledger', 'Supplier Ledger'])
+    assert.deepEqual(NAV_ITEMS.filter((i) => i.group === 'support').map((i) => i.path), ['/support/overview', '/support/inbox', '/support/tickets', '/support/customers',
+      '/support/calls', '/support/whatsapp', '/support/emails', '/support/knowledge-base', '/support/automation', '/support/reports', '/support/settings'])
     const removed = /^\/(inventory\/(counts|batches|reports)|production\/(outsourcing|outsourced-receipts)|sales\/(picking|packing|dispatch|delivery|returns|reports|order-details))$/
     for (const item of NAV_ITEMS) assert.doesNotMatch(item.path, removed, `${item.key} was removed from the sidebar`)
   })

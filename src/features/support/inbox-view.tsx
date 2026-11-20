@@ -246,7 +246,7 @@ function ConversationPane({ id, onBack, onChanged }: { id: string; onBack: () =>
   )
 }
 
-function CustomerSection({ d, canEdit, onLink, onNew }: { d: ConversationDetail; canEdit: boolean; onLink: (id: string | null) => void; onNew: () => void }) {
+export function CustomerSection({ d, canEdit, onLink, onNew }: { d: ConversationDetail; canEdit: boolean; onLink: (id: string | null) => void; onNew: () => void }) {
   const [picked, setPicked] = useState<{ id: string; label: string } | null>(null)
   if (d.customer) {
     return (
@@ -280,7 +280,7 @@ function CustomerSection({ d, canEdit, onLink, onNew }: { d: ConversationDetail;
   )
 }
 
-function TicketSection({ d, canManage, onCreate, onLink }: { d: ConversationDetail; canManage: boolean; onCreate: () => void; onLink: (ticketId: string) => Promise<void> }) {
+export function TicketSection({ d, canManage, onCreate, onLink }: { d: ConversationDetail; canManage: boolean; onCreate: () => void; onLink: (ticketId: string) => Promise<void> }) {
   const [number, setNumber] = useState('')
   const [error, setError] = useState<string | null>(null)
   if (d.ticket) {

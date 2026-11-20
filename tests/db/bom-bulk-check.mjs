@@ -439,7 +439,7 @@ ok('tables cannot be written directly from the app (only through the functions)'
 
 // ---------------------------------------------------------------------------
 console.log('\nReset allowlist and rollback')
-ok('ERP reset allowlist: 129 tables including the 3 new ones', Number(await val(`select count(*) from private.erp_reset_tables()`)) === 129
+ok('ERP reset allowlist: 129 tables including the 3 new ones (130 once 20261221090000 adds support_conversation_prefs)', Number(await val(`select count(*) from private.erp_reset_tables()`)) === 129 + Number(await val(`select count(*) from private.erp_reset_tables() where table_name = 'support_conversation_prefs'`))
   && Number(await val(`select count(*) from private.erp_reset_tables() where table_name like 'bom_change%'`)) === 3)
 const down = await read(path.join(root, 'supabase', 'rollback', `${NAME}_down.sql`))
 let refused = false
