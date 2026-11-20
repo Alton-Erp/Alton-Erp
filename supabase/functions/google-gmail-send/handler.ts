@@ -13,6 +13,7 @@
 
 import { Gmail, GmailError } from '../_shared/google/gmail.ts'
 import { BUCKET, corsHeaders, log, type Client } from '../_shared/google/google.ts'
+import { markdownToHtml, markdownToText } from '../_shared/google/markdown.ts'
 import { buildMime, toRaw, type Address } from '../_shared/google/mime.ts'
 import { accessToken, type SyncDeps } from '../_shared/google/sync.ts'
 
@@ -96,7 +97,10 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
 
   let raw: string
   try {
-    raw = toRaw(buildMime({ from: e.from!, to: e.to ?? [], cc: e.cc ?? [], bcc: e.bcc ?? [], subject: e.subject ?? '', body: e.body ?? '', messageId: e.rfc_message_id!,
+    // format "markdown" (the ERP's email editor): a formatted HTML part is built here from the stored text. Otherwise plain text, as before.
+    const formatted = body.format === 'markdown'
+    raw = toRaw(buildMime({ from: e.from!, to: e.to ?? [], cc: e.cc ?? [], bcc: e.bcc ?? [], subject: e.subject ?? '',
+      body: formatted ? markdownToText(e.body ?? '') : e.body ?? '', html: formatted ? markdownToHtml(e.body ?? '') : null, messageId: e.rfc_message_id!,
       inReplyTo: e.in_reply_to ?? null, references: e.references ?? null, date: deps.now(), attachments: files }))
   } catch (err) {
     const why = err instanceof Error ? err.message : 'The email could not be built.'

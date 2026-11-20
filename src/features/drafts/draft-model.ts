@@ -16,6 +16,7 @@ export type DraftFormKey =
   | 'ledger.party'
   | 'inventory.opening'
   | 'users.invite'
+  | 'support.email'
 
 export type DraftRowStatus = 'draft' | 'submitted' | 'discarded'
 

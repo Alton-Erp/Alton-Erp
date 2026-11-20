@@ -134,3 +134,60 @@ curl -X POST https://<project-ref>.supabase.co/functions/v1/google-gmail-sync -H
 - When "mirror read" is off (the default), read / unread is tracked in the ERP only.
 - Files uploaded in the compose window and then not sent stay in the private bucket's `outbox/` folder.
 - The ERP's own `Message-ID` is used to confirm Pending sends. If Gmail ever rewrote it, such an email would stay Pending: check the mailbox's Sent folder.
+
+## Email workspace (migration 20261222090000)
+
+`/support/emails` works like an email client:
+
+- **App rail:** Mail, Chat (WhatsApp) and Contacts (support customers). Calendar is shown disabled because the ERP has no calendar module.
+- **Navigation:** Compose, the folders with counts, and Labels.
+- **Search bar** with an advanced-search panel.
+- **List:** select all, refresh, bulk actions and paging.
+- **Reading view** with collapsible messages and the support details (ticket, status, priority, agent, customer and ERP customer, internal notes).
+- **Floating compose window.**
+
+It keeps the existing architecture:
+
+- **Receiving:** `google-gmail-sync` / `support_gmail_ingest`, unchanged.
+- **Sending:** `google-gmail-send`, unchanged except for formatting.
+- **Messages:** `support_email_thread` and the stored emails. No new email table and no new Edge Function.
+
+**Mailbox state lives in the ERP** (the connection is read + send only). Star, Important, Snooze, Archive, Spam, Trash
+and read / unread are kept per conversation for the shared support mailbox. They are not applied to the Gmail mailbox,
+and "Report spam" does not report to Google. When "mirror read" (gmail.modify) is enabled, marking read is mirrored
+to Gmail, as before. Trash never deletes anything: support history is kept, and a thread can be moved back.
+A thread that is archived or snoozed returns to the Inbox when the customer writes again, or when the snooze time passes.
+
+| Folder | Shows |
+|---|---|
+| Inbox | received threads not archived, snoozed, spam or trash (unread count) |
+| Starred / Important / Snoozed | flagged threads (outside Spam and Trash) |
+| Sent | threads with an email sent from the mailbox |
+| Drafts | your own drafts (existing form drafts, form key `support.email`; private to their author) |
+| All mail | everything outside Spam and Trash |
+| Spam / Trash | threads moved there in the ERP |
+| Labels | the support tags (Support Settings → Tags), with unread counts |
+
+**Search** understands `from:`, `to:` (cc included), `subject:`, `has:attachment`, `is:unread`, `is:read`,
+`after:` and `before:`. Dates can be written as 2026-11-20, 2026/11/20 or 20/11/2026, and are read in the company
+timezone. Any other words search subject, text, sender and recipients. Filtering runs on the server.
+
+**Formatting:** the editor offers bold, italic, underline, links (http, https, mailto) and bulleted or numbered lists.
+The browser never sends HTML. It sends a small markup (`**bold**`, `*italic*`, `++underline++`, `[text](url)`,
+`- ` / `1. ` lists) with `format: "markdown"`. `google-gmail-send` then escapes everything and adds a `text/html`
+part (`multipart/alternative`; the `text/plain` part has the markers removed). Without formatting the email is plain
+text, exactly as before. The ERP's own copy of a formatted email shows the markup.
+
+**Forwarding** creates a new email. The original's attachments are copied into the new email's upload folder, under
+the same type and size checks as files you attach yourself.
+
+**Migration 20261222090000** (additive; rollback in `supabase/rollback/`):
+
+- table `support_email_thread_state`, with no app grants. It is in the ERP reset allowlist, which now has 131 tables (forced reset: 138).
+- `public.support_email_mailbox(p)` (support.view, read-only).
+- `public.support_email_mailbox_action(ids, action, p)` (support.reply; at most 200 threads; audited per thread).
+- registry line `support.email` for drafts.
+
+Until the migration is applied, the screen shows the unified inbox's email conversations, without folders, stars or
+labels. **Deploy** the migration first, then `google-gmail-send` (for formatted emails), then the frontend.
+Checks: `npm run test:db:email-mailbox`, `tests/unit/email-workspace.test.ts`, and the smoke steps "Support email (Gmail)" and "Email workspace".

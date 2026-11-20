@@ -2,7 +2,8 @@ import { FunctionsHttpError } from '@supabase/supabase-js'
 
 import { describeDataError } from '@/lib/errors'
 import { requireSupabase } from '@/lib/supabase'
-import { SUPPORT_BUCKET } from '@/services/support'
+import { closeFormDraft, fetchFormDraft, saveFormDraft } from '@/services/form-drafts'
+import { fetchInbox, SUPPORT_BUCKET, type TagRef } from '@/services/support'
 
 /**
  * Google Workspace Gmail for the Support Centre (migration 20261212090000). The browser never sees an OAuth
@@ -99,6 +100,8 @@ export interface SendEmail {
   idempotency_key: string; mode: 'NEW' | 'REPLY' | 'REPLY_ALL'; reply_to_email_id?: string | null; conversation_id?: string | null; customer_id?: string | null
   ticket_id?: string | null; to: string[]; cc: string[]; bcc: string[]; subject?: string; body: string; template_id?: string | null; include_signature: boolean
   attachments: { path: string; file_name: string; content_type: string | null; size_bytes: number }[]
+  /** 'markdown': the email editor's formatting; google-gmail-send builds the HTML part (20261222090000). Omitted: plain text. */
+  format?: 'markdown'
 }
 export interface SendResult { email_id: string; conversation_id: string; send_state: 'SENT' | 'PENDING' | 'FAILED'; message: string }
 export const sendEmail = (p: SendEmail) => invoke<SendResult>('google-gmail-send', { action: 'send', ...p })
@@ -112,3 +115,71 @@ export async function uploadOutboxFile(companyId: string, key: string, file: Fil
   if (error) throw error
   return { path, file_name: file.name, content_type: file.type || null, size_bytes: file.size }
 }
+
+// ---- Email workspace (migration 20261222090000) ----------------------------------------------
+export type MailboxFolder = 'INBOX' | 'STARRED' | 'SNOOZED' | 'SENT' | 'IMPORTANT' | 'ALL' | 'SPAM' | 'TRASH' | 'LABEL'
+export interface MailboxQuery {
+  folder: MailboxFolder; label?: string | null; q?: string; from?: string; to?: string; subject?: string; words?: string
+  after?: string; before?: string; has_attachment?: boolean; unread?: boolean; limit: number; offset: number
+}
+export interface MailThreadRow {
+  id: string; last_at: string; message_count: number; unread_count: number; starred: boolean; important: boolean; snoozed_until: string | null
+  folder: 'INBOX' | 'ARCHIVE' | 'SPAM' | 'TRASH'; subject: string | null; snippet: string; last_direction: 'INBOUND' | 'OUTBOUND'
+  last_send_state: 'PENDING' | 'SENT' | 'FAILED' | null; from_name: string | null; from_address: string | null; to: EmailAddress[]; senders: string[]
+  has_attachment: boolean; labels: TagRef[]; customer_name: string | null; ticket_id: string | null; ticket_number: string | null
+  assigned_agent: string | null; status: string
+}
+export interface MailboxPage {
+  total: number; rows: MailThreadRow[]; counts: Record<string, number>; labels: (TagRef & { unread: number })[]
+  /** True before the migration: the unified inbox is shown, without folders, stars or labels. */
+  legacy?: boolean
+}
+const missingFunction = (e: unknown) => {
+  const x = e as { code?: string; message?: string } | null
+  return x?.code === 'PGRST202' || x?.code === '42883' || /could not find the function/i.test(x?.message ?? '')
+}
+export async function fetchMailbox(q: MailboxQuery): Promise<MailboxPage> {
+  try {
+    const page = await rpc<MailboxPage | null>('support_email_mailbox', { p: q })
+    if (page) return page
+  } catch (e) {
+    if (!missingFunction(e)) throw e
+  }
+  // Before 20261222090000: the unified inbox's email conversations (Inbox and All mail only; nothing else is guessed).
+  if (q.folder !== 'INBOX' && q.folder !== 'ALL') return { total: 0, rows: [], counts: {}, labels: [], legacy: true }
+  const search = [q.q, q.from, q.to, q.subject, q.words].filter(Boolean).join(' ')
+  const page = await fetchInbox('ALL', { channel: 'EMAIL', search, limit: q.limit, offset: q.offset })
+  return {
+    total: page.total, counts: {}, labels: [], legacy: true,
+    rows: page.rows.map((r) => ({
+      id: r.id, last_at: r.last_activity_at, message_count: 0, unread_count: r.unread_count, starred: false, important: false, snoozed_until: null, folder: 'INBOX',
+      subject: r.subject, snippet: r.last_message_preview ?? '', last_direction: 'INBOUND', last_send_state: null, from_name: r.customer_name, from_address: r.email,
+      to: [], senders: [], has_attachment: false, labels: r.tags, customer_name: r.customer_name, ticket_id: r.ticket_id, ticket_number: r.ticket_number,
+      assigned_agent: r.assigned_agent, status: r.status,
+    })),
+  }
+}
+export type MailboxAction = 'STAR' | 'UNSTAR' | 'IMPORTANT' | 'NOT_IMPORTANT' | 'SNOOZE' | 'UNSNOOZE' | 'ARCHIVE' | 'INBOX' | 'SPAM' | 'TRASH'
+  | 'MARK_READ' | 'MARK_UNREAD' | 'LABEL_ADD' | 'LABEL_REMOVE'
+export const mailboxAction = (ids: string[], action: MailboxAction, p: { until?: string; label?: string } = {}) =>
+  rpc<{ updated: number; action: string }>('support_email_mailbox_action', { p_ids: ids, p_action: action, p })
+
+// Drafts: the existing form drafts (form key support.email), private to their author. One draft per scope (its id).
+export interface EmailDraftData {
+  mode: 'NEW' | 'REPLY' | 'REPLY_ALL' | 'FORWARD'; to: string; cc: string; bcc: string; subject: string
+  /** The editor content as markup (never HTML): restored through the same converter the server uses. */
+  body: string; formatted: boolean
+  reply_to_email_id?: string | null; conversation_id?: string | null
+}
+export interface EmailDraftRow { scope: string; last_saved_at: string; version: number; data: EmailDraftData | null }
+export async function fetchEmailDrafts(): Promise<EmailDraftRow[]> {
+  const mine = await rpc<{ form_key: string; scope: string; last_saved_at: string; version: number }[] | null>('erp_form_drafts_mine')
+  const own = (mine ?? []).filter((d) => d.form_key === 'support.email').slice(0, 50)
+  return Promise.all(own.map(async (d) => {
+    const full = await fetchFormDraft({ formKey: 'support.email', recordId: null, scope: d.scope }).catch(() => null)
+    return { scope: d.scope, last_saved_at: d.last_saved_at, version: full?.version ?? d.version, data: (full?.data as EmailDraftData | undefined) ?? null }
+  }))
+}
+export const saveEmailDraft = (scope: string, data: EmailDraftData, expectedVersion: number) =>
+  saveFormDraft({ formKey: 'support.email', recordId: null, scope }, data, null, expectedVersion)
+export const closeEmailDraft = (scope: string, status: 'submitted' | 'discarded') => closeFormDraft({ formKey: 'support.email', recordId: null, scope }, status)

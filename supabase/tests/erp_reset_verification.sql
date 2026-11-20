@@ -186,9 +186,9 @@ select rls_test.ok('catalogue: every listed table exists',
 -- enhancements add purchase_document_refs, the stock reliability migration production_order_requests (79 tables).
 -- The form drafts migration adds erp_form_drafts, master versioning production_order_revisions (81 tables); purchase cost intelligence adds its history and current-cost tables (83);
 -- BOM templates add bom_templates and bom_template_items (85); Cost Intelligence adds bom_cost_snapshots,
--- product_cost_profiles and product_cost_history (88).
-select rls_test.ok('catalogue: allowlist has 88 tables, no duplicates',
-  (select count(*) from private.erp_reset_tables()) = 88 and (select count(distinct table_name) from private.erp_reset_tables()) = 88);
+-- product_cost_profiles and product_cost_history (88), plus the 16 Support Centre tables of 20261210090000 (104), plus the 4 Acefone telephony tables of 20261211090000 (108), plus the 5 Gmail tables of 20261212090000 (113), plus the 6 WhatsApp tables of 20261213090000 (119), plus the 6 unified-support tables of 20261214090000 (125), plus call signals of 20261215090000 (126), plus the 3 bulk BOM change tables of 20261218090000 (129), plus support_conversation_prefs of 20261221090000 (130), plus support_email_thread_state of 20261222090000 (131).
+select rls_test.ok('catalogue: allowlist has 131 tables, no duplicates',
+  (select count(*) from private.erp_reset_tables()) = 131 and (select count(distinct table_name) from private.erp_reset_tables()) = 131);
 select rls_test.ok('catalogue: every resettable table is company-scoped (company_id)',
   not exists (select 1 from private.erp_reset_tables() t where not exists (
     select 1 from information_schema.columns c where c.table_schema = 'public' and c.table_name = t.table_name and c.column_name = 'company_id')));

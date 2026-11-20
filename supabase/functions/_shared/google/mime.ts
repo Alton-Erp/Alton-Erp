@@ -248,6 +248,8 @@ export interface OutgoingEmail {
   from: Address; to: Address[]; cc: Address[]; bcc: Address[]; subject: string; body: string
   messageId: string; inReplyTo: string | null; references: string | null; date: Date
   attachments: { fileName: string; contentType: string | null; bytes: Uint8Array }[]
+  /** Formatted version (built by markdownToHtml, never taken from the browser): sent as multipart/alternative. */
+  html?: string | null
 }
 
 export function buildMime(m: OutgoingEmail, boundary = `alton_${crypto.getRandomValues(new Uint32Array(2)).join('')}`): string {
@@ -267,7 +269,11 @@ export function buildMime(m: OutgoingEmail, boundary = `alton_${crypto.getRandom
     ...(idList(m.references) ? [`References: ${idList(m.references).split(' ').join('\r\n ')}`] : []),
     'MIME-Version: 1.0',
   ]
-  const textPart = ['Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', wrap76(bytesToB64(new TextEncoder().encode(m.body.replace(/\r?\n/g, '\r\n'))))]
+  const plain = ['Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', wrap76(bytesToB64(new TextEncoder().encode(m.body.replace(/\r?\n/g, '\r\n'))))]
+  // With a formatted version: text and HTML as alternatives of the same message (plain text first, as RFC 2046 asks).
+  const alt = `${boundary}_alt`
+  const textPart = m.html ? [`Content-Type: multipart/alternative; boundary="${alt}"`, '', `--${alt}`, ...plain, `--${alt}`,
+    'Content-Type: text/html; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', wrap76(bytesToB64(new TextEncoder().encode(m.html))), `--${alt}--`, ''] : plain
   if (!m.attachments.length) return [...h, ...textPart].join('\r\n') + '\r\n'
   const lines = [...h, `Content-Type: multipart/mixed; boundary="${boundary}"`, '', `--${boundary}`, ...textPart]
   for (const a of m.attachments) {

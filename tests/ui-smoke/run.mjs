@@ -731,6 +731,28 @@ const GMAIL_THREAD = [
     attachments: [{ id: 'att-em1', file_name: 'photo.jpg', content_type: 'image/jpeg', size_bytes: 20480, inline: false, storage_path: `${COMPANY_ID}/email/em1/1-photo.jpg`, restricted: false }],
     skipped_attachments: [{ filename: 'setup.exe', state: 'BLOCKED', reason: '.exe files are not stored (executable or script).' }] },
 ]
+// Email workspace (20261222090000): threads per folder from the conversations, with the mailbox state set by actions.
+const MAILBOX = { web: false, queries: [], actions: [], state: {} }
+const MAILBOX_PAGE = (p = {}) => {
+  const base = [
+    { id: 'sc-mail', subject: 'Cracked basin', snippet: 'The basin arrived cracked. Photo attached.', from_name: 'Ravi Kumar', from_address: 'ravi@customer.example', unread_count: 1, has_attachment: true,
+      last_direction: 'INBOUND', last_send_state: null, message_count: 1, to: [{ email: 'support@alton.example', name: 'Support' }], senders: ['Ravi Kumar'] },
+    { id: 'sc-mail2', subject: 'Invoice copy', snippet: 'Please send the GST invoice for March.', from_name: 'Meera Shah', from_address: 'meera@shop.example', unread_count: 0, has_attachment: false,
+      last_direction: 'OUTBOUND', last_send_state: 'SENT', message_count: 2, to: [{ email: 'meera@shop.example', name: 'Meera Shah' }], senders: ['Meera Shah'] },
+  ].map((r) => {
+    const st = MAILBOX.state[r.id] ?? { starred: false, important: false, folder: 'INBOX' }
+    return { ...r, last_at: NOW, starred: st.starred, important: st.important, snoozed_until: null, folder: st.folder,
+      labels: r.id === 'sc-mail' ? [{ id: 'stag1', name: 'Damage', color: 'danger' }] : [], customer_name: 'Ravi Kumar', ticket_id: null, ticket_number: null, assigned_agent: null, status: 'OPEN' }
+  })
+  const folder = p.folder ?? 'INBOX'
+  const rows = base.filter((r) => folder === 'STARRED' ? r.starred : folder === 'LABEL' ? r.labels.some((l) => l.id === p.label) && r.folder !== 'TRASH'
+    : folder === 'ALL' ? !['SPAM', 'TRASH'].includes(r.folder) : folder === 'SENT' ? r.last_direction === 'OUTBOUND' : r.folder === folder)
+    .filter((r) => !p.q || JSON.stringify(r).toLowerCase().includes(String(p.q).toLowerCase()))
+    .filter((r) => !p.from || `${r.from_name} ${r.from_address}`.toLowerCase().includes(String(p.from).toLowerCase()))
+    .filter((r) => p.has_attachment === undefined || r.has_attachment === p.has_attachment)
+  return { total: rows.length, rows, counts: { INBOX: base.filter((r) => r.folder === 'INBOX' && r.unread_count > 0).length, SPAM: 0, SNOOZED: 0, TRASH: 0 },
+    labels: [{ id: 'stag1', name: 'Damage', color: 'danger', unread: 1 }] }
+}
 // Meta WhatsApp Cloud API (20261213090000). Pending until the (mock) Meta status webhook says otherwise.
 const WA = { state: 'MIGRATION_REQUIRED', enabled: false, windowOpen: true, sendCalls: [], templateCalls: [], checklist: [], preflight: null, web: false, prefs: {}, prefCalls: [] }
 const WA_ITEMS = [['number_path_confirmed', true], ['cloud_api_eligibility', true], ['migration_completed', true], ['coexistence_approved', false], ['previous_routing_retired', true],
@@ -2194,6 +2216,25 @@ const api = http.createServer((req, res) => {
           return send(res, 200, { configured: true, status: GMAIL.connected ? 'CONNECTED' : 'SETUP_REQUIRED', can_send: GMAIL.connected && has('support.reply'), mailbox: 'support@alton.example',
             display_name: 'Alton Support', signature: 'Alton Support Team', mailbox_modify: false, max_attachment_mb: 10,
             templates: [{ id: 'tpl1', name: 'Replacement', subject: 'Your replacement', body: 'We are sending a replacement today.' }] })
+        // Email workspace (20261222090000); served only by its own step, so other steps see the pre-migration fallback.
+        case 'support_email_mailbox':
+          if (!MAILBOX.web) return send(res, 404, { code: 'PGRST202', message: 'Could not find the function public.support_email_mailbox' })
+          MAILBOX.queries.push(body.p)
+          return send(res, 200, MAILBOX_PAGE(body.p))
+        case 'support_email_mailbox_action': {
+          if (!MAILBOX.web) return send(res, 404, { code: 'PGRST202', message: 'Could not find the function public.support_email_mailbox_action' })
+          if (!has('support.reply')) return send(res, 403, { code: '42501', message: 'requires support.reply' })
+          MAILBOX.actions.push({ ids: body.p_ids, action: body.p_action, p: body.p })
+          for (const id of body.p_ids) {
+            const st = MAILBOX.state[id] ?? (MAILBOX.state[id] = { starred: false, important: false, folder: 'INBOX' })
+            if (body.p_action === 'STAR' || body.p_action === 'UNSTAR') st.starred = body.p_action === 'STAR'
+            if (['ARCHIVE', 'INBOX', 'SPAM', 'TRASH'].includes(body.p_action)) st.folder = body.p_action
+          }
+          return send(res, 200, { updated: body.p_ids.length, action: body.p_action })
+        }
+        case 'erp_form_drafts_mine':
+          return send(res, 200, [...formDrafts.entries()].filter(([k, r]) => k.startsWith(`${currentUser?.id}|`) && r.status === 'draft')
+            .map(([k, r]) => ({ form_key: r.form_key, scope: k.split('|')[3], last_saved_at: r.last_saved_at, version: r.version })))
         case 'support_email_thread':
           return send(res, 200, body.p_conversation === 'sc-mail' ? GMAIL_THREAD : [])
         case 'support_email_html':
@@ -3068,6 +3109,8 @@ const goto = async (p) => {
   await cdp('Page.navigate', { url: `http://localhost:${APP_PORT}${p}` })
   await sleep(300)
 }
+/** Types into the email editor (contentEditable): replaces its content as a user would. */
+const fillEditor = (selector, value) => evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); el.focus(); document.execCommand('selectAll'); document.execCommand('insertText', false, ${JSON.stringify(value)}); return true })()`)
 const fill = (selector, value) =>
   evaluate(`(() => {
     const el = document.querySelector(${JSON.stringify(selector)});
@@ -7991,7 +8034,10 @@ await step('Support email (Gmail): Settings > Email connect / status without sec
     emailChannel.status = 'CONNECTED'
     await goto('/support/emails?c=sc-mail')
     await waitFor(`!!document.querySelector('[data-testid=email-em1]')`, 'email thread')
-    assert(await evaluate(bodyHasAll('Cracked basin', 'Ravi Kumar <ravi@customer.example>', 'Cc: boss@customer.example', 'photo.jpg', 'setup.exe: not stored (blocked type)')), 'email card content')
+    await waitFor(`!!document.querySelector('[data-testid=mail-reply-bar]')`, 'thread ready')
+    await click('[data-testid=email-em1] button[aria-expanded]')
+    await waitFor(`!!document.querySelector('[data-testid=email-recipients]')`, 'recipient details')
+    assert(await evaluate(bodyHasAll('Cracked basin', 'Ravi Kumar <ravi@customer.example>', 'boss@customer.example', 'photo.jpg', 'setup.exe: not stored (blocked type)')), 'email card content')
     await click('[data-testid=email-toggle-format]', 'Formatted view')
     await waitFor(`!!document.querySelector('[data-testid=email-html-frame]')`, 'formatted frame')
     const frame = await evaluate(`(() => { const f = document.querySelector('[data-testid=email-html-frame]'); return { sandbox: f.getAttribute('sandbox'), doc: f.getAttribute('srcdoc') } })()`)
@@ -8002,10 +8048,10 @@ await step('Support email (Gmail): Settings > Email connect / status without sec
     // Reply: recipients from the email, subject kept for threading; the result is Pending until Gmail confirms.
     GMAIL.sendOutcome = 'PENDING'
     const sendsBefore = GMAIL.sendCalls.length
-    await click('[data-testid=email-em1] button', 'Reply all')
+    await click('[data-testid=mail-reply-bar] button', 'Reply all')
     await waitFor(`!!document.querySelector('[data-testid=email-compose]') && document.querySelector('#em-to')?.value === 'ravi@customer.example'`, 'reply dialog')
     assert(await evaluate(`document.querySelector('#em-cc').value === 'boss@customer.example' && document.querySelector('#em-subject').value === 'Re: Cracked basin' && document.querySelector('#em-subject').disabled`), 'reply all recipients and subject')
-    await fill('#em-body', 'We are sending a replacement.')
+    await fillEditor('#em-body', 'We are sending a replacement.')
     await evaluate(`(() => { const b = document.querySelector('[data-testid=email-send]'); b.click(); b.click(); b.click() })()`)
     await waitFor(`document.querySelector('[data-testid=email-send-result]')?.dataset.state === 'PENDING'`, 'pending result')
     await sleep(500)
@@ -8013,16 +8059,17 @@ await step('Support email (Gmail): Settings > Email connect / status without sec
     const req = GMAIL.sendCalls.at(-1)
     assert(req.mode === 'REPLY_ALL' && req.reply_to_email_id === 'em1' && req.include_signature === true && /^[0-9a-f-]{36}$/.test(req.idempotency_key) && req.subject === undefined, `send request: ${JSON.stringify(req)}`)
     assert(!(await evaluate(`document.querySelector('[data-testid=email-compose]').innerText.includes('Sent: Gmail accepted')`)), 'shown as sent')
+    assert(req.format === undefined, 'plain text sent as plain text')
     await screenshot('242-support-email-pending')
-    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' })
+    await click('[data-testid=email-compose-close]')
 
     // New email from the Emails page: Failed is shown as Failed (with Try again), then Sent only when Gmail accepted.
     GMAIL.sendOutcome = 'FAILED'
-    await click('[data-testid=new-email]', 'New email')
+    await click('[data-testid=new-email]')
     await waitFor(`!!document.querySelector('[data-testid=email-compose]') && !!document.querySelector('#em-to')`, 'new email dialog')
     await fill('#em-to', 'not-an-address')
     await fill('#em-subject', 'Your replacement')
-    await fill('#em-body', 'Dispatched today.')
+    await fillEditor('#em-body', 'Dispatched today.')
     await click('[data-testid=email-send]', 'Send')
     await waitFor(bodyHas('Not an email address: not-an-address'), 'recipient validation')
     await fill('#em-to', 'ravi@customer.example')
@@ -8035,20 +8082,163 @@ await step('Support email (Gmail): Settings > Email connect / status without sec
     await click('[data-testid=email-send]', 'Send')
     await waitFor(`document.querySelector('[data-testid=email-send-result]')?.dataset.state === 'SENT'`, 'sent result')
     assert(GMAIL.sendCalls.at(-1).idempotency_key !== keyBefore && GMAIL.sendCalls.at(-1).mode === 'NEW', 'try again uses a new request key')
-    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' })
+    await click('[data-testid=email-compose-close]')
 
     // Not connected: composing is refused with the reason, nothing is sent.
     GMAIL.connected = false
     const n = GMAIL.sendCalls.length
-    await click('[data-testid=new-email]', 'New email')
+    await click('[data-testid=new-email]')
     await waitFor(`!!document.querySelector('[data-testid=email-blocked]')`, 'blocked when not connected')
     assert(GMAIL.sendCalls.length === n, 'sent while not connected')
-    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' })
+    await click('[data-testid=email-compose-close]')
   } finally {
     USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
     SUPPORT_INBOX.splice(SUPPORT_INBOX.indexOf(mailConv), 1)
     emailChannel.status = before
     GMAIL.connected = false
+  }
+})
+
+await step('Email workspace: rail, folders with counts, labels, list rows with star / attachment / unread, bulk actions, search operators and advanced search, thread with print and forward, formatted compose, drafts, phone layout', async () => {
+  const PERMS = ['support.view', 'support.manage_tickets', 'support.assign', 'support.reply', 'support.manage_integrations']
+  USERS['manager@test.invalid'].permissions.push(...PERMS)
+  const mailConv = supportConv('sc-mail', 'EMAIL', { subject: 'Cracked basin', customer_id: 'scu1', last_message_preview: 'The basin arrived cracked.' })
+  SUPPORT_INBOX.push(mailConv)
+  const emailChannel = SUPPORT_CHANNELS.find((c) => c.channel === 'EMAIL')
+  const before = emailChannel.status
+  MAILBOX.web = true; MAILBOX.state = {}; GMAIL.connected = true; GMAIL.sendOutcome = 'SENT'; emailChannel.status = 'CONNECTED'
+  try {
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+    await setViewport(1440, 900)
+
+    // Layout: rail (Calendar disabled), folders with the Inbox unread count, labels, rows.
+    await goto('/support/emails')
+    await waitFor(`!!document.querySelector('[data-testid=mail-row-sc-mail]') && !!document.querySelector('[data-testid=mail-rail]')`, 'mail list')
+    assert(MAILBOX.queries.at(-1).folder === 'INBOX' && MAILBOX.queries.at(-1).limit === 50, `first query ${JSON.stringify(MAILBOX.queries.at(-1))}`)
+    assert(await evaluate(`document.querySelector('[data-testid=mail-count-INBOX]')?.innerText === '1' && !!document.querySelector('[data-testid=mail-rail-calendar][aria-disabled=true]')
+      && document.querySelector('[data-testid=mail-labels]').innerText.includes('Damage') && document.querySelector('[data-testid=mail-page-label]').innerText === '1–2 of 2'`), 'sidebar, rail and page label')
+    assert(await evaluate(`document.querySelector('[data-testid=mail-row-sc-mail]').dataset.unread === 'true' && !!document.querySelector('[data-testid=mail-row-sc-mail] [data-testid=mail-has-attachment]')`), 'unread row with attachment')
+    await screenshot('258-email-workspace-inbox')
+
+    // Star from the row; select and archive in bulk; selected count shown.
+    await click('[data-testid=mail-row-sc-mail] [data-testid=mail-star]')
+    for (let i = 0; i < 30 && MAILBOX.actions.at(-1)?.action !== 'STAR'; i++) await sleep(100)
+    assert(MAILBOX.actions.at(-1).action === 'STAR' && MAILBOX.actions.at(-1).ids.join() === 'sc-mail', 'star request')
+    await click('[data-testid=mail-row-sc-mail] [data-testid=mail-row-check]')
+    await waitFor(`document.querySelector('[data-testid=mail-selected-count]')?.innerText === '1 selected'`, 'selected count')
+    await click('[data-testid=mail-archive]')
+    for (let i = 0; i < 30 && MAILBOX.actions.at(-1)?.action !== 'ARCHIVE'; i++) await sleep(100)
+    assert(MAILBOX.actions.at(-1).ids.join() === 'sc-mail', 'archive request')
+    await waitFor(`!document.querySelector('[data-testid=mail-row-sc-mail]') && document.querySelector('[data-testid=mail-notice]')?.innerText.includes('Archived')`, 'archived')
+    // Folders: Starred shows it; All mail shows it with its (archived) state.
+    await click('[data-testid=mail-folder-STARRED]')
+    await waitFor(`!!document.querySelector('[data-testid=mail-row-sc-mail]')`, 'starred folder')
+    assert(MAILBOX.queries.at(-1).folder === 'STARRED' && /folder=starred/.test(await evaluate('location.search')), 'starred query and URL')
+    await click('[data-testid=mail-folder-INBOX]')
+
+    // Search operators: sent to the server as filters, shown as chips; advanced search writes the same operators.
+    await fill('[data-testid=mail-search]', 'from:ravi has:attachment basin')
+    await evaluate(`document.querySelector('[data-testid=mail-search]').focus()`)
+    // Enter with its key text, as a keyboard sends it (this is what submits a form).
+    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' })
+    await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+    for (let i = 0; i < 30 && MAILBOX.queries.at(-1)?.from !== 'ravi'; i++) await sleep(100)
+    const q = MAILBOX.queries.at(-1)
+    assert(q.from === 'ravi' && q.has_attachment === true && q.q === 'basin', `search filters ${JSON.stringify(q)}`)
+    await waitFor(`!!document.querySelector('[data-testid=mail-chip-from]') && !!document.querySelector('[data-testid=mail-chip-has_attachment]')`, 'filter chips')
+    await click('[data-testid=mail-advanced-toggle]')
+    await waitFor(`!!document.querySelector('[data-testid=mail-advanced]')`, 'advanced search')
+    assert(await evaluate(`document.querySelector('#adv-from').value === 'ravi' && document.querySelector('[data-testid=adv-attachment]').checked`), 'advanced panel reads the operators')
+    await fill('#adv-subject', 'Cracked')
+    await fill('[data-testid=adv-after]', '2026-11-01')
+    await click('[data-testid=adv-search]')
+    for (let i = 0; i < 30 && MAILBOX.queries.at(-1)?.subject !== 'Cracked'; i++) await sleep(100)
+    assert(MAILBOX.queries.at(-1).subject === 'Cracked' && MAILBOX.queries.at(-1).after === '2026-11-01', `advanced filters ${JSON.stringify(MAILBOX.queries.at(-1))}`)
+    await goto('/support/emails?folder=all')
+    await waitFor(`!!document.querySelector('[data-testid=mail-row-sc-mail]')`, 'all mail')
+
+    // Thread: subject, collapsible message, attachments, print, support details with the existing ticket / customer / notes.
+    await click('[data-testid=mail-row-sc-mail]')
+    await waitFor(`document.querySelector('[data-testid=mail-subject]')?.innerText === 'Cracked basin' && !!document.querySelector('[data-testid=email-em1][data-expanded=true]')`, 'thread')
+    assert(await evaluate(`!!document.querySelector('[data-testid=mail-print]') && !!document.querySelector('[data-testid=mail-details] [data-testid=wa-info-ticket]')
+      && !!document.querySelector('[data-testid=mail-details] [data-testid=wa-info-notes]') && !!document.querySelector('[data-testid=mail-thread-star]')`), 'thread toolbar and details')
+    await click('[data-testid=email-em1] header > div.cursor-pointer')
+    await waitFor(`!!document.querySelector('[data-testid=email-em1][data-expanded=false]')`, 'message collapses')
+    await click('[data-testid=email-em1]')
+    await waitFor(`!!document.querySelector('[data-testid=email-em1][data-expanded=true]')`, 'message expands')
+    await screenshot('259-email-workspace-thread')
+
+    // Forward: subject Fwd:, the forwarded block in the editor, a new email (not a reply).
+    await click('[data-testid=mail-forward]')
+    await waitFor(`!!document.querySelector('[data-testid=email-compose]') && document.querySelector('#em-subject')?.value === 'Fwd: Cracked basin'
+      && document.querySelector('#em-body').innerText.includes('Forwarded message')`, 'forward window')
+    await fill('#em-to', 'warehouse@alton.example')
+    const n0 = GMAIL.sendCalls.length
+    await click('[data-testid=email-send]')
+    for (let i = 0; i < 30 && GMAIL.sendCalls.length === n0; i++) await sleep(100)
+    const fw = GMAIL.sendCalls.at(-1)
+    assert(fw.mode === 'NEW' && fw.subject === 'Fwd: Cracked basin' && fw.body.includes('From: Ravi Kumar <ravi@customer.example>') && fw.to.join() === 'warehouse@alton.example', `forward ${JSON.stringify(fw).slice(0, 300)}`)
+    await waitFor(`document.querySelector('[data-testid=email-send-result]')?.dataset.state === 'SENT'`, 'forward sent')
+    await click('[data-testid=email-compose-close]')
+
+    // Formatted message: bold through the toolbar is sent as markup with format "markdown" (never HTML).
+    await click('[data-testid=new-email]')
+    await waitFor(`!!document.querySelector('[data-testid=email-compose]') && !!document.querySelector('#em-to')`, 'compose window')
+    assert(await evaluate(`document.querySelector('[data-testid=email-from]').innerText.includes('support@alton.example')`), 'From shown')
+    await fill('#em-to', 'ravi@customer.example')
+    await fill('#em-subject', 'Replacement')
+    await fillEditor('#em-body', 'Dispatched today')
+    await evaluate(`(() => { const el = document.querySelector('#em-body'); el.focus(); document.execCommand('selectAll') })()`)
+    await click('[data-testid=email-compose] button[aria-label="Bold (Ctrl+B)"]')
+    await waitFor(`!!document.querySelector('#em-body b, #em-body strong')`, 'bold applied')
+    // Draft auto-saved (existing form drafts, form key support.email), listed in Drafts.
+    await waitFor(`document.querySelector('[data-testid=email-draft-state]')?.innerText === 'Draft saved'`, 'draft saved', 8000)
+    assert(rpcCalls('erp_form_draft_save').at(-1).body.p_form_key === 'support.email' && rpcCalls('erp_form_draft_save').at(-1).body.p_data.formatted === true
+      && !JSON.stringify(rpcCalls('erp_form_draft_save').at(-1).body.p_data).includes('<b>'), 'draft is markup, not HTML')
+    const n1 = GMAIL.sendCalls.length
+    await click('[data-testid=email-send]')
+    for (let i = 0; i < 30 && GMAIL.sendCalls.length === n1; i++) await sleep(100)
+    const rich = GMAIL.sendCalls.at(-1)
+    assert(rich.format === 'markdown' && rich.body === '**Dispatched today**' && !/</.test(rich.body), `formatted send ${JSON.stringify(rich)}`)
+    await waitFor(`document.querySelector('[data-testid=email-send-result]')?.dataset.state === 'SENT'`, 'sent')
+    await click('[data-testid=email-compose-close]')
+    // A draft left open is listed in Drafts and reopens in the compose window.
+    await click('[data-testid=new-email]')
+    await waitFor(`!!document.querySelector('#em-to')`, 'compose again')
+    await fill('#em-to', 'meera@shop.example')
+    await fill('#em-subject', 'Draft to keep')
+    await click('[data-testid=email-save-draft]')
+    await waitFor(`document.querySelector('[data-testid=email-draft-state]')?.innerText === 'Draft saved'`, 'draft saved by hand')
+    await click('[data-testid=email-compose-close]')
+    await click('[data-testid=mail-folder-DRAFTS]')
+    await waitFor(`!!document.querySelector('[data-testid=mail-drafts]') && document.querySelector('[data-testid=mail-drafts]').innerText.includes('Draft to keep')`, 'drafts folder')
+    await click('[data-testid=mail-drafts] li', 'Draft to keep')
+    await waitFor(`document.querySelector('#em-subject')?.value === 'Draft to keep' && document.querySelector('#em-to').value === 'meera@shop.example'`, 'draft reopened')
+    await click('[data-testid=email-discard]')
+    await waitFor(`!document.querySelector('[data-testid=email-compose]')`, 'discarded')
+
+    // Phone: list, menu drawer with folders, thread full screen with a back button; no horizontal scroll.
+    await setViewport(390, 844)
+    await goto('/support/emails?folder=all')
+    await waitFor(`!!document.querySelector('[data-testid=mail-row-sc-mail]')`, 'mobile list')
+    assert(await noHorizontalScroll(), 'mobile list scrolls horizontally')
+    await click('button[aria-label="Main menu"]')
+    await waitFor(`!!document.querySelector('[data-testid=mail-nav-drawer] [data-testid=mail-folder-INBOX]')`, 'folder drawer')
+    await click('[data-testid=mail-nav-drawer] [data-testid=mail-folder-ALL]')
+    await click('[data-testid=mail-row-sc-mail]')
+    await waitFor(`!!document.querySelector('[data-testid=mail-thread]') && document.querySelector('[data-testid=mail-thread]').getBoundingClientRect().width >= 380`, 'mobile thread full screen')
+    assert(await noHorizontalScroll(), 'mobile thread scrolls horizontally')
+    await screenshot('260-email-workspace-mobile')
+    await click('[data-testid=mail-back]')
+    await waitFor(`!document.querySelector('[data-testid=mail-thread]')`, 'back to list')
+    await cdp('Emulation.clearDeviceMetricsOverride')
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+    SUPPORT_INBOX.splice(SUPPORT_INBOX.indexOf(mailConv), 1)
+    emailChannel.status = before
+    MAILBOX.web = false; MAILBOX.state = {}; GMAIL.connected = false; GMAIL.sendOutcome = 'PENDING'
   }
 })
 
