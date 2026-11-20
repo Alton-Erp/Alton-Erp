@@ -149,7 +149,7 @@ export function ChatWorkspace({ id, infoOpen, setInfoOpen, onBack, onChanged }: 
 
   return (
     <>
-      <section className="flex min-w-0 flex-1 flex-col bg-[#EFEAE2]" aria-label={`Conversation with ${name}`} data-testid="wa-panel" data-conversation={id}>
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[#EFEAE2]" aria-label={`Conversation with ${name}`} data-testid="wa-panel" data-conversation={id}>
         {selected ? (
           <header className="flex h-[60px] shrink-0 items-center gap-2 bg-[#F0F2F5] px-2 md:px-4" data-testid="wa-select-bar">
             <IconButton label="Cancel selection" onClick={() => setSelected(null)}><X /></IconButton>
@@ -263,11 +263,11 @@ export function ChatWorkspace({ id, infoOpen, setInfoOpen, onBack, onChanged }: 
             </div>
             {thread.error && t && <p className="bg-[#FFE7EA] px-4 py-1 text-center text-xs text-[#B1002A]" role="status">Could not refresh: {describeDataError(thread.error)} Retrying automatically.</p>}
             {t && (
-              <p className={cn('px-4 py-1 text-center text-xs', t.window_open ? 'bg-[#E7F8EE] text-[#0A5C36]' : 'bg-[#FFF4E0] text-[#7A4B00]')} data-testid="wa-window" data-open={t.window_open}>
+              <p className={cn('shrink-0 px-4 py-1 text-center text-xs', t.window_open ? 'bg-[#E7F8EE] text-[#0A5C36]' : 'bg-[#FFF4E0] text-[#7A4B00]')} data-testid="wa-window" data-open={t.window_open}>
                 {waWindowText(t.window_open, t.window_closes_at)}</p>
             )}
             {notice && (
-              <p role={notice.ok ? 'status' : 'alert'} data-testid="wa-notice" className={cn('flex items-center justify-between gap-2 px-4 py-1.5 text-sm', notice.ok ? 'bg-[#E7F8EE] text-[#0A5C36]' : 'bg-[#FFE7EA] text-[#B1002A]')}>
+              <p role={notice.ok ? 'status' : 'alert'} data-testid="wa-notice" className={cn('flex shrink-0 items-center justify-between gap-2 px-4 py-1.5 text-sm', notice.ok ? 'bg-[#E7F8EE] text-[#0A5C36]' : 'bg-[#FFE7EA] text-[#B1002A]')}>
                 <span>{notice.text}</span><button type="button" aria-label="Dismiss" onClick={() => setNotice(null)}><X className="size-4" /></button></p>
             )}
             {t && <ChatComposer key={id} conversationId={id} windowOpen={t.window_open} canSend={t.can_send} replyTo={replyTo} customerName={name}

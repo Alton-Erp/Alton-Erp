@@ -31,8 +31,9 @@ const GROUP_IDS = NAV_GROUPS.map((g) => g.id)
 const NAV_PATHS = NAV_ITEMS.map((i) => i.path)
 
 export function Sidebar({ collapsed, onToggleCollapsed, mobileOpen, onMobileClose }: SidebarProps) {
-  // Only entries the user's role allows; groups with no visible entries are hidden.
-  const visibleItems = useVisibleNavItems()
+  // Only entries the user's role allows; groups with no visible entries are hidden. Entries marked hideInSidebar
+  // keep their route, permission and global-search entry.
+  const visibleItems = useVisibleNavItems().filter((item) => !item.hideInSidebar)
   const visibleGroups = NAV_GROUPS.map((group) => ({
     group,
     items: visibleItems.filter((item) => item.group === group.id),

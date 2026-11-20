@@ -125,16 +125,16 @@ export default function SupportEmailsPage() {
       onFolder={(f) => go(f)} onLabel={(id) => go('LABEL', id)} onCompose={() => { setNavOpen(false); setComposeTarget({ mode: 'NEW' }) }} canCompose={perms.reply} legacy={legacy} />
   )
   return (
-    <div className="-mx-4 -my-6 flex h-[calc(100dvh-3.5rem)] min-h-[520px] overflow-hidden bg-[#F6F8FC] text-[#1F1F1F] sm:-mx-6 lg:-mx-8 lg:-my-8" data-testid="mail-workspace">
+    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden bg-[#F6F8FC] text-[#1F1F1F]" data-testid="mail-workspace">
       <MailRail />
-      <aside className="hidden w-64 shrink-0 lg:block">{sidebar}</aside>
+      <aside className="hidden min-h-0 w-64 shrink-0 lg:block">{sidebar}</aside>
       {navOpen && (
         <>
           <div className="fixed inset-0 z-40 bg-black/30 lg:hidden" onClick={() => setNavOpen(false)} aria-hidden />
           <aside className="fixed inset-y-0 left-0 z-50 w-72 bg-[#F6F8FC] pt-2 shadow-xl lg:hidden" data-testid="mail-nav-drawer">{sidebar}</aside>
         </>
       )}
-      <main className="flex min-w-0 flex-1 flex-col pr-2 pb-2 pl-2 lg:pl-0 lg:pr-4">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col pr-2 pb-2 pl-2 lg:pl-0 lg:pr-4">
         <div className="flex h-16 shrink-0 items-center gap-3">
           <MailSearchBar value={q} onSearch={(t) => setUrl({ q: t, page: '0', c: '', m: '' })} onMenu={() => setNavOpen(true)} />
           <span className="hidden sm:block"><PresenceControl compact /></span>

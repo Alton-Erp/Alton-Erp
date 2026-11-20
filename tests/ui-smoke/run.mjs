@@ -740,6 +740,7 @@ const MAILBOX_PAGE = (p = {}) => {
       last_direction: 'INBOUND', last_send_state: null, message_count: 1, to: [{ email: 'support@alton.example', name: 'Support' }], senders: ['Ravi Kumar'] },
     { id: 'sc-mail2', subject: 'Invoice copy', snippet: 'Please send the GST invoice for March.', from_name: 'Meera Shah', from_address: 'meera@shop.example', unread_count: 0, has_attachment: false,
       last_direction: 'OUTBOUND', last_send_state: 'SENT', message_count: 2, to: [{ email: 'meera@shop.example', name: 'Meera Shah' }], senders: ['Meera Shah'] },
+    ...(MAILBOX.extra ?? []),
   ].map((r) => {
     const st = MAILBOX.state[r.id] ?? { starred: false, important: false, folder: 'INBOX' }
     return { ...r, last_at: NOW, starred: st.starred, important: st.important, snoozed_until: null, folder: st.folder,
@@ -791,7 +792,7 @@ const WA_THREAD = () => ({
       context_wa_message_id: null, wa_message_id: 'wamid.OUT2', template_name: null, author: 'Smoke Tester', attachment: null },
     { id: 'wm5', message_id: 'swm5', direction: 'INBOUND', type: 'location', body: '[Location] Site, Mumbai', at: NOW, status: 'RECEIVED', status_at: NOW, error_code: null, error_title: null,
       error_detail: null, media_state: 'NONE', media_error: null, media_filename: null, media_mime: null, location: { latitude: 19.07, longitude: 72.87, name: 'Site', address: 'Mumbai' },
-      context_wa_message_id: null, wa_message_id: 'wamid.LOC1', template_name: null, author: null, attachment: null }],
+      context_wa_message_id: null, wa_message_id: 'wamid.LOC1', template_name: null, author: null, attachment: null }].concat(WA.extra ?? []),
 })
 // WhatsApp Web screen (20261221090000)
 const WA_WEB_INBOX = (body) => {
@@ -7843,7 +7844,8 @@ await step('Support Centre: navigation, overview, inbox (honest channel status, 
     await waitFor(bodyHasAll('Support Overview', 'Total tickets', 'Open tickets', 'Unassigned tickets', 'Pending customer responses', 'Resolved tickets', 'Overdue SLA tickets',
       'Today’s incoming calls', 'Missed calls', 'WhatsApp conversations', 'Incoming emails', 'Average first response', 'Average resolution time', 'Customer satisfaction'), 'overview figures')
     const links = await evaluate(`[...document.querySelectorAll('aside a[href^="/support/"]')].map((a) => a.getAttribute('href'))`)
-    assert(links.length === 11, `support links: ${links}`)
+    // Unified Inbox and Support Automation keep their routes but are not in the sidebar.
+    assert(links.join() === '/support/overview,/support/tickets,/support/customers,/support/calls,/support/whatsapp,/support/emails,/support/knowledge-base,/support/reports,/support/settings', `support links: ${links}`)
     await waitFor(bodyHasAll('Tickets by channel', 'Ticket status', 'Daily ticket volume', 'Agent performance', 'SLA compliance', 'Resolution time'), 'overview charts')
     // Channel status exactly as the server reports it: nothing shown as Connected.
     assert(await evaluate(`document.querySelector('[data-testid=channel-WHATSAPP]').dataset.status === 'SETUP_REQUIRED' && document.querySelector('[data-testid=channel-PHONE]').dataset.status === 'NOT_CONNECTED'`), 'channel status')
@@ -8951,6 +8953,137 @@ await step('WhatsApp activation preflight: one server gate for status, eligibili
   } finally {
     WA.preflight = null; WA.enabled = false
     USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+  }
+})
+
+await step('Workspace layout: Unified Inbox and Support Automation off the sidebar (routes kept); WhatsApp and Email fit the viewport with no outer scrollbar, only the message / list panels scroll, header and composer stay put, at several window sizes and zoom levels', async () => {
+  const PERMS = ['support.view', 'support.manage_tickets', 'support.assign', 'support.reply', 'support.manage_integrations', 'support.view_reports', 'support.manage_settings']
+  USERS['manager@test.invalid'].permissions.push(...PERMS)
+  const waChannel = SUPPORT_CHANNELS.find((c) => c.channel === 'WHATSAPP')
+  const emailChannel = SUPPORT_CHANNELS.find((c) => c.channel === 'EMAIL')
+  const before = { wa: waChannel.status, email: emailChannel.status }
+  // A long WhatsApp list and conversation; a long email thread with many attachments.
+  const waConvs = Array.from({ length: 30 }, (_, i) => supportConv(i === 0 ? 'sc-wa' : `sc-wa-x${i}`, 'WHATSAPP', { subject: null, customer_id: 'scu1', last_message_preview: `Message ${i}` }))
+  SUPPORT_INBOX.push(...waConvs)
+  WA.extra = Array.from({ length: 60 }, (_, i) => ({ ...WA_THREAD().messages[0], id: `wx${i}`, message_id: `swx${i}`, wa_message_id: `wamid.X${i}`,
+    direction: i % 2 ? 'OUTBOUND' : 'INBOUND', status: i % 2 ? 'READ' : 'RECEIVED', body: `Long conversation line ${i}`, author: i % 2 ? 'Smoke Tester' : null }))
+  const mailConv = supportConv('sc-mail', 'EMAIL', { subject: 'Cracked basin', customer_id: 'scu1', last_message_preview: 'The basin arrived cracked.' })
+  SUPPORT_INBOX.push(mailConv)
+  const file = (i) => ({ id: `lx${i}`, file_name: `photo-${i}.jpg`, content_type: 'image/jpeg', size_bytes: 2048, inline: false, storage_path: `${COMPANY_ID}/email/lx/${i}.jpg`, restricted: false })
+  const added = Array.from({ length: 12 }, (_, i) => ({ ...GMAIL_THREAD[0], id: `ex${i}`, message_id: `m-ex${i}`, unread: false, gmail_message_id: `ex${i}000000`,
+    at: new Date(Date.parse(NOW) - (40 - i) * 3600000).toISOString(), body_text: `Earlier email ${i}.\n${'More text. '.repeat(40)}`, skipped_attachments: [],
+    attachments: Array.from({ length: 6 }, (_, k) => file(i * 10 + k)) }))
+  GMAIL_THREAD.unshift(...added)
+  MAILBOX.extra = Array.from({ length: 40 }, (_, i) => ({ id: `sc-mx${i}`, subject: `Older email ${i}`, snippet: 'Older message.', from_name: 'Meera Shah', from_address: 'meera@shop.example',
+    unread_count: 0, has_attachment: false, last_direction: 'INBOUND', last_send_state: null, message_count: 1, to: [], senders: ['Meera Shah'] }))
+  WA.web = true; WA.enabled = true; WA.state = 'CONNECTED'; WA.windowOpen = true; WA.prefs = {}; waChannel.status = 'CONNECTED'
+  MAILBOX.web = true; MAILBOX.state = {}; GMAIL.connected = true; emailChannel.status = 'CONNECTED'
+  // The page itself never scrolls (no outer scrollbar, no horizontal overflow).
+  const pageFixed = async (where) => {
+    const m = await evaluate(`(() => { const d = document.scrollingElement; return { v: d.scrollHeight - d.clientHeight, h: d.scrollWidth - d.clientWidth, y: scrollY } })()`)
+    assert(m.v <= 0 && m.h <= 0 && m.y === 0, `${where}: the page scrolls (${JSON.stringify(m)})`)
+  }
+  const rect = (sel) => evaluate(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom) } })()`)
+  const scroller = (sel) => `document.querySelector(${JSON.stringify(sel)}).closest('.overflow-y-auto')`
+  // Browser zoom = fewer (125%) or more (80%) CSS pixels in the same window: 1440×900 at 125% is 1152×720, at 80% 1800×1125.
+  const SIZES = [[1440, 900, '100%'], [1152, 720, '125% zoom'], [1800, 1125, '80% zoom'], [1280, 720, 'small desktop'], [1024, 768, 'tablet']]
+  try {
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+    await setViewport(1440, 900)
+
+    // Sidebar: the two entries are gone; their pages still open by URL.
+    await goto('/support/overview')
+    await waitFor(`!!document.querySelector('nav a[href="/support/whatsapp"]')`, 'support section')
+    assert(await evaluate(`!document.querySelector('aside[aria-label="Main navigation"] a[href="/support/inbox"]') && !document.querySelector('aside[aria-label="Main navigation"] a[href="/support/automation"]')
+      && ['/support/overview', '/support/tickets', '/support/customers', '/support/calls', '/support/whatsapp', '/support/emails', '/support/knowledge-base', '/support/reports', '/support/settings']
+        .every((p) => !!document.querySelector('aside[aria-label="Main navigation"] a[href="' + p + '"]'))`), 'support sidebar entries')
+    await goto('/support/inbox')
+    await waitFor(`!!document.querySelector('[data-testid=inbox-list]')`, 'Unified Inbox still opens')
+    await goto('/support/automation')
+    await waitFor(`document.querySelector('main h1')?.innerText === 'Support Automation'`, 'Support Automation still opens')
+    assert(await evaluate(`!!document.querySelector('footer')`), 'ordinary pages keep the footer')
+
+    for (const [w, h, label] of SIZES) {
+      await setViewport(w, h)
+      // WhatsApp: list and messages scroll on their own; the header and composer do not move.
+      await goto('/support/whatsapp')
+      await waitFor(`!!document.querySelector('[data-testid=conversation-sc-wa]')`, `${label}: list`)
+      await click('[data-testid=conversation-sc-wa]')
+      await waitFor(`!!document.querySelector('[data-testid=wa-messages]') && document.querySelectorAll('[data-testid=wa-messages] > li').length > 50 && !!document.querySelector('[data-testid=wa-composer]')`, `${label}: long chat`)
+      await sleep(300)
+      await pageFixed(`WhatsApp ${label}`)
+      assert(await evaluate(`(() => { const s = ${scroller('[data-testid=wa-messages]')}; return s.scrollHeight > s.clientHeight && s.scrollHeight - s.scrollTop - s.clientHeight < 80 })()`), `${label}: opens at the latest message`)
+      const head = await rect('[data-testid=wa-panel] > header')
+      const comp = await rect('[data-testid=wa-composer]')
+      assert(comp.bottom <= h, `${label}: composer below the window (${comp.bottom} > ${h})`)
+      await evaluate(`${scroller('[data-testid=wa-messages]')}.scrollTop = 0`)
+      await sleep(150)
+      assert(JSON.stringify(await rect('[data-testid=wa-panel] > header')) === JSON.stringify(head) && JSON.stringify(await rect('[data-testid=wa-composer]')) === JSON.stringify(comp), `${label}: header or composer moved`)
+      await pageFixed(`WhatsApp ${label} after scrolling messages`)
+      const msgTop = await evaluate(`${scroller('[data-testid=wa-messages]')}.scrollTop`)
+      await evaluate(`${scroller('[data-testid=wa-web] [data-testid=inbox-list]')}.scrollTop = 400`)
+      await sleep(150)
+      assert(await evaluate(`${scroller('[data-testid=wa-web] [data-testid=inbox-list]')}.scrollTop`) > 0 && (await evaluate(`${scroller('[data-testid=wa-messages]')}.scrollTop`)) === msgTop, `${label}: list does not scroll on its own`)
+      await pageFixed(`WhatsApp ${label} after scrolling the list`)
+      if (w === 1440) await screenshot('264-whatsapp-fixed-layout')
+
+      // Email: list scrolls on its own; thread scrolls under a fixed toolbar, also with everything expanded and after a preview.
+      await goto('/support/emails?folder=all')
+      await waitFor(`document.querySelectorAll('[data-testid=mail-list] > li').length > 40`, `${label}: long mail list`)
+      await pageFixed(`Email list ${label}`)
+      await evaluate(`${scroller('[data-testid=mail-list]')}.scrollTop = 600`)
+      await sleep(100)
+      assert(await evaluate(`${scroller('[data-testid=mail-list]')}.scrollTop`) > 0, `${label}: mail list does not scroll`)
+      await pageFixed(`Email list ${label} after scrolling`)
+      await goto('/support/emails?folder=all&c=sc-mail')
+      await waitFor(`!!document.querySelector('[data-testid=mail-expand-all]') && !!document.querySelector('[data-testid=email-em1]')`, `${label}: long thread`)
+      await click('[data-testid=mail-expand-all]')
+      await waitFor(`document.querySelectorAll('[data-testid=email-thread] article[data-expanded=true]').length === 13`, `${label}: all expanded`)
+      await sleep(200)
+      await pageFixed(`Email thread ${label} expanded`)
+      const bar = await rect('[role=toolbar][aria-label="Thread actions"]')
+      const side = await rect('[data-testid=mail-workspace] [data-testid=mail-rail]')
+      await evaluate(`${scroller('[data-testid=email-thread]')}.scrollTop = 99999`)
+      await sleep(150)
+      assert(await evaluate(`${scroller('[data-testid=email-thread]')}.scrollTop`) > 0, `${label}: thread does not scroll`)
+      assert(JSON.stringify(await rect('[role=toolbar][aria-label="Thread actions"]')) === JSON.stringify(bar) && JSON.stringify(await rect('[data-testid=mail-workspace] [data-testid=mail-rail]')) === JSON.stringify(side), `${label}: toolbar or rail moved`)
+      assert((await rect('[data-testid=mail-reply-bar]')).bottom <= h, `${label}: reply buttons cut off at the end of the thread`)
+      await pageFixed(`Email thread ${label} scrolled`)
+      await evaluate(`document.querySelector('[data-testid=email-ex0] [data-testid=email-attachment] > button').click()`)
+      await waitFor(`!!document.querySelector('[data-testid=attachment-preview]')`, `${label}: preview`)
+      await pageFixed(`Email ${label} with a preview open`)
+      await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      await waitFor(`!document.querySelector('[data-testid=attachment-preview]')`, `${label}: preview closed`)
+      await pageFixed(`Email ${label} after the preview`)
+      if (w === 1440) await screenshot('265-email-fixed-layout')
+    }
+
+    // Phone: the open chat / thread fills the screen; composer and last message visible; nothing scrolls sideways.
+    await setViewport(390, 844)
+    await goto('/support/whatsapp')
+    await waitFor(`!!document.querySelector('[data-testid=conversation-sc-wa]')`, 'phone list')
+    await pageFixed('WhatsApp phone list')
+    await click('[data-testid=conversation-sc-wa]')
+    await waitFor(`!!document.querySelector('[data-testid=wa-composer]') && document.querySelectorAll('[data-testid=wa-messages] > li').length > 50`, 'phone chat')
+    await sleep(300)
+    assert((await rect('[data-testid=wa-composer]')).bottom <= 844, 'phone composer visible')
+    assert(await evaluate(`(() => { const s = ${scroller('[data-testid=wa-messages]')}; const last = [...document.querySelectorAll('[data-testid=wa-messages] > li')].at(-1).getBoundingClientRect(); return last.bottom <= s.getBoundingClientRect().bottom + 1 })()`), 'phone: last message visible')
+    await pageFixed('WhatsApp phone chat')
+    await screenshot('266-whatsapp-phone-layout')
+    await goto('/support/emails?folder=all&c=sc-mail')
+    await waitFor(`!!document.querySelector('[data-testid=email-em1]')`, 'phone thread')
+    await pageFixed('Email phone thread')
+    await cdp('Emulation.clearDeviceMetricsOverride')
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+    for (const c of [...waConvs, mailConv]) SUPPORT_INBOX.splice(SUPPORT_INBOX.indexOf(c), 1)
+    GMAIL_THREAD.splice(0, added.length)
+    WA.extra = []; MAILBOX.extra = []
+    waChannel.status = before.wa; emailChannel.status = before.email
+    WA.web = false; WA.enabled = false; WA.state = 'MIGRATION_REQUIRED'; WA.prefs = {}
+    MAILBOX.web = false; MAILBOX.state = {}; GMAIL.connected = false
   }
 })
 

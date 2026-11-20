@@ -200,7 +200,7 @@ export function NotesInfo({ ctx }: { ctx: InfoContext }) {
 /** Right-hand drawer: contact, support controls, ticket, customer, notes. */
 export function InfoPanel({ ctx, onClose, className }: { ctx: InfoContext; onClose: () => void; className?: string }) {
   return (
-    <aside aria-label="Contact and support information" data-testid="wa-info" className={cn('flex h-full flex-col bg-[#F0F2F5]', className)}>
+    <aside aria-label="Contact and support information" data-testid="wa-info" className={cn('flex h-full min-h-0 flex-col bg-[#F0F2F5]', className)}>
       <header className="flex h-[60px] shrink-0 items-center gap-3 bg-white px-3 shadow-[0_1px_3px_rgba(11,20,26,0.08)]">
         <IconButton label="Close contact info" onClick={onClose}><X /></IconButton>
         <h2 className="text-base text-[#111B21]">Contact info</h2>

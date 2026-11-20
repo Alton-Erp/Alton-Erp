@@ -38,14 +38,14 @@ export default function SupportWhatsAppPage() {
   const s = status.data
 
   return (
-    <div className="-mx-4 -my-6 flex h-[calc(100dvh-3.5rem)] min-h-[480px] overflow-hidden border-[#E9EDEF] bg-[#F0F2F5] text-[#111B21] sm:-mx-6 lg:-mx-8 lg:-my-8" data-testid="wa-web">
-      <div className={cn('flex w-full shrink-0 flex-col border-r border-[#E9EDEF] md:w-[340px] lg:w-[380px]', selected && 'hidden md:flex')}>
+    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden border-[#E9EDEF] bg-[#F0F2F5] text-[#111B21]" data-testid="wa-web">
+      <div className={cn('flex min-h-0 w-full shrink-0 flex-col border-r border-[#E9EDEF] md:w-[340px] lg:w-[380px]', selected && 'hidden md:flex')}>
         <ConversationList page={list.data} loading={list.loading} error={list.error} view={view} setView={(v) => { if (v !== 'GROUPS') { setView(v); setLimit(PAGE) } }}
           search={search} setSearch={setSearch} selected={selected} onOpen={setSelected} onChanged={list.reload} onMore={() => setLimit((n) => Math.min(n + PAGE, 200))}
           status={s ?? null} canStart={Boolean(s?.can_send)} onStart={() => setStartOpen(true)} onLog={perms.reply ? () => setLogOpen(true) : null} />
       </div>
       {selected ? (
-        <div className="flex min-w-0 flex-1 max-md:fixed max-md:inset-0 max-md:z-40 max-md:bg-[#EFEAE2]">
+        <div className="flex min-h-0 min-w-0 flex-1 max-md:fixed max-md:inset-0 max-md:z-40 max-md:bg-[#EFEAE2]">
           <ChatWorkspace key={selected} id={selected} infoOpen={infoOpen} setInfoOpen={setInfoOpen} onBack={() => setSelected('')} onChanged={list.reload} />
         </div>
       ) : (

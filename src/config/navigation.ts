@@ -136,6 +136,8 @@ export interface NavItem {
   description: string
   group: NavGroupId
   keywords?: string[]
+  /** Kept as a route (links, global search, permissions) but not listed in the sidebar. */
+  hideInSidebar?: boolean
 }
 
 export type NavGroupId = 'overview' | 'products' | 'inventory' | 'purchase' | 'production' | 'sales' | 'billing' | 'ledger' | 'support' | 'reports'
@@ -575,6 +577,7 @@ export const NAV_ITEMS: NavItem[] = [
     group: 'support',
     description: 'Phone, WhatsApp and email conversations in one place, with assignment, status, tags and notes.',
     keywords: ['inbox', 'conversation', 'reply', 'assign'],
+    hideInSidebar: true,
   },
   {
     key: 'support-tickets',
@@ -638,6 +641,7 @@ export const NAV_ITEMS: NavItem[] = [
     group: 'support',
     description: 'Rules that set priority, department, agent or tags when tickets and conversations are created.',
     keywords: ['automation', 'rule', 'routing'],
+    hideInSidebar: true,
   },
   {
     key: 'support-reports',

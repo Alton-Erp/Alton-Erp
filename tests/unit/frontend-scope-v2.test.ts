@@ -31,6 +31,9 @@ describe('V2 navigation scope', () => {
     assert.deepEqual(titles('ledger'), ['Ledger Dashboard', 'Customer & Supplier Ledger', 'Customer Ledger', 'Supplier Ledger'])
     assert.deepEqual(NAV_ITEMS.filter((i) => i.group === 'support').map((i) => i.path), ['/support/overview', '/support/inbox', '/support/tickets', '/support/customers',
       '/support/calls', '/support/whatsapp', '/support/emails', '/support/knowledge-base', '/support/automation', '/support/reports', '/support/settings'])
+    // Unified Inbox and Support Automation keep their routes but are not listed in the sidebar.
+    assert.deepEqual(NAV_ITEMS.filter((i) => i.group === 'support' && !i.hideInSidebar).map((i) => i.title), ['Support Overview', 'Support Tickets', 'Support Customers',
+      'Calls', 'WhatsApp', 'Emails', 'Knowledge Base', 'Support Reports', 'Support Settings'])
     const removed = /^\/(inventory\/(counts|batches|reports)|production\/(outsourcing|outsourced-receipts)|sales\/(picking|packing|dispatch|delivery|returns|reports|order-details))$/
     for (const item of NAV_ITEMS) assert.doesNotMatch(item.path, removed, `${item.key} was removed from the sidebar`)
   })

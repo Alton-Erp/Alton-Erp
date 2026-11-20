@@ -47,7 +47,7 @@ export function ChatComposer({ conversationId, windowOpen, canSend, replyTo, cus
   }
   if (!windowOpen) {
     return (
-      <div className="flex flex-wrap items-center justify-center gap-3 bg-[#F0F2F5] px-4 py-3 text-sm text-[#667781]" data-testid="wa-composer-closed">
+      <div className="flex shrink-0 flex-wrap items-center justify-center gap-3 bg-[#F0F2F5] px-4 py-3 text-sm text-[#667781]" data-testid="wa-composer-closed">
         <span>Free-form messages are not allowed now: the customer has not written in the last 24 hours.</span>
         <button type="button" onClick={onTemplate} data-testid="wa-template-open" className="rounded-full bg-[#008069] px-4 py-2 font-medium text-white hover:bg-[#017561]">Send approved template</button>
       </div>
@@ -91,7 +91,7 @@ export function ChatComposer({ conversationId, windowOpen, canSend, replyTo, cus
   }
   const limit = file ? WA_CAPTION_LIMIT : WA_TEXT_LIMIT
   return (
-    <div className="bg-[#F0F2F5]" data-testid="wa-composer">
+    <div className="shrink-0 bg-[#F0F2F5]" data-testid="wa-composer">
       {(replyTo || file) && (
         <div className="space-y-1 px-4 pt-2">
           {replyTo && (
