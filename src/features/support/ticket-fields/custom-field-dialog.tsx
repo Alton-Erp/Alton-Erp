@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { Field } from '@/features/support/support-components'
 import {
-  FIELD_TYPES, FIELD_TYPE_META, LOOKUP_LABELS, LOOKUP_TARGETS, checkDefinition, checkFieldValue, moveItem, parseFormula, previewKey, toInput,
+  FIELD_TYPES, FIELD_TYPE_META, LOOKUP_LABELS, LOOKUP_TARGETS, MODULE_META, checkDefinition, type FieldModule, checkFieldValue, moveItem, parseFormula, previewKey, toInput,
   type FieldConfig, type FieldDefinition, type FieldType, type InputValue, type LookupTarget, type Visibility,
 } from '@/features/support/ticket-fields/field-model'
 import { describeDataError } from '@/lib/errors'
@@ -25,7 +25,8 @@ interface Option { id?: string; label: string }
  * Create or edit a custom ticket field. The internal key is generated from the label when the field is created and
  * never changes; the type cannot change afterwards (saved values must keep fitting). Deactivating keeps the values.
  */
-export function CustomFieldDialog({ existing, can, numberFields, onClose, onSaved }: {
+export function CustomFieldDialog({ module = 'TICKET', existing, can, numberFields, onClose, onSaved }: {
+  module?: FieldModule
   existing: FieldDefinition | null
   can: { create: boolean; update: boolean; delete: boolean }
   /** Number and currency fields a formula may use. */
@@ -95,7 +96,7 @@ export function CustomFieldDialog({ existing, can, numberFields, onClose, onSave
     setBusy(true); setError(null)
     try {
       const base = { field_label: label.trim(), field_config: config, is_required: required, help_text: help.trim() || null, placeholder: placeholder.trim() || null, visibility, default_value: def }
-      const saved = await saveFieldDefinition(existing?.id ?? null, existing ? { ...base, ...(active !== existing.is_active ? { is_active: active } : {}) } : { ...base, field_type: type })
+      const saved = await saveFieldDefinition(existing?.id ?? null, existing ? { ...base, ...(active !== existing.is_active ? { is_active: active } : {}) } : { ...base, field_type: type }, module)
       onSaved(saved, !existing)
     } catch (e) {
       setError(describeDataError(e))
@@ -111,7 +112,7 @@ export function CustomFieldDialog({ existing, can, numberFields, onClose, onSave
     <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
       <DialogContent className="flex max-h-[90dvh] max-w-2xl flex-col gap-0 p-0" data-testid="custom-field-dialog">
         <DialogHeader className="border-b px-6 py-4"><DialogTitle>{existing ? `Edit ${existing.field_label}` : 'Create Custom Field'}</DialogTitle>
-          <DialogDescription>{existing ? 'Saved ticket values are kept when you edit or deactivate a field.' : 'The field is created now; place it on the form and Save the layout to show it on New Ticket.'}</DialogDescription></DialogHeader>
+          <DialogDescription>{existing ? `Saved ${MODULE_META[module].record} values are kept when you edit or deactivate a field.` : `The field is created now; place it on the form and Save the layout to show it on the ${MODULE_META[module].form}.`}</DialogDescription></DialogHeader>
         <form id="cf-form" className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto px-6 py-4 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); void submit() }} noValidate>
           <Field label="Field label" htmlFor="cf-label" className="sm:col-span-2"><Input id="cf-label" value={label} onChange={(e) => setLabel(e.target.value)} maxLength={80} disabled={readOnly} autoFocus /></Field>
           <Field label="Field type" htmlFor="cf-type" hint={existing ? 'The type cannot change after the field is created.' : FIELD_TYPE_META[type].hint}>
@@ -221,7 +222,7 @@ export function CustomFieldDialog({ existing, can, numberFields, onClose, onSave
             </Select>
           </Field>
           <div className="space-y-2 pt-6">
-            <label className="flex items-center gap-2 text-sm"><Checkbox checked={required} disabled={readOnly || type === 'CHECKBOX' || type === 'FORMULA'} onCheckedChange={(v) => setRequired(v === true)} data-testid="cf-required" />Required on New Ticket</label>
+            <label className="flex items-center gap-2 text-sm"><Checkbox checked={required} disabled={readOnly || type === 'CHECKBOX' || type === 'FORMULA'} onCheckedChange={(v) => setRequired(v === true)} data-testid="cf-required" />Required on the {MODULE_META[module].form}</label>
             {existing && (
               <label className="flex items-center gap-2 text-sm"><Checkbox checked={active} disabled={existing.is_active ? !can.delete : !can.update} onCheckedChange={(v) => setActive(v === true)} data-testid="cf-active" />Active</label>
             )}

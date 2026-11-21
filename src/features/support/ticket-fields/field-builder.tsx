@@ -8,7 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { CustomFieldDialog } from '@/features/support/ticket-fields/custom-field-dialog'
 import {
-  FIELD_TYPE_META, MAX_CUSTOM_FIELDS, SYSTEM_FIELDS, badgeCount, itemKey, moveItem, sameLayout,
+  CUSTOMER_SYSTEM_FIELDS, FIELD_TYPE_META, MAX_CUSTOM_FIELDS, MODULE_META, SYSTEM_FIELDS, badgeCount, itemKey, moveItem, sameLayout, type FieldModule,
   type FieldDefinition, type FieldType, type LayoutItem, type StandardField,
 } from '@/features/support/ticket-fields/field-model'
 import { useAsync } from '@/hooks/use-async'
@@ -25,23 +25,24 @@ const usedFrom = (a: FieldsAdmin): LayoutItem[] => a.layout.filter((l) => l.is_v
   : { field_definition_id: l.field_definition_id!, is_required: l.is_required_override }))
 
 const DRAG_TYPE = 'application/x-alton-ticket-field'
-const LEAVE_MESSAGE = 'The ticket field layout has unsaved changes. Leave without saving?'
+const leaveMessage = (m: FieldModule) => `The ${MODULE_META[m].record} field layout has unsaved changes. Leave without saving?`
 
 /**
  * Support → Settings → Ticket fields. Left: the fields on the New Ticket form (drag to reorder, edit, make required,
  * remove); right: available standard and custom fields (search, drag in, Add Custom Field). Nothing changes on the
  * form until Save; removing a field never deletes saved ticket values.
  */
-export function TicketFieldBuilder({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void }) {
-  const q = useAsync(fetchFieldsAdmin, [])
+export function TicketFieldBuilder({ module = 'TICKET', onDirtyChange }: { module?: FieldModule; onDirtyChange?: (dirty: boolean) => void }) {
+  const q = useAsync(() => fetchFieldsAdmin(module), [module])
   if (q.error && !q.data) {
-    return <Card><ErrorState message={isMissingTicketFields(q.error) ? 'Ticket fields need the database update 20261226090000 (not applied yet).' : describeDataError(q.error)} onRetry={q.reload} /></Card>
+    return <Card><ErrorState message={isMissingTicketFields(q.error) ? `${module === 'TICKET' ? 'Ticket fields need the database update 20261226090000' : 'Customer fields need the database update 20261228090000'} (not applied yet).` : describeDataError(q.error)} onRetry={q.reload} /></Card>
   }
   if (!q.data) return <Card><LoadingState rows={6} /></Card>
-  return <BuilderBody admin={q.data} reload={q.reload} onDirtyChange={onDirtyChange} />
+  return <BuilderBody module={module} admin={q.data} reload={q.reload} onDirtyChange={onDirtyChange} />
 }
 
-function BuilderBody({ admin, reload, onDirtyChange }: { admin: FieldsAdmin; reload: () => void; onDirtyChange?: (dirty: boolean) => void }) {
+function BuilderBody({ module, admin, reload, onDirtyChange }: { module: FieldModule; admin: FieldsAdmin; reload: () => void; onDirtyChange?: (dirty: boolean) => void }) {
+  const meta = MODULE_META[module]
   const saved = useMemo(() => usedFrom(admin), [admin])
   const [used, setUsed] = useState<LayoutItem[]>(saved)
   const [term, setTerm] = useState('')
@@ -61,12 +62,12 @@ function BuilderBody({ admin, reload, onDirtyChange }: { admin: FieldsAdmin; rel
     const onClick = (e: MouseEvent) => {
       const a = (e.target as HTMLElement | null)?.closest?.('a[href]')
       if (!a || root.current?.contains(a)) return
-      if (!window.confirm(LEAVE_MESSAGE)) { e.preventDefault(); e.stopPropagation() }
+      if (!window.confirm(leaveMessage(module))) { e.preventDefault(); e.stopPropagation() }
     }
     window.addEventListener('beforeunload', beforeUnload)
     document.addEventListener('click', onClick, true)
     return () => { window.removeEventListener('beforeunload', beforeUnload); document.removeEventListener('click', onClick, true) }
-  }, [dirty])
+  }, [dirty, module])
 
   const standardBy = useMemo(() => new Map(admin.standard.map((s) => [s.standard_key, s] as const)), [admin])
   const defBy = useMemo(() => new Map(admin.definitions.map((d) => [d.id, d] as const)), [admin])
@@ -106,14 +107,14 @@ function BuilderBody({ admin, reload, onDirtyChange }: { admin: FieldsAdmin; rel
     const d = readDrag(e)
     if (!d || d.from !== 'used' || !can.update) return
     const s = standardBy.get(d.key as never)
-    if (s?.locked) { setError(`${s.label} is always on the New Ticket form.`); return }
+    if (s?.locked) { setError(`${s.label} is always on the ${meta.form}.`); return }
     remove(d.key)
   }
 
   const save = async () => {
     setBusy(true); setError(null); setNotice(null)
     try {
-      await saveFieldLayout(used.map((x) => (x.standard_key ? { standard_key: x.standard_key, is_required: x.is_required ?? null } : { field_definition_id: x.field_definition_id, is_required: x.is_required ?? null })), admin.stamp)
+      await saveFieldLayout(used.map((x) => (x.standard_key ? { standard_key: x.standard_key, is_required: x.is_required ?? null } : { field_definition_id: x.field_definition_id, is_required: x.is_required ?? null })), admin.stamp, module)
       // Normalise the working copy to what the database stores (required flags of locked fields are not kept).
       setUsed(used.map((x) => ({ ...x, is_required: x.standard_key && !standardBy.get(x.standard_key)?.required_editable ? null : x.is_required ?? null })))
       reload()
@@ -124,7 +125,7 @@ function BuilderBody({ admin, reload, onDirtyChange }: { admin: FieldsAdmin; rel
       setBusy(false)
     }
   }
-  const cancel = () => { if (!dirty || window.confirm('Discard your changes to the ticket field layout?')) { setUsed(saved); setError(null); setNotice(null) } }
+  const cancel = () => { if (!dirty || window.confirm(`Discard your changes to the ${meta.record} field layout?`)) { setUsed(saved); setError(null); setNotice(null) } }
 
   const row = (x: LayoutItem, i: number) => {
     const key = itemKey(x)
@@ -174,14 +175,14 @@ function BuilderBody({ admin, reload, onDirtyChange }: { admin: FieldsAdmin; rel
 
   return (
     <div ref={root} className="space-y-3" data-testid="ticket-field-builder">
-      {!can.update && <p className="text-sm text-muted-foreground">Your role can view the ticket fields; changing them needs ticket field access.</p>}
+      {!can.update && <p className="text-sm text-muted-foreground">Your role can view the {meta.record} fields; changing them needs {meta.record} field access.</p>}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <Card className="gap-0 overflow-hidden p-0">
           <CardHeader className="border-b px-4 py-3"><div><CardTitle>Used fields</CardTitle>
-            <CardDescription>On the New Ticket form, in this order. Drag to reorder; <span className="text-red-600">*</span> = required.</CardDescription></div></CardHeader>
+            <CardDescription>On the {meta.form}, in this order. Drag to reorder; <span className="text-red-600">*</span> = required.</CardDescription></div></CardHeader>
           <CardContent className="p-0">
             <ul className="border-b bg-muted/30" aria-label="System fields">
-              {SYSTEM_FIELDS.map((f) => (
+              {(module === 'TICKET' ? SYSTEM_FIELDS : CUSTOMER_SYSTEM_FIELDS).map((f) => (
                 <li key={f.key} className="flex items-center gap-2 border-b px-2 py-1.5 text-sm text-muted-foreground last:border-b-0" data-testid={`system-${f.key}`}>
                   <Lock className="size-4 shrink-0" aria-hidden /><span className="flex-1">{f.label}</span><span className="text-xs">System · set automatically</span>
                 </li>
@@ -231,14 +232,14 @@ function BuilderBody({ admin, reload, onDirtyChange }: { admin: FieldsAdmin; rel
         </span>
       </div>
       {dialog && (
-        <CustomFieldDialog existing={dialog === 'new' ? null : dialog} can={can}
+        <CustomFieldDialog module={module} existing={dialog === 'new' ? null : dialog} can={can}
           numberFields={admin.definitions.filter((d) => (d.field_type === 'NUMBER' || d.field_type === 'CURRENCY') && (dialog === 'new' || d.id !== dialog.id))}
           onClose={() => setDialog(null)}
           onSaved={(d, created) => {
             setDialog(null)
             const wasActive = dialog !== 'new' && dialog.is_active
             reload()
-            if (created) { add({ field_definition_id: d.id }); setNotice(`${d.field_label} created and placed at the end of the form. Save to show it on New Ticket.`) }
+            if (created) { add({ field_definition_id: d.id }); setNotice(`${d.field_label} created and placed at the end of the form. Save to show it on the ${meta.form}.`) }
             // Deactivating took the field off the saved form already; take it off the working copy too.
             else if (wasActive && !d.is_active) { setUsed((u) => u.filter((x) => x.field_definition_id !== d.id)); setNotice(`${d.field_label} deactivated. Its saved values are kept.`) }
             else setNotice(`${d.field_label} saved.`)

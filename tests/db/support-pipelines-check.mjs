@@ -312,9 +312,18 @@ for (const q of [`select public.support_pipelines_list()`, `select public.suppor
 console.log('\nHistory is append-only; reset allowlist; rollback')
 await db.exec('reset role')
 ok('stage history rows cannot be changed', await db.query(`update public.support_ticket_stage_history set notes = 'x' where ticket_id = $1`, [t1]).then(() => false, (e) => /cannot be changed/.test(e.message)))
-ok('reset allowlist: three more tables (history first, pipelines last)', Number(await val(`select count(*) from private.erp_reset_tables()`)) === 141
+ok('reset allowlist: the three pipeline tables (history first, pipelines last)', Number(await val(`select count(*) from private.erp_reset_tables() where table_name in ('support_pipelines', 'support_pipeline_stages', 'support_ticket_stage_history')`)) === 3
   && Number(await val(`select ord from private.erp_reset_tables() where table_name = 'support_pipelines'`)) > Number(await val(`select ord from private.erp_reset_tables() where table_name = 'support_tickets'`)))
 const statusesBefore = await rows(`select id::text, status, reopen_count from public.support_tickets order by id`)
+// Later migrations are rolled back first (newest first), as a real rollback of this migration would be done.
+for (const f of files.filter((x) => x > `${NAME}.sql`).reverse()) {
+  const downFile = path.join(root, 'supabase', 'rollback', f.replace(/\.sql$/, '_down.sql'))
+  const sql = await read(downFile).catch(() => null)
+  if (!sql) continue
+  await db.exec(`reset role; set app.support_crm_rollback_force = 'on'; set app.support_pipelines_rollback_force = 'on'`)
+  await db.exec(sql)
+  await db.exec(`reset app.support_crm_rollback_force; reset app.support_pipelines_rollback_force`)
+}
 const down = await read(path.join(root, 'supabase', 'rollback', `${NAME}_down.sql`))
 ok('rollback refuses while tickets have been moved', await db.exec(down).then(() => false, (e) => /Export the stage history/.test(e.message)))
 await db.exec(`set app.support_pipelines_rollback_force = 'on'`)
@@ -324,11 +333,11 @@ ok('rollback: pipeline tables and columns gone; tickets, statuses and events kep
   && !(await val(`select exists (select 1 from information_schema.columns where table_name = 'support_tickets' and column_name = 'stage_id')`))
   && JSON.stringify(await rows(`select id::text, status, reopen_count from public.support_tickets order by id`)) === JSON.stringify(statusesBefore)
   && Number(await val(`select count(*) from public.support_ticket_events where event_type = 'STAGE_CHANGED'`)) > 0)
-ok('rollback: reset allowlist back to 138, permissions removed, ticket creation still works', Number(await val(`select count(*) from private.erp_reset_tables()`)) === 138
+ok('rollback: pipeline tables out of the reset allowlist, permissions removed, ticket creation still works', Number(await val(`select count(*) from private.erp_reset_tables() where table_name in ('support_pipelines', 'support_pipeline_stages', 'support_ticket_stage_history')`)) === 0
   && Number(await val(`select count(*) from public.permissions where resource = 'support_pipelines'`)) === 0 && Boolean(await mk('op', 'After rollback')))
 await db.exec(await read(path.join(migDir, `${NAME}.sql`)))
 ok('re-applies after the rollback: every ticket placed again', Number(await val(`select count(*) from public.support_tickets where stage_id is null`)) === 0
-  && Number(await val(`select count(*) from private.erp_reset_tables()`)) === 141)
+  && Number(await val(`select count(*) from private.erp_reset_tables() where table_name in ('support_pipelines', 'support_pipeline_stages', 'support_ticket_stage_history')`)) === 3)
 
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)

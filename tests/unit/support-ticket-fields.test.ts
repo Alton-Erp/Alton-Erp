@@ -134,7 +134,8 @@ describe('field builder', () => {
 describe('wiring', () => {
   it('Support → Settings → Ticket fields, only with support_ticket_fields.view; unsaved changes guarded', () => {
     const page = src('src/pages/support/support-settings-page.tsx')
-    assert.match(page, /perms\.ticketFields \? \[\{ value: 'fields' as Tab, label: 'Ticket fields' \}\]/)
+    // Renamed "Custom fields" (Ticket Fields / Customer Fields) by 20261228090000.
+    assert.match(page, /perms\.ticketFields \|\| perms\.customerFields \? \[\{ value: 'fields' as Tab, label: 'Custom fields' \}\]/)
     assert.match(page, /fieldsDirty\.current && next !== 'fields' && !window\.confirm/)
     const builder = src('src/features/support/ticket-fields/field-builder.tsx')
     assert.match(builder, /beforeunload/)

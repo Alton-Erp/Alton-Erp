@@ -162,6 +162,13 @@ export const PERMISSIONS = [
   'support_pipelines.delete',
   'support_pipelines.manage_stages',
   'support_tickets.move_stage',
+  // Support customer CRM (migration 20261228090000)
+  'support_customer_fields.view',
+  'support_customer_fields.create',
+  'support_customer_fields.update',
+  'support_customer_fields.delete',
+  'support_customers.manage_notes',
+  'support_customers.manage_activities',
 ] as const
 
 export type PermissionCode = (typeof PERMISSIONS)[number]

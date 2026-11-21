@@ -7,6 +7,7 @@ export function useSupportPermissions() {
     view: has('support.view'), manageTickets: has('support.manage_tickets'), assign: has('support.assign'), reply: has('support.reply'),
     integrations: has('support.manage_integrations'), reports: has('support.view_reports'), settings: has('support.manage_settings'),
     pipelines: has('support_pipelines.view'), moveStage: has('support_tickets.move_stage'),
-    ticketFields: has('support_ticket_fields.view'), ticketProducts: has('support_ticket_products.view'), manageTicketProducts: has('support_ticket_products.manage'),
+    ticketFields: has('support_ticket_fields.view'), customerFields: has('support_customer_fields.view'),
+    manageCustomerNotes: has('support_customers.manage_notes'), customerActivities: has('support_customers.manage_activities'), ticketProducts: has('support_ticket_products.view'), manageTicketProducts: has('support_ticket_products.manage'),
   }
 }

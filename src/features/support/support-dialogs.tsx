@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { CustomerPicker } from '@/features/support/customer-picker'
+import { CustomerEditor } from '@/features/support/customers/customer-editor'
 import { AgentSelect, Field } from '@/features/support/support-components'
 import {
   CALL_STATUSES, CALL_STATUS_LABELS, CHANNELS, CHANNEL_LABELS, PRIORITIES, PRIORITY_META, splitList, validateCustomer, validateLog, validateTicket,
@@ -18,6 +19,7 @@ import { describeDataError } from '@/lib/errors'
 import {
   createConversation, createTicket, fetchAgents, fetchErpCustomerOptions, saveCustomer, type CustomerProfile,
 } from '@/services/support'
+import { fetchCustomerForm, fetchCustomerWorkspace } from '@/services/customer-crm'
 import { fetchTicketForm } from '@/services/ticket-fields'
 
 function ErrorLine({ text }: { text: string | null }) {
@@ -33,12 +35,47 @@ const emptyCustomer: CustomerInput = { display_name: '', company_name: '', phone
  * the customer is created only when the agent confirms it is a different person; customers are never merged.
  */
 export function CustomerFormDialog(props: ComponentProps<typeof CustomerForm>) {
-  return props.open ? <CustomerForm {...props} /> : null
+  return props.open ? <CustomerFormLoader {...props} /> : null
+}
+
+/**
+ * With the customer field builder (20261228090000) the form follows the configured layout and custom fields;
+ * before that database update the earlier fixed form is shown.
+ */
+function CustomerFormLoader(props: ComponentProps<typeof CustomerForm>) {
+  const form = useAsync(() => fetchCustomerForm().catch(() => null), [])
+  const id = props.existing?.id ?? null
+  const workspace = useAsync(() => (id ? fetchCustomerWorkspace(id).catch(() => null) : Promise.resolve(null)), [id])
+  if ((form.loading && !form.data) || (id && workspace.loading && !workspace.data)) {
+    return (
+      <Dialog open={props.open} onOpenChange={props.onOpenChange}>
+        <DialogContent className="max-w-md"><DialogHeader><DialogTitle>{id ? 'Edit customer' : 'New customer'}</DialogTitle><DialogDescription>Loading the form…</DialogDescription></DialogHeader>
+          <Loader2 className="mx-auto size-6 animate-spin text-muted-foreground" /></DialogContent>
+      </Dialog>
+    )
+  }
+  if (!form.data || (id && !workspace.data)) return <CustomerForm {...props} />
+  const pr = props.preset
+  const phones = pr?.phones ? splitList(pr.phones) : []
+  const emails = pr?.emails ? splitList(pr.emails) : []
+  const preset = pr ? { ...(pr.display_name ? { display_name: pr.display_name } : {}), ...(pr.company_name ? { company_name: pr.company_name } : {}),
+    ...(phones[0] ? { mobile: phones[0] } : {}), ...(phones[1] ? { alternate_phone: phones[1] } : {}), ...(emails[0] ? { email: emails[0] } : {}),
+    ...(pr.address ? { address: pr.address } : {}), ...(pr.notes ? { description: pr.notes } : {}) } : undefined
+  return (
+    <Dialog open={props.open} onOpenChange={props.onOpenChange}>
+      <DialogContent className="flex max-h-[92dvh] max-w-3xl flex-col gap-0 p-0" data-testid="customer-dialog">
+        <DialogHeader className="border-b px-6 py-4"><DialogTitle>{id ? 'Edit customer' : 'New customer'}</DialogTitle>
+          <DialogDescription>Phone numbers and emails are used to recognise the customer on calls, WhatsApp, email and new tickets. <span className="text-red-600">*</span> = required.</DialogDescription></DialogHeader>
+        <CustomerEditor form={form.data} workspace={workspace.data} preset={preset}
+          onSaved={(r) => { props.onSaved(r.id, r.label); props.onOpenChange(false) }} onCancel={() => props.onOpenChange(false)} />
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 function CustomerForm({ open, onOpenChange, existing, preset, onSaved }: {
   open: boolean; onOpenChange: (o: boolean) => void; existing?: CustomerProfile['customer'] | null
-  preset?: Partial<CustomerInput>; onSaved: (id: string) => void
+  preset?: Partial<CustomerInput>; onSaved: (id: string, label?: string) => void
 }) {
   const [v, setV] = useState<CustomerInput>(() => existing ? { display_name: existing.display_name, company_name: existing.company_name ?? '', phones: existing.phones.join(', '),
     emails: existing.emails.join(', '), address: existing.address ?? '', notes: existing.notes ?? '' } : { ...emptyCustomer, ...preset })
@@ -131,6 +168,7 @@ function TicketFormLoader(props: ComponentProps<typeof TicketForm>) {
         <DialogHeader className="border-b px-6 py-4"><DialogTitle>{props.conversation ? 'Create ticket from conversation' : 'New ticket'}</DialogTitle>
           <DialogDescription>The ticket number and SLA targets are assigned when it is saved. <span className="text-red-600">*</span> = required.</DialogDescription></DialogHeader>
         <NewTicketForm form={layout.data} conversation={props.conversation} customer={props.customer} pipelineId={props.pipelineId}
+          renderCustomerDialog={(p) => <CustomerFormDialog {...p} />}
           onCreated={(r) => { props.onCreated(r); props.onOpenChange(false) }} onCancel={() => props.onOpenChange(false)} />
       </DialogContent>
     </Dialog>

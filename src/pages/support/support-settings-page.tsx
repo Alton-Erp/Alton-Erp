@@ -40,13 +40,13 @@ export default function SupportSettingsPage() {
   // The field builder warns before its unsaved layout is left behind (other tabs and links).
   const fieldsDirty = useRef(false)
   const setTab = (next: Tab) => {
-    if (fieldsDirty.current && next !== 'fields' && !window.confirm('The ticket field layout has unsaved changes. Leave without saving?')) return
+    if (fieldsDirty.current && next !== 'fields' && !window.confirm('The field layout has unsaved changes. Leave without saving?')) return
     fieldsDirty.current = false
     setTabParam(next)
   }
   const tabs: { value: Tab; label: string }[] = [
     { value: 'agents', label: 'Agents' }, { value: 'sla', label: 'SLA policies' }, { value: 'rules', label: 'Ticket rules' },
-    ...(perms.ticketFields ? [{ value: 'fields' as Tab, label: 'Ticket fields' }] : []), { value: 'tags', label: 'Tags' },
+    ...(perms.ticketFields || perms.customerFields ? [{ value: 'fields' as Tab, label: 'Custom fields' }] : []), { value: 'tags', label: 'Tags' },
     ...(perms.integrations ? [{ value: 'channels' as Tab, label: 'Channel integrations' }, { value: 'phone' as Tab, label: 'Phone' }, { value: 'email' as Tab, label: 'Email' }, { value: 'whatsapp' as Tab, label: 'WhatsApp' }, { value: 'health' as Tab, label: 'Integration health' }] : []), { value: 'numbering', label: 'Ticket numbering' },
   ]
   const t = (tabs.some((x) => x.value === tab) ? tab : 'agents') as Tab
@@ -58,7 +58,7 @@ export default function SupportSettingsPage() {
       {t === 'agents' && <AgentsTab canEdit={perms.settings} />}
       {t === 'sla' && <><SlaTab canEdit={perms.settings} /><div className="mt-4"><SlaCalendarSettings /></div></>}
       {t === 'rules' && <TicketRulesSettings />}
-      {t === 'fields' && perms.ticketFields && <TicketFieldBuilder onDirtyChange={(d) => { fieldsDirty.current = d }} />}
+      {t === 'fields' && (perms.ticketFields || perms.customerFields) && <CustomFieldsSection isDirty={() => fieldsDirty.current} setDirty={(d) => { fieldsDirty.current = d }} />}
       {t === 'health' && perms.integrations && <IntegrationHealthPanel />}
       {t === 'tags' && <TagsTab canEdit={perms.settings} />}
       {t === 'channels' && perms.integrations && <ChannelsTab />}
@@ -72,6 +72,26 @@ export default function SupportSettingsPage() {
         </CardContent></Card>
       )}
     </>
+  )
+}
+
+/** Support Settings → Custom fields: one builder, a module at a time (each module has its own fields and layout). */
+function CustomFieldsSection({ isDirty, setDirty }: { isDirty: () => boolean; setDirty: (d: boolean) => void }) {
+  const perms = useSupportPermissions()
+  const modules = [...(perms.ticketFields ? [{ value: 'ticket' as const, label: 'Ticket Fields' }] : []), ...(perms.customerFields ? [{ value: 'customer' as const, label: 'Customer Fields' }] : [])]
+  const [param, setParam] = useUrlParam('module', modules[0]?.value ?? 'ticket')
+  const current = modules.find((m) => m.value === param)?.value ?? modules[0]?.value ?? 'ticket'
+  const choose = (next: 'ticket' | 'customer') => {
+    if (next === current) return
+    if (isDirty() && !window.confirm('The field layout has unsaved changes. Leave without saving?')) return
+    setDirty(false)
+    setParam(next)
+  }
+  return (
+    <div className="space-y-3">
+      {modules.length > 1 && <FilterTabs<'ticket' | 'customer'> label="Field module" value={current} onChange={choose} options={modules} />}
+      <TicketFieldBuilder key={current} module={current === 'customer' ? 'CUSTOMER' : 'TICKET'} onDirtyChange={setDirty} />
+    </div>
   )
 }
 

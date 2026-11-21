@@ -1,4 +1,4 @@
-import type { FieldConfig, FieldDefinition, FieldType, FormField, LayoutItem, LookupTarget, StandardField, StandardKey, Visibility } from '@/features/support/ticket-fields/field-model'
+import type { FieldConfig, FieldDefinition, FieldModule, FieldType, FormField, LayoutItem, LookupTarget, StandardField, StandardKey, Visibility } from '@/features/support/ticket-fields/field-model'
 import { requireSupabase } from '@/lib/supabase'
 import type { TicketCreate } from '@/services/support'
 
@@ -25,14 +25,19 @@ export interface FieldsAdmin {
   layout: { standard_key: StandardKey | null; field_definition_id: string | null; display_order: number; is_visible: boolean; is_required_override: boolean | null }[]
   can: { create: boolean; update: boolean; delete: boolean }
 }
-export const fetchFieldsAdmin = () => rpc<FieldsAdmin>('support_ticket_fields_admin')
+// Ticket fields keep using their own functions (they exist since 20261226090000); customer fields need 20261228090000.
+export const fetchFieldsAdmin = (module: FieldModule = 'TICKET') =>
+  module === 'TICKET' ? rpc<FieldsAdmin>('support_ticket_fields_admin') : rpc<FieldsAdmin>('support_fields_admin', { p_module: module })
 
 export interface FieldInput {
   field_label?: string; field_type?: FieldType; field_config?: FieldConfig; is_required?: boolean; is_active?: boolean
   default_value?: unknown; help_text?: string | null; placeholder?: string | null; visibility?: Visibility
 }
-export const saveFieldDefinition = (id: string | null, p: FieldInput) => rpc<FieldDefinition>('support_ticket_field_save', { p_id: id, p })
-export const saveFieldLayout = (used: LayoutItem[], stamp: string) => rpc<{ stamp: string }>('support_ticket_fields_save_layout', { p_used: used, p_stamp: stamp })
+export const saveFieldDefinition = (id: string | null, p: FieldInput, module: FieldModule = 'TICKET') => module === 'TICKET'
+  ? rpc<FieldDefinition>('support_ticket_field_save', { p_id: id, p }) : rpc<FieldDefinition>('support_field_save', { p_module: module, p_id: id, p })
+export const saveFieldLayout = (used: LayoutItem[], stamp: string, module: FieldModule = 'TICKET') => module === 'TICKET'
+  ? rpc<{ stamp: string }>('support_ticket_fields_save_layout', { p_used: used, p_stamp: stamp })
+  : rpc<{ stamp: string }>('support_fields_save_layout', { p_module: module, p_used: used, p_stamp: stamp })
 
 export interface TicketForm {
   fields: FormField[]

@@ -134,7 +134,7 @@ ok('picklist without options refused', await bad({ field_label: 'X1', field_type
 ok('picklist option twice refused', await bad({ field_label: 'X2', field_type: 'PICKLIST', field_config: { options: ['a', 'A'] } }, /listed twice/))
 ok('text minimum above maximum refused', await bad({ field_label: 'X3', field_type: 'TEXT', field_config: { min_length: 9, max_length: 2 } }, /minimum length/))
 ok('lookup without a supported target refused', await bad({ field_label: 'X4', field_type: 'LOOKUP', field_config: { target: 'PAYROLL' } }, /lookup links to/))
-ok('formula with an unknown field refused', await bad({ field_label: 'X5', field_type: 'FORMULA', field_config: { expression: '{cf_nope} * 2' } }, /not a ticket field/))
+ok('formula with an unknown field refused', await bad({ field_label: 'X5', field_type: 'FORMULA', field_config: { expression: '{cf_nope} * 2' } }, /not a ticket field|not a field of this form/))
 ok('formula using a text field refused', await bad({ field_label: 'X6', field_type: 'FORMULA', field_config: { expression: '{cf_invoice_reference} + 1' } }, /number and currency/))
 ok('formula with SQL / JavaScript refused', await bad({ field_label: 'X7', field_type: 'FORMULA', field_config: { expression: '1; drop table x' } }, /not allowed/))
 ok('formula with an unknown function refused', await bad({ field_label: 'X8', field_type: 'FORMULA', field_config: { expression: 'eval(1)' } }, /Unknown function/))
@@ -400,6 +400,15 @@ console.log('\nReset allowlist and rollback')
 const inReset = async () => Number(await val(`select count(*) from private.erp_reset_tables() where table_name in ('support_ticket_field_definitions', 'support_ticket_field_layout', 'support_ticket_field_values', 'support_ticket_products')`))
 ok('reset allowlist: the four tables (values and links before definitions and tickets)', (await inReset()) === 4
   && Number(await val(`select ord from private.erp_reset_tables() where table_name = 'support_ticket_field_values'`)) < Number(await val(`select ord from private.erp_reset_tables() where table_name = 'support_ticket_field_definitions'`)))
+// Later migrations are rolled back first (newest first), as a real rollback of this migration would be done.
+for (const f of files.filter((x) => x > `${NAME}.sql`).reverse()) {
+  const downFile = path.join(root, 'supabase', 'rollback', f.replace(/\.sql$/, '_down.sql'))
+  const sql = await read(downFile).catch(() => null)
+  if (!sql) continue
+  await db.exec(`reset role; set app.support_crm_rollback_force = 'on'; set app.support_pipelines_rollback_force = 'on'`)
+  await db.exec(sql)
+  await db.exec(`reset app.support_crm_rollback_force; reset app.support_pipelines_rollback_force`)
+}
 const down = await read(path.join(root, 'supabase', 'rollback', `${NAME}_down.sql`))
 await db.exec('reset role')
 const refusedDown = await db.exec(down).then(() => null, (e) => e.message)

@@ -1,5 +1,5 @@
-import { AlertTriangle, Loader2 } from 'lucide-react'
-import { useMemo, useRef, useState } from 'react'
+import { AlertTriangle, ExternalLink, Loader2 } from 'lucide-react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { DialogFooter } from '@/components/ui/dialog'
@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { CustomerPicker } from '@/features/support/customer-picker'
+import { CustomerMatchPanel } from '@/features/support/customers/customer-match-panel'
 import { AgentSelect, Field } from '@/features/support/support-components'
 import { PRIORITIES, PRIORITY_META, validateTicket, type FieldErrors, type Priority, type TicketInput } from '@/features/support/support-model'
 import { CustomFieldInput } from '@/features/support/ticket-fields/custom-field-input'
@@ -26,8 +27,10 @@ type Custom = Extract<FormField, { kind: 'CUSTOM' }>
  * the Product Master selector in the configured order; required fields checked here and again by the database,
  * which saves the ticket, its values and its products in one transaction.
  */
-export function NewTicketForm({ form, conversation, customer, pipelineId, onCreated, onCancel }: {
+export function NewTicketForm({ form, conversation, customer, pipelineId, renderCustomerDialog, onCreated, onCancel }: {
   form: TicketForm
+  /** The customer form ("Create new customer" when the phone / email matches nobody). */
+  renderCustomerDialog?: (p: { open: boolean; onOpenChange: (o: boolean) => void; preset: { phones: string; emails: string }; onSaved: (id: string, label?: string) => void }) => ReactNode
   pipelineId?: string | null
   conversation?: { id: string; subject: string | null } | null
   customer?: { id: string; label: string } | null
@@ -47,6 +50,7 @@ export function NewTicketForm({ form, conversation, customer, pipelineId, onCrea
   const [missing, setMissing] = useState<[string, string][]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [newCustomer, setNewCustomer] = useState(false)
   const formRef = useRef<HTMLFormElement>(null)
   const agents = useAsync(() => fetchAgents().catch(() => []), [])
   // A field's error goes as soon as the field is changed.
@@ -105,6 +109,11 @@ export function NewTicketForm({ form, conversation, customer, pipelineId, onCrea
   }
 
   const label = (text: string, required: boolean) => (required ? `${text} *` : text)
+  // Matching customers appear under the later of the phone / email fields.
+  const order = form.fields.map((f) => (f.kind === 'STANDARD' ? f.standard_key : ''))
+  const matchHost = order.lastIndexOf('customer_email') > order.lastIndexOf('customer_phone') ? 'customer_email' : 'customer_phone'
+  const matches = <CustomerMatchPanel key="matches" phone={v.customer_phone} email={v.customer_email}
+    onPick={(c) => { setPicked(c); clear('customer', 'customer_phone', 'customer_email') }} onCreate={() => setNewCustomer(true)} />
   const standard = (f: Extract<FormField, { kind: 'STANDARD' }>) => {
     const req = f.required
     switch (f.standard_key) {
@@ -114,17 +123,21 @@ export function NewTicketForm({ form, conversation, customer, pipelineId, onCrea
       case 'customer':
         return conversation ? null : <Field key="customer" label="Customer" htmlFor="tk-customer" error={errors.customer} className="sm:col-span-2"
           hint={!picked && (has('customer_phone') || has('customer_email')) ? 'Or enter the phone number or email address below.' : undefined}>
-          <div data-invalid={Boolean(errors.customer) || undefined}><CustomerPicker id="tk-customer" value={picked} onChange={(c) => { setPicked(c); clear('customer') }} /></div></Field>
+          <div data-invalid={Boolean(errors.customer) || undefined}><CustomerPicker id="tk-customer" value={picked} onChange={(c) => { setPicked(c); clear('customer') }} /></div>
+          {picked && <a className="inline-flex items-center gap-0.5 text-xs text-primary hover:underline" href={`/support/customers/${picked.id}`} target="_blank" rel="noreferrer"
+            data-testid="picked-customer-profile">Open customer profile<ExternalLink className="size-3" /></a>}</Field>
       case 'products':
         return showProducts ? <Field key="products" label={label('Products (Product Master)', req)} htmlFor="tk-products" error={errors.products} className="sm:col-span-2">
           <ProductMasterPicker value={products} onChange={(x) => { setProducts(x); clear('products') }} canIncludeArchived={form.products.archived} includeArchived={includeArchived} onIncludeArchived={setIncludeArchived}
             invalid={Boolean(errors.products)} /></Field> : null
       case 'customer_phone':
-        return conversation || picked ? null : <Field key="phone" label="Phone" htmlFor="tk-phone" error={errors.customer_phone}>
-          <Input id="tk-phone" value={v.customer_phone} onChange={set('customer_phone')} inputMode="tel" aria-invalid={Boolean(errors.customer_phone) || undefined} /></Field>
+        return conversation || picked ? null : [<Field key="phone" label="Phone" htmlFor="tk-phone" error={errors.customer_phone}>
+          <Input id="tk-phone" value={v.customer_phone} onChange={set('customer_phone')} inputMode="tel" aria-invalid={Boolean(errors.customer_phone) || undefined} /></Field>,
+          matchHost === 'customer_phone' && matches]
       case 'customer_email':
-        return conversation || picked ? null : <Field key="email" label="Email" htmlFor="tk-email" error={errors.customer_email}>
-          <Input id="tk-email" value={v.customer_email} onChange={set('customer_email')} inputMode="email" aria-invalid={Boolean(errors.customer_email) || undefined} /></Field>
+        return conversation || picked ? null : [<Field key="email" label="Email" htmlFor="tk-email" error={errors.customer_email}>
+          <Input id="tk-email" value={v.customer_email} onChange={set('customer_email')} inputMode="email" aria-invalid={Boolean(errors.customer_email) || undefined} /></Field>,
+          matchHost === 'customer_email' && matches]
       case 'priority':
         return <Field key="priority" label="Priority" htmlFor="tk-priority">
           <Select value={v.priority} onValueChange={(p) => setV((x) => ({ ...x, priority: p as Priority }))}>
@@ -166,6 +179,8 @@ export function NewTicketForm({ form, conversation, customer, pipelineId, onCrea
           <Button type="submit" disabled={busy} data-testid="create-ticket">{busy && <Loader2 className="animate-spin" />}Create ticket</Button>
         </DialogFooter>
       </div>
+      {renderCustomerDialog?.({ open: newCustomer, onOpenChange: setNewCustomer, preset: { phones: v.customer_phone.trim(), emails: v.customer_email.trim() },
+        onSaved: (id, l) => { setPicked({ id, label: l ?? 'New customer' }); clear('customer', 'customer_phone', 'customer_email') } })}
     </form>
   )
 }

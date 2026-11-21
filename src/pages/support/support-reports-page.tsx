@@ -19,6 +19,7 @@ import { describeDataError } from '@/lib/errors'
 import { formatNumber, toIsoDate } from '@/lib/format'
 import { fetchSupportReports, type SupportReports } from '@/services/support'
 import { PipelineReportSection } from '@/features/support/pipeline/pipeline-report'
+import { CustomerReportSection } from '@/features/support/customers/customer-report'
 import { UnifiedReportsSection } from '@/features/support/support-unified-components'
 
 function exportSheets(r: SupportReports) {
@@ -109,6 +110,7 @@ export default function SupportReportsPage() {
       </div>
       <div className="mt-4"><UnifiedReportsSection from={from} to={to} /></div>
       <div className="mt-4"><PipelineReportSection from={from} to={to} /></div>
+      <div className="mt-4"><CustomerReportSection from={from} to={to} /></div>
     </>
   )
 }

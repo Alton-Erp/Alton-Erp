@@ -52,6 +52,17 @@ export const STANDARD_KEYS = ['subject', 'customer', 'products', 'customer_phone
 export type StandardKey = (typeof STANDARD_KEYS)[number]
 export interface StandardField { standard_key: StandardKey; label: string; field_type: string; locked: boolean; required: boolean; required_editable: boolean }
 
+export type FieldModule = 'TICKET' | 'CUSTOMER'
+/** Wording of each field module in the builder. */
+export const MODULE_META: Record<FieldModule, { form: string; record: string; plural: string }> = {
+  TICKET: { form: 'New Ticket form', record: 'ticket', plural: 'tickets' },
+  CUSTOMER: { form: 'customer form', record: 'customer', plural: 'customers' },
+}
+/** Customer system fields (set automatically). */
+export const CUSTOMER_SYSTEM_FIELDS = [
+  { key: 'customer_code', label: 'Customer Code' }, { key: 'customer_id', label: 'Customer ID' }, { key: 'company_id', label: 'Company ID' }, { key: 'created_at', label: 'Created At' },
+] as const
+
 /** System fields: shown in the builder, never on the form, never editable. */
 export const SYSTEM_FIELDS = [
   { key: 'ticket_number', label: 'Ticket Number' }, { key: 'ticket_id', label: 'Ticket ID' }, { key: 'company_id', label: 'Company ID' }, { key: 'created_at', label: 'Created At' },
