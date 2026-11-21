@@ -148,6 +148,13 @@ export const PERMISSIONS = [
   'support.manage_integrations',
   'support.view_reports',
   'support.manage_settings',
+  // Support ticket fields and Product Master links (migration 20261226090000)
+  'support_ticket_fields.view',
+  'support_ticket_fields.create',
+  'support_ticket_fields.update',
+  'support_ticket_fields.delete',
+  'support_ticket_products.view',
+  'support_ticket_products.manage',
 ] as const
 
 export type PermissionCode = (typeof PERMISSIONS)[number]

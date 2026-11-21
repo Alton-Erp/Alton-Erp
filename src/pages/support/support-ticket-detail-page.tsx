@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { AgentSelect, ChannelIcon, ChannelLabel, ConversationStatusBadge, Field, InfoList, PriorityBadge, SlaBadge, TicketStatusBadge, Timeline } from '@/features/support/support-components'
 import { TicketSlaPanel } from '@/features/support/support-unified-components'
+import { TicketExtrasCards } from '@/features/support/ticket-fields/ticket-extras'
 import { useSupportPermissions } from '@/features/support/use-support-permissions'
 import { ReasonDialog } from '@/features/support/support-dialogs'
 import { CallButton } from '@/features/support/phone-components'
@@ -96,6 +97,7 @@ export default function SupportTicketDetailPage() {
             </CardContent>
           </Card>
           {editable && <EditTicket key={t.updated_at} d={d} onSave={(p) => act(() => updateTicket(t.id, p), 'Ticket updated.')} />}
+          <TicketExtrasCards ticketId={t.id} refreshKey={refresh} onChanged={(n) => { setError(null); setNotice(n); reload() }} />
           <Card>
             <CardHeader><div><CardTitle>Conversations</CardTitle><CardDescription>Calls, WhatsApp and emails linked to this ticket.</CardDescription></div></CardHeader>
             <CardContent>

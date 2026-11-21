@@ -713,6 +713,23 @@ const GMAIL = { connected: false, sendOutcome: 'PENDING', sendCalls: [], startCa
 const SYNC = { status: null, schedule: null }
 // Support live updates (20261225090000): served only by its own step (others see the pre-migration fallback).
 const LIVE = { on: false, summary: null, handled: [] }
+// Ticket field builder + Product Master links (20261226090000): served only by its own step.
+const TF_STANDARD = [['subject', 'Subject', 'TEXT', true, true, false], ['customer', 'Customer', 'LOOKUP', true, false, false], ['products', 'Products (Product Master)', 'PRODUCTS', false, false, true],
+  ['customer_phone', 'Phone', 'PHONE', false, false, false], ['customer_email', 'Email', 'EMAIL', false, false, false], ['priority', 'Priority', 'PICKLIST', false, false, false],
+  ['assigned_agent', 'Assigned agent', 'USER', false, false, true], ['category', 'Category', 'TEXT', false, false, true], ['subcategory', 'Subcategory', 'TEXT', false, false, true],
+  ['department', 'Department', 'TEXT', false, false, true], ['description', 'Description', 'TEXTAREA', false, false, true]]
+  .map(([standard_key, label, field_type, locked, required, required_editable]) => ({ standard_key, label, field_type, locked, required, required_editable }))
+const tfDef = (id, field_key, field_label, field_type, field_config = {}, over = {}) => ({ id, field_key, field_label, field_type, field_config, is_required: false, is_active: true, default_value: null,
+  help_text: null, placeholder: null, visibility: 'ALL_AGENTS', created_at: NOW, updated_at: NOW, value_count: 0, ...over })
+const TF = { on: false, stamp: 's0', defs: [], layout: null, values: {}, links: [], saves: [], creates: [], fieldSaves: [], productSaves: [] }
+const TF_CATALOGUE = [{ id: 'pm1', sku: 'WB-500', product_name: 'Wall Hung Basin White', model_number: 'WHB-500', barcode: 'BC778899', ean: '4006381333931', brand: null, base_unit: 'PCS', archived: false },
+  { id: 'pm2', sku: 'TAP-22', product_name: 'Pillar Tap Chrome', model_number: 'PTC-22', barcode: null, ean: null, brand: null, base_unit: 'PCS', archived: false }]
+const tfLayout = () => TF.layout ?? TF_STANDARD.map((x) => ({ standard_key: x.standard_key, field_definition_id: null, is_required_override: null, is_visible: true }))
+const tfForm = () => ({ fields: tfLayout().filter((l) => l.is_visible).map((l) => {
+    if (l.standard_key) { const x = TF_STANDARD.find((y) => y.standard_key === l.standard_key); return { kind: 'STANDARD', ...x, required: x.required_editable ? Boolean(l.is_required_override) : x.required } }
+    const d = TF.defs.find((y) => y.id === l.field_definition_id)
+    return d && d.is_active ? { ...d, kind: 'CUSTOM', required: Boolean(l.is_required_override ?? d.is_required) } : null
+  }).filter(Boolean), formula_inputs: [], products: { view: true, manage: true, archived: false } })
 const GMAIL_CONFIG = () => ({
   config: { channel_account_id: 'sca-mail', provider: 'GOOGLE_WORKSPACE', mailbox_address: 'support@alton.example', display_name: 'Alton Support', signature: 'Alton Support Team',
     pubsub_topic: 'projects/alton-erp-123/topics/gmail-support', push_enabled: true, mailbox_modify_enabled: false, initial_sync_days: 7, max_attachment_mb: 10,
@@ -2236,6 +2253,65 @@ const api = http.createServer((req, res) => {
           PHONE_CONFIG.config.is_enabled = false
           PHONE_CONFIG.config.disconnected_at = new Date().toISOString()
           return send(res, 200, null)
+        case 'support_ticket_fields_admin': case 'support_ticket_form': case 'support_ticket_extras': case 'support_ticket_field_save': case 'support_ticket_fields_save_layout':
+        case 'support_ticket_create_v2': case 'support_ticket_product_search': case 'support_ticket_custom_fields_save': case 'support_ticket_products_save': case 'support_ticket_user_options':
+        case 'support_ticket_lookup_search': {
+          if (!TF.on) return send(res, 404, { code: 'PGRST202', message: `Could not find the function public.${fn}` })
+          if (fn === 'support_ticket_fields_admin') {
+            return send(res, 200, { stamp: TF.stamp, max_custom: 25, active_custom: TF.defs.filter((d) => d.is_active).length, standard: TF_STANDARD, definitions: TF.defs,
+              layout: tfLayout().map((l, i) => ({ ...l, display_order: (i + 1) * 10 })), can: { create: true, update: true, delete: true } })
+          }
+          if (fn === 'support_ticket_form') return send(res, 200, tfForm())
+          if (fn === 'support_ticket_field_save') {
+            TF.fieldSaves.push(body)
+            if (body.p_id) { const d = TF.defs.find((x) => x.id === body.p_id); Object.assign(d, body.p); return send(res, 200, d) }
+            const d = tfDef(`tfd${TF.defs.length + 1}`, `cf_${body.p.field_label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')}`, body.p.field_label, body.p.field_type,
+              body.p.field_type === 'CURRENCY' ? { currency: 'INR', ...body.p.field_config } : body.p.field_config, { is_required: body.p.is_required, help_text: body.p.help_text })
+            TF.defs.push(d)
+            return send(res, 200, d)
+          }
+          if (fn === 'support_ticket_fields_save_layout') {
+            TF.saves.push(body)
+            if (body.p_stamp !== TF.stamp) return send(res, 400, { code: 'P0001', message: 'Someone else changed the ticket fields since you opened this page. Reload to see their changes, then make yours again.' })
+            const vis = body.p_used.map((x) => ({ standard_key: x.standard_key ?? null, field_definition_id: x.field_definition_id ?? null, is_required_override: x.is_required ?? null, is_visible: true }))
+            const hidden = [...TF_STANDARD.filter((x) => !vis.some((v) => v.standard_key === x.standard_key)).map((x) => ({ standard_key: x.standard_key, field_definition_id: null, is_required_override: null, is_visible: false })),
+              ...TF.defs.filter((d) => !vis.some((v) => v.field_definition_id === d.id)).map((d) => ({ standard_key: null, field_definition_id: d.id, is_required_override: null, is_visible: false }))]
+            TF.layout = [...vis, ...hidden]
+            TF.stamp = `s${TF.saves.length}`
+            return send(res, 200, { stamp: TF.stamp })
+          }
+          if (fn === 'support_ticket_create_v2') {
+            TF.creates.push(body.p)
+            TF.values = Object.fromEntries(Object.entries(body.p.custom_fields).filter(([, v]) => v !== null).map(([k, v]) => {
+              const d = TF.defs.find((x) => x.field_key === k)
+              return [k, d?.field_type === 'PICKLIST' ? { id: v, label: d.field_config.options.find((o) => o.id === v)?.label } : d?.field_type === 'NUMBER' ? Number(v) : v]
+            }))
+            TF.links = body.p.products.map((x, i) => { const c = TF_CATALOGUE.find((y) => y.id === x.product_id); return { id: `tl${i}`, product_id: c.id, quantity: Number(x.quantity), product_name: c.product_name, sku: c.sku,
+              product_name_snapshot: c.product_name, sku_snapshot: c.sku, model_number: c.model_number, barcode: c.barcode, ean: c.ean, base_unit: c.base_unit, archived: false, added_at: NOW, added_by: 'Smoke Tester' } })
+            return send(res, 200, { id: 'st9', ticket_number: 'ALT-SUP-000009', custom_fields: Object.keys(TF.values).length, products: TF.links.length })
+          }
+          if (fn === 'support_ticket_extras') {
+            return send(res, 200, { fields: TF.defs.filter((d) => d.is_active).map((d) => ({ ...d, value: TF.values[d.field_key] ?? null, in_form: true, required: d.is_required })),
+              formula_inputs: {}, products: TF.links, can: { edit_fields: true, manage_products: true, archived_products: false } })
+          }
+          if (fn === 'support_ticket_custom_fields_save') {
+            TF.fieldSaves.push(body)
+            for (const [k, v] of Object.entries(body.p_values)) { const d = TF.defs.find((x) => x.field_key === k); TF.values[k] = d?.field_type === 'NUMBER' ? Number(v) : v }
+            return send(res, 200, { changed: Object.keys(body.p_values) })
+          }
+          if (fn === 'support_ticket_products_save') {
+            TF.productSaves.push(body)
+            const removed = TF.links.filter((l) => !body.p_items.some((x) => x.product_id === l.product_id)).map((l) => l.sku)
+            TF.links = TF.links.filter((l) => body.p_items.some((x) => x.product_id === l.product_id)).map((l) => ({ ...l, quantity: Number(body.p_items.find((x) => x.product_id === l.product_id).quantity) }))
+            return send(res, 200, { added: [], removed, changed: [] })
+          }
+          if (fn === 'support_ticket_product_search') {
+            const t = String(body.p_term).toLowerCase()
+            return send(res, 200, TF_CATALOGUE.filter((c) => [c.sku, c.product_name, c.model_number, c.barcode, c.ean].some((x) => x && x.toLowerCase().includes(t))))
+          }
+          if (fn === 'support_ticket_user_options') return send(res, 200, [{ id: MANAGER_ID, name: 'Smoke Tester', is_agent: true }])
+          return send(res, 200, [])
+        }
         case 'support_live_summary':
           if (!LIVE.on) return send(res, 404, { code: 'PGRST202', message: 'Could not find the function public.support_live_summary' })
           return send(res, 200, LIVE.summary)
@@ -8224,6 +8300,155 @@ await step('Email sync progress: batches continue on the server, progress and re
     USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
     emailChannel.status = before
     SYNC.status = null; SYNC.schedule = null; GMAIL.connected = false
+  }
+})
+
+await step('Support ticket fields: field builder (system fields locked, drag and drop, add custom field, required, remove, unsaved-changes warning, stale save refused), dynamic New Ticket form (order, required validation, two columns / one on mobile), Product Master selector (search, several products, quantities), ticket page values and products with Edit', async () => {
+  const PERMS = ['support.view', 'support.manage_tickets', 'support.assign', 'support.reply', 'support.manage_settings', 'support_ticket_fields.view', 'support_ticket_fields.create',
+    'support_ticket_fields.update', 'support_ticket_fields.delete', 'support_ticket_products.view', 'support_ticket_products.manage']
+  USERS['manager@test.invalid'].permissions.push(...PERMS)
+  TF.on = true; TF.stamp = 's0'; TF.layout = null; TF.values = {}; TF.links = []; TF.saves = []; TF.creates = []; TF.fieldSaves = []; TF.productSaves = []
+  TF.defs = [tfDef('tfd1', 'cf_complaint_type', 'Complaint type', 'PICKLIST', { options: [{ id: 'opt_damaged', label: 'Damaged' }, { id: 'opt_missing', label: 'Missing part' }] }, { is_required: true, value_count: 4 }),
+    tfDef('tfd2', 'cf_units_affected', 'Units affected', 'NUMBER', { number_kind: 'INTEGER', decimals: 0, min: 1, max: 1000 })]
+  const usedOrder = `[...document.querySelectorAll('[data-testid=used-fields] > li')].map((li) => li.dataset.testid.replace('used-', '')).join()`
+  try {
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+    await setViewport(1440, 900)
+    await goto('/support/settings?tab=fields')
+    await waitFor(`!!document.querySelector('[data-testid=ticket-field-builder]')`, 'builder')
+    assert(await evaluate(`['ticket_number','ticket_id','company_id','created_at'].every((k) => !!document.querySelector('[data-testid=system-' + k + ']'))`), 'system fields shown, locked')
+    assert((await evaluate(usedOrder)) === 'subject,customer,products,customer_phone,customer_email,priority,assigned_agent,category,subcategory,department,description', await evaluate(usedOrder))
+    assert(await evaluate(`document.querySelector('[data-testid=used-subject] button[aria-label="Remove Subject from the form"]').disabled`), 'Subject cannot be removed')
+    assert(await evaluate(`document.querySelector('[data-testid=custom-field-count]').innerText === '2 of 25 custom fields used'`), 'counter')
+    assert(await evaluate(`!!document.querySelector('[data-testid=unused-cf_complaint_type]') && document.querySelector('[data-testid=unused-cf_units_affected]').innerText.includes('Numerical')`), 'unused custom fields with type')
+    await fill('[data-testid=field-search]', 'units')
+    await waitFor(`!document.querySelector('[data-testid=unused-cf_complaint_type]') && !!document.querySelector('[data-testid=unused-cf_units_affected]')`, 'search filters unused fields')
+    await fill('[data-testid=field-search]', '')
+    // Add Custom Field (modal): key generated from the label, created now, placed at the end of the working layout.
+    await click('[data-testid=add-custom-field]')
+    await waitFor(`!!document.querySelector('[data-testid=custom-field-dialog]')`, 'custom field dialog')
+    await fill('#cf-label', 'Claim amount')
+    await choose('#cf-type', 'Currency')
+    await waitFor(`document.querySelector('[data-testid=cf-key]').innerText.includes('cf_claim_amount') && document.querySelector('#cf-cur').value === 'INR'`, 'key preview and INR default')
+    await screenshot('270-ticket-custom-field-dialog')
+    await click('[data-testid=cf-save]')
+    await waitFor(`!document.querySelector('[data-testid=custom-field-dialog]') && !!document.querySelector('[data-testid=used-cf_claim_amount]')`, 'created and placed on the form')
+    assert(TF.fieldSaves[0].p.field_type === 'CURRENCY' && TF.fieldSaves[0].p.field_label === 'Claim amount', JSON.stringify(TF.fieldSaves[0]))
+    await waitFor(`!!document.querySelector('[data-testid=unsaved-changes]')`, 'unsaved changes shown')
+    // Drag an unused field into the form, before Priority.
+    await evaluate(`(() => {
+      const src = document.querySelector('[data-testid=unused-cf_complaint_type]'); const dst = document.querySelector('[data-testid=used-priority]'); const dt = new DataTransfer()
+      src.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }))
+      const r = dst.getBoundingClientRect()
+      dst.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt, clientY: r.top + 2 }))
+      dst.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt, clientY: r.top + 2 }))
+      return true })()`)
+    await waitFor(`${usedOrder}.includes('customer_email,cf_complaint_type,priority')`, 'dragged into place')
+    // Reorder by dragging within the form: Description to just after Products.
+    await evaluate(`(() => {
+      const src = document.querySelector('[data-testid=used-description]'); const dst = document.querySelector('[data-testid=used-customer_phone]'); const dt = new DataTransfer()
+      src.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }))
+      const r = dst.getBoundingClientRect()
+      dst.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt, clientY: r.top + 2 }))
+      dst.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt, clientY: r.top + 2 }))
+      return true })()`)
+    await waitFor(`${usedOrder}.startsWith('subject,customer,products,description,customer_phone')`, 'reordered by drag')
+    // Remove Department and Subcategory (they become unused); make Category required; move Claim amount up with the keyboard button.
+    await click('[data-testid=used-department] button[aria-label="Remove Department from the form"]')
+    await click('[data-testid=used-subcategory] button[aria-label="Remove Subcategory from the form"]')
+    await waitFor(`!!document.querySelector('[data-testid=unused-department]')`, 'removed field listed as unused')
+    await click('[data-testid=used-category] input[type=checkbox]')
+    await click('[data-testid=used-cf_claim_amount] button[aria-label="Move Claim amount up"]')
+    assert(await evaluate(`!!document.querySelector('[data-testid=used-category] [data-testid=required-mark]') && !!document.querySelector('[data-testid=used-cf_complaint_type] [data-testid=required-mark]')`), 'required marks')
+    await screenshot('271-ticket-field-builder')
+    // Leaving with unsaved changes asks first (declined: stays on the builder).
+    await evaluate(`window.__confirms = []; window.confirm = (m) => { window.__confirms.push(m); return false }`)
+    await click('button', 'Agents')
+    assert(await evaluate(`window.__confirms.length === 1 && /unsaved changes/.test(window.__confirms[0]) && !!document.querySelector('[data-testid=ticket-field-builder]')`), 'tab change warned and cancelled')
+    await click('a[href="/support/tickets"]')
+    assert(await evaluate(`window.__confirms.length === 2 && location.pathname === '/support/settings'`), 'link warned and cancelled')
+    // Save.
+    await click('[data-testid=save-layout]')
+    await waitFor(`!document.querySelector('[data-testid=unsaved-changes]') && ${bodyHas('Ticket fields saved')}`, 'saved')
+    const sent = TF.saves.at(-1)
+    const keys = sent.p_used.map((x) => x.standard_key ?? x.field_definition_id).join()
+    assert(sent.p_stamp === 's0' && keys === 'subject,customer,products,description,customer_phone,customer_email,tfd1,priority,assigned_agent,tfd3,category', keys)
+    assert(sent.p_used.find((x) => x.standard_key === 'category').is_required === true, 'category required sent')
+    // Someone else saved meanwhile: refused with a clear message, nothing lost.
+    TF.stamp = 'other-admin'
+    await click('[data-testid=unused-cf_units_affected] button[aria-label="Add Units affected to the form"]')
+    await click('[data-testid=save-layout]')
+    await waitFor(bodyHas('Someone else changed the ticket fields'), 'stale save refused')
+    assert(await evaluate(`!!document.querySelector('[data-testid=unsaved-changes]') && !!document.querySelector('[data-testid=used-cf_units_affected]')`), 'working copy kept')
+    // Cancel discards the working copy (asks first), so nothing is left unsaved.
+    await evaluate(`window.confirm = () => true`)
+    await click('button', 'Cancel')
+    await waitFor(`!document.querySelector('[data-testid=unsaved-changes]') && !document.querySelector('[data-testid=used-cf_units_affected]')`, 'changes discarded')
+    await goto('/support/tickets')
+
+    // New Ticket with the configured layout.
+    await waitFor(`!!document.querySelector('[data-testid=new-ticket]')`, 'tickets page')
+    await click('[data-testid=new-ticket]')
+    await waitFor(`!!document.querySelector('[data-testid=new-ticket-form]')`, 'configured form')
+    const labels = await evaluate(`[...document.querySelectorAll('[data-testid=new-ticket-form] label')].map((l) => l.innerText.trim()).filter(Boolean).join('|')`)
+    assert(/^Subject \*\|Customer\|Products \(Product Master\)\|Description\|Phone\|Email\|Complaint type \*\|Priority\|Assigned agent\|Claim amount\|Category \*/.test(labels), labels)
+    assert(!labels.includes('Department') && !labels.includes('Subcategory'), 'removed fields not on the form')
+    assert(await evaluate(`getComputedStyle(document.querySelector('[data-testid=new-ticket-form] > div')).gridTemplateColumns.split(' ').length === 2`), 'two columns on desktop')
+    await click('[data-testid=create-ticket]')
+    await waitFor(`!!document.querySelector('[data-testid=missing-fields]')`, 'required validation')
+    const missing = await evaluate(`document.querySelector('[data-testid=missing-fields]').innerText`)
+    assert(/Subject/.test(missing) && /Complaint type/.test(missing) && /Category/.test(missing) && /Customer/.test(missing), missing)
+    assert(TF.creates.length === 0, 'nothing sent while required fields are missing')
+    await fill('#tk-subject', 'Basin cracked on arrival')
+    await fill('#tk-email', 'ravi@customer.example')
+    await fill('#tk-category', 'Damage')
+    await choose('#tk-cf-cf_complaint_type', 'Damaged')
+    await fill('#tk-cf-cf_claim_amount', '1500.5')
+    // Product Master selector: search by name and by EAN, two products, quantity.
+    await fill('#tk-products', 'basin')
+    await waitFor(`!!document.querySelector('[data-testid=product-hit-WB-500]')`, 'product results')
+    assert(await evaluate(`document.querySelector('[data-testid=product-hit-WB-500]').innerText.includes('EAN 4006381333931') && document.querySelector('[data-testid=product-hit-WB-500]').innerText.includes('Code WHB-500')`), 'identifiers shown')
+    await click('[data-testid=product-hit-WB-500]')
+    await fill('#tk-products', 'PTC')
+    await waitFor(`!!document.querySelector('[data-testid=product-hit-TAP-22]')`, 'search by product code')
+    await click('[data-testid=product-hit-TAP-22]')
+    await waitFor(`document.querySelectorAll('[data-testid=picked-products] > li').length === 2`, 'two products')
+    await fill('[aria-label="Quantity of WB-500"]', '2')
+    assert(await evaluate(`!document.querySelector('[data-testid=missing-fields]') && !document.querySelector('#tk-subject[aria-invalid=true]')`), 'errors clear once the fields are filled')
+    await screenshot('272-new-ticket-custom-fields')
+    await setViewport(390, 844)
+    await sleep(200)
+    assert(await evaluate(`getComputedStyle(document.querySelector('[data-testid=new-ticket-form] > div')).gridTemplateColumns.split(' ').length === 1 && document.documentElement.scrollWidth <= innerWidth
+      && (() => { const b = document.querySelector('[data-testid=new-ticket-form] > div'); return b.scrollWidth <= b.clientWidth + 1 })()`), 'one column on mobile, no sideways scroll')
+    await screenshot('273-new-ticket-mobile')
+    await setViewport(1440, 900)
+    await click('[data-testid=create-ticket]')
+    await waitFor(`location.pathname === '/support/tickets/st9'`, 'ticket created')
+    const c = TF.creates[0]
+    assert(c.subject === 'Basin cracked on arrival' && c.category === 'Damage' && c.custom_fields.cf_complaint_type === 'opt_damaged' && c.custom_fields.cf_claim_amount?.amount === '1500.5', JSON.stringify(c))
+    assert(c.products.length === 2 && c.products[0].product_id === 'pm1' && c.products[0].quantity === '2' && c.products[1].product_id === 'pm2', JSON.stringify(c.products))
+
+    // Ticket page: values in order, products, Edit.
+    await waitFor(`!!document.querySelector('[data-testid=ticket-custom-fields]') && !!document.querySelector('[data-testid=ticket-products]')`, 'extras on the ticket page')
+    assert(await evaluate(`document.querySelector('[data-testid=cf-value-cf_complaint_type]').innerText.includes('Damaged') && /1,500\\.50/.test(document.querySelector('[data-testid=cf-value-cf_claim_amount]').innerText)`), 'values shown')
+    assert(await evaluate(`document.querySelector('[data-testid=ticket-product-WB-500]').innerText.includes('Wall Hung Basin White') && document.querySelector('[data-testid=ticket-product-WB-500]').innerText.includes('2 PCS')`), 'product with quantity')
+    await screenshot('274-ticket-custom-fields-products')
+    await click('[data-testid=edit-custom-fields]')
+    await fill('#te-cf-cf_units_affected', '3')
+    await click('[data-testid=save-custom-fields]')
+    await waitFor(bodyHas('1 field updated.'), 'custom field edited')
+    assert(JSON.stringify(TF.fieldSaves.at(-1).p_values) === JSON.stringify({ cf_units_affected: '3' }), JSON.stringify(TF.fieldSaves.at(-1)))
+    await click('[data-testid=edit-ticket-products]')
+    await click('[aria-label="Remove TAP-22"]')
+    await click('[data-testid=save-ticket-products]')
+    await waitFor(`${bodyHas('Products: 1 removed.')} && !document.querySelector('[data-testid=ticket-product-TAP-22]')`, 'product removed')
+    assert(TF.productSaves.at(-1).p_items.length === 1 && TF.productSaves.at(-1).p_items[0].product_id === 'pm1', JSON.stringify(TF.productSaves.at(-1)))
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+    TF.on = false
+    await setViewport(1440, 900)
   }
 })
 

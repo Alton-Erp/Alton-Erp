@@ -1,57 +1,30 @@
 import { AlertTriangle, Loader2 } from 'lucide-react'
-import { useEffect, useState, type ComponentProps } from 'react'
+import { useState, type ComponentProps } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { CustomerPicker } from '@/features/support/customer-picker'
 import { AgentSelect, Field } from '@/features/support/support-components'
 import {
   CALL_STATUSES, CALL_STATUS_LABELS, CHANNELS, CHANNEL_LABELS, PRIORITIES, PRIORITY_META, splitList, validateCustomer, validateLog, validateTicket,
   type Channel, type CustomerInput, type FieldErrors, type Priority, type TicketInput,
 } from '@/features/support/support-model'
+import { NewTicketForm } from '@/features/support/ticket-fields/new-ticket-form'
 import { useAsync } from '@/hooks/use-async'
 import { describeDataError } from '@/lib/errors'
 import {
-  createConversation, createTicket, fetchAgents, fetchCustomers, fetchErpCustomerOptions, saveCustomer, type CustomerProfile,
+  createConversation, createTicket, fetchAgents, fetchErpCustomerOptions, saveCustomer, type CustomerProfile,
 } from '@/services/support'
+import { fetchTicketForm } from '@/services/ticket-fields'
 
 function ErrorLine({ text }: { text: string | null }) {
   return text ? <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{text}</p> : null
 }
 
-/** Customer search box backed by the server (name, code, phone, email). */
-export function CustomerPicker({ value, onChange, id }: { value: { id: string; label: string } | null; onChange: (v: { id: string; label: string } | null) => void; id?: string }) {
-  const [term, setTerm] = useState('')
-  const [debounced, setDebounced] = useState('')
-  useEffect(() => { const t = setTimeout(() => setDebounced(term), 250); return () => clearTimeout(t) }, [term])
-  const results = useAsync(() => (debounced.trim().length >= 2 ? fetchCustomers(debounced, 8, 0) : Promise.resolve(null)), [debounced])
-  if (value) {
-    return (
-      <div className="flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm" data-testid="customer-picked">
-        <span className="truncate">{value.label}</span>
-        <Button type="button" size="sm" variant="ghost" onClick={() => onChange(null)}>Change</Button>
-      </div>
-    )
-  }
-  return (
-    <div className="space-y-1">
-      <Input id={id} value={term} onChange={(e) => setTerm(e.target.value)} placeholder="Search name, code, phone or email" autoComplete="off" />
-      {results.data && (
-        <ul className="max-h-48 overflow-auto rounded-md border text-sm">
-          {results.data.rows.length === 0 && <li className="px-3 py-2 text-muted-foreground">No customer found.</li>}
-          {results.data.rows.map((c) => (
-            <li key={c.id}><button type="button" className="w-full px-3 py-2 text-left hover:bg-muted"
-              onClick={() => onChange({ id: c.id, label: `${c.display_name} (${c.customer_code})` })}>
-              <span className="font-medium">{c.display_name}</span> <span className="text-xs text-muted-foreground">{c.customer_code} · {[...c.phones, ...c.emails].join(', ')}</span>
-            </button></li>
-          ))}
-        </ul>
-      )}
-    </div>
-  )
-}
+export { CustomerPicker }
 
 const emptyCustomer: CustomerInput = { display_name: '', company_name: '', phones: '', emails: '', address: '', notes: '' }
 
@@ -132,9 +105,36 @@ function CustomerForm({ open, onOpenChange, existing, preset, onSaved }: {
   )
 }
 
-/** New ticket, manually or from a conversation (the conversation's channel and customer are used). */
+/**
+ * New ticket, manually or from a conversation (the conversation's channel and customer are used). With the ticket
+ * field builder (20261226090000) the form follows the configured layout, custom fields and Product Master products;
+ * before that database update the earlier fixed form is shown.
+ */
 export function TicketFormDialog(props: ComponentProps<typeof TicketForm>) {
-  return props.open ? <TicketForm {...props} /> : null
+  return props.open ? <TicketFormLoader {...props} /> : null
+}
+
+function TicketFormLoader(props: ComponentProps<typeof TicketForm>) {
+  const layout = useAsync(() => fetchTicketForm().catch(() => null), [])
+  if (layout.loading && !layout.data) {
+    return (
+      <Dialog open={props.open} onOpenChange={props.onOpenChange}>
+        <DialogContent className="max-w-md"><DialogHeader><DialogTitle>New ticket</DialogTitle><DialogDescription>Loading the form…</DialogDescription></DialogHeader>
+          <Loader2 className="mx-auto size-6 animate-spin text-muted-foreground" /></DialogContent>
+      </Dialog>
+    )
+  }
+  if (!layout.data) return <TicketForm {...props} />
+  return (
+    <Dialog open={props.open} onOpenChange={props.onOpenChange}>
+      <DialogContent className="flex max-h-[92dvh] max-w-3xl flex-col gap-0 p-0" data-testid="ticket-dialog">
+        <DialogHeader className="border-b px-6 py-4"><DialogTitle>{props.conversation ? 'Create ticket from conversation' : 'New ticket'}</DialogTitle>
+          <DialogDescription>The ticket number and SLA targets are assigned when it is saved. <span className="text-red-600">*</span> = required.</DialogDescription></DialogHeader>
+        <NewTicketForm form={layout.data} conversation={props.conversation} customer={props.customer}
+          onCreated={(r) => { props.onCreated(r); props.onOpenChange(false) }} onCancel={() => props.onOpenChange(false)} />
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 function TicketForm({ open, onOpenChange, conversation, customer, onCreated }: {

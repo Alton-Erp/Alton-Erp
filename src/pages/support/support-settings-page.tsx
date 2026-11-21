@@ -1,5 +1,5 @@
 import { Loader2, Pencil, Plus, Trash2 } from 'lucide-react'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 
 import { EmptyState } from '@/components/common/empty-state'
 import { ErrorState } from '@/components/common/error-state'
@@ -19,6 +19,7 @@ import { PhoneSettings } from '@/features/support/phone-settings'
 import { EmailSettings } from '@/features/support/email-settings'
 import { WhatsAppSettings } from '@/features/support/whatsapp-settings'
 import { IntegrationHealthPanel, SlaCalendarSettings, TicketRulesSettings } from '@/features/support/support-unified-components'
+import { TicketFieldBuilder } from '@/features/support/ticket-fields/field-builder'
 import { ChannelLabel, Field, IntegrationBadge } from '@/features/support/support-components'
 import { useSupportPermissions } from '@/features/support/use-support-permissions'
 import { CHANNELS, CHANNEL_LABELS, PRESENCE_META, PRIORITIES, PRIORITY_META, TAG_COLORS, formatMinutes, type Channel, type Priority } from '@/features/support/support-model'
@@ -30,14 +31,22 @@ import {
   saveTag, type Agent, type ChannelAccount, type SlaPolicy, type TagRef,
 } from '@/services/support'
 
-type Tab = 'agents' | 'sla' | 'rules' | 'tags' | 'channels' | 'phone' | 'email' | 'whatsapp' | 'health' | 'numbering'
+type Tab = 'agents' | 'sla' | 'rules' | 'fields' | 'tags' | 'channels' | 'phone' | 'email' | 'whatsapp' | 'health' | 'numbering'
 
 /** /support/settings — agents, SLA policies, tags and channel integrations. */
 export default function SupportSettingsPage() {
   const perms = useSupportPermissions()
-  const [tab, setTab] = useUrlParam('tab', 'agents')
+  const [tab, setTabParam] = useUrlParam('tab', 'agents')
+  // The field builder warns before its unsaved layout is left behind (other tabs and links).
+  const fieldsDirty = useRef(false)
+  const setTab = (next: Tab) => {
+    if (fieldsDirty.current && next !== 'fields' && !window.confirm('The ticket field layout has unsaved changes. Leave without saving?')) return
+    fieldsDirty.current = false
+    setTabParam(next)
+  }
   const tabs: { value: Tab; label: string }[] = [
-    { value: 'agents', label: 'Agents' }, { value: 'sla', label: 'SLA policies' }, { value: 'rules', label: 'Ticket rules' }, { value: 'tags', label: 'Tags' },
+    { value: 'agents', label: 'Agents' }, { value: 'sla', label: 'SLA policies' }, { value: 'rules', label: 'Ticket rules' },
+    ...(perms.ticketFields ? [{ value: 'fields' as Tab, label: 'Ticket fields' }] : []), { value: 'tags', label: 'Tags' },
     ...(perms.integrations ? [{ value: 'channels' as Tab, label: 'Channel integrations' }, { value: 'phone' as Tab, label: 'Phone' }, { value: 'email' as Tab, label: 'Email' }, { value: 'whatsapp' as Tab, label: 'WhatsApp' }, { value: 'health' as Tab, label: 'Integration health' }] : []), { value: 'numbering', label: 'Ticket numbering' },
   ]
   const t = (tabs.some((x) => x.value === tab) ? tab : 'agents') as Tab
@@ -45,10 +54,11 @@ export default function SupportSettingsPage() {
     <>
       <PageHeader />
       <FilterTabs<Tab> label="Settings section" value={t} onChange={setTab} options={tabs} className="mb-4" />
-      {!perms.settings && t !== 'channels' && t !== 'phone' && t !== 'email' && t !== 'whatsapp' && t !== 'health' && <p className="mb-3 text-sm text-muted-foreground">Your role can view these settings; changing them needs support settings access.</p>}
+      {!perms.settings && t !== 'fields' && t !== 'channels' && t !== 'phone' && t !== 'email' && t !== 'whatsapp' && t !== 'health' && <p className="mb-3 text-sm text-muted-foreground">Your role can view these settings; changing them needs support settings access.</p>}
       {t === 'agents' && <AgentsTab canEdit={perms.settings} />}
       {t === 'sla' && <><SlaTab canEdit={perms.settings} /><div className="mt-4"><SlaCalendarSettings /></div></>}
       {t === 'rules' && <TicketRulesSettings />}
+      {t === 'fields' && perms.ticketFields && <TicketFieldBuilder onDirtyChange={(d) => { fieldsDirty.current = d }} />}
       {t === 'health' && perms.integrations && <IntegrationHealthPanel />}
       {t === 'tags' && <TagsTab canEdit={perms.settings} />}
       {t === 'channels' && perms.integrations && <ChannelsTab />}
