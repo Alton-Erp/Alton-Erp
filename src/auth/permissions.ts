@@ -155,6 +155,13 @@ export const PERMISSIONS = [
   'support_ticket_fields.delete',
   'support_ticket_products.view',
   'support_ticket_products.manage',
+  // Customer Support pipelines (migration 20261227090000)
+  'support_pipelines.view',
+  'support_pipelines.create',
+  'support_pipelines.update',
+  'support_pipelines.delete',
+  'support_pipelines.manage_stages',
+  'support_tickets.move_stage',
 ] as const
 
 export type PermissionCode = (typeof PERMISSIONS)[number]

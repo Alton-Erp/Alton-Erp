@@ -15,6 +15,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { AgentSelect, ChannelIcon, ChannelLabel, ConversationStatusBadge, Field, InfoList, PriorityBadge, SlaBadge, TicketStatusBadge, Timeline } from '@/features/support/support-components'
 import { TicketSlaPanel } from '@/features/support/support-unified-components'
 import { TicketExtrasCards } from '@/features/support/ticket-fields/ticket-extras'
+import { TicketStageCard } from '@/features/support/pipeline/ticket-stage-card'
 import { useSupportPermissions } from '@/features/support/use-support-permissions'
 import { ReasonDialog } from '@/features/support/support-dialogs'
 import { CallButton } from '@/features/support/phone-components'
@@ -112,6 +113,7 @@ export default function SupportTicketDetailPage() {
           </Card>
         </div>
         <div className="space-y-4">
+          <TicketStageCard ticketId={t.id} refreshKey={refresh} onMoved={(n) => { setError(null); setNotice(n); reload() }} />
           <Card>
             <CardContent className="pt-4"><TicketSlaPanel ticketId={t.id} timezone={tz ?? undefined} /></CardContent>
           </Card>

@@ -26,8 +26,9 @@ type Custom = Extract<FormField, { kind: 'CUSTOM' }>
  * the Product Master selector in the configured order; required fields checked here and again by the database,
  * which saves the ticket, its values and its products in one transaction.
  */
-export function NewTicketForm({ form, conversation, customer, onCreated, onCancel }: {
+export function NewTicketForm({ form, conversation, customer, pipelineId, onCreated, onCancel }: {
   form: TicketForm
+  pipelineId?: string | null
   conversation?: { id: string; subject: string | null } | null
   customer?: { id: string; label: string } | null
   onCreated: (r: { id: string; ticket_number: string }) => void
@@ -93,7 +94,7 @@ export function NewTicketForm({ form, conversation, customer, onCreated, onCance
       const r = await createTicketWithFields({ subject: v.subject.trim(), conversation_id: conversation?.id ?? null, customer_id: picked?.id ?? null,
         customer_phone: has('customer_phone') ? v.customer_phone.trim() || null : null, customer_email: has('customer_email') ? v.customer_email.trim() || null : null,
         priority: v.priority, category: v.category.trim() || null, subcategory: v.subcategory.trim() || null, department: v.department.trim() || null,
-        description: v.description.trim() || null, assigned_agent_id: agent, custom_fields: custom,
+        description: v.description.trim() || null, assigned_agent_id: agent, custom_fields: custom, ...(pipelineId ? { pipeline_id: pipelineId } : {}),
         products: showProducts ? products.map((p) => ({ product_id: p.product_id, quantity: p.quantity.trim() })) : [], allow_archived_products: includeArchived && products.some((p) => p.archived) })
       onCreated(r)
     } catch (e) {

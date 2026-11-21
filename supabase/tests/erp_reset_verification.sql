@@ -186,9 +186,9 @@ select rls_test.ok('catalogue: every listed table exists',
 -- enhancements add purchase_document_refs, the stock reliability migration production_order_requests (79 tables).
 -- The form drafts migration adds erp_form_drafts, master versioning production_order_revisions (81 tables); purchase cost intelligence adds its history and current-cost tables (83);
 -- BOM templates add bom_templates and bom_template_items (85); Cost Intelligence adds bom_cost_snapshots,
--- product_cost_profiles and product_cost_history (88), plus the 16 Support Centre tables of 20261210090000 (104), plus the 4 Acefone telephony tables of 20261211090000 (108), plus the 5 Gmail tables of 20261212090000 (113), plus the 6 WhatsApp tables of 20261213090000 (119), plus the 6 unified-support tables of 20261214090000 (125), plus call signals of 20261215090000 (126), plus the 3 bulk BOM change tables of 20261218090000 (129), plus support_conversation_prefs of 20261221090000 (130), plus support_email_thread_state of 20261222090000 (131), plus the 3 email sync tables of 20261224090000 (134), plus the 4 ticket field / ticket product tables of 20261226090000 (138).
-select rls_test.ok('catalogue: allowlist has 138 tables, no duplicates',
-  (select count(*) from private.erp_reset_tables()) = 138 and (select count(distinct table_name) from private.erp_reset_tables()) = 138);
+-- product_cost_profiles and product_cost_history (88), plus the 16 Support Centre tables of 20261210090000 (104), plus the 4 Acefone telephony tables of 20261211090000 (108), plus the 5 Gmail tables of 20261212090000 (113), plus the 6 WhatsApp tables of 20261213090000 (119), plus the 6 unified-support tables of 20261214090000 (125), plus call signals of 20261215090000 (126), plus the 3 bulk BOM change tables of 20261218090000 (129), plus support_conversation_prefs of 20261221090000 (130), plus support_email_thread_state of 20261222090000 (131), plus the 3 email sync tables of 20261224090000 (134), plus the 4 ticket field / ticket product tables of 20261226090000 (138), plus the 3 pipeline tables of 20261227090000 (141).
+select rls_test.ok('catalogue: allowlist has 141 tables, no duplicates',
+  (select count(*) from private.erp_reset_tables()) = 141 and (select count(distinct table_name) from private.erp_reset_tables()) = 141);
 select rls_test.ok('catalogue: every resettable table is company-scoped (company_id)',
   not exists (select 1 from private.erp_reset_tables() t where not exists (
     select 1 from information_schema.columns c where c.table_schema = 'public' and c.table_name = t.table_name and c.column_name = 'company_id')));
@@ -288,8 +288,9 @@ select rls_test.claims('b_sa');
 select rls_test.expect_call_ok('preview: Super Admin B gets the impact report', 'prev_b', $q$ select public.erp_reset_preview() $q$);
 select rls_test.ok('preview: company B can be reset (no protected records)', (rls_test.get('prev_b') ->> 'can_reset')::boolean, rls_test.get('prev_b') ->> 'blockers');
 -- V2: each customer and supplier has a ledger party (4 more rows: 2 customers, 2 suppliers incl. the kept one, recreated by ledger_sync_parties).
-select rls_test.ok('preview: delete total counts the fixtures (2 customers, code, supplier, 2 CPO revisions, notification, alert, sync job, sync error, request, 4 ledger parties)',
-  (rls_test.get('prev_b') ->> 'delete_total')::int = 15, rls_test.get('prev_b') ->> 'delete_total');
+-- 20261227090000: every company has its default support pipeline (1 pipeline + 6 stages = 7 more rows; recreated with the next ticket).
+select rls_test.ok('preview: delete total counts the fixtures (2 customers, code, supplier, 2 CPO revisions, notification, alert, sync job, sync error, request, 4 ledger parties, support pipeline + 6 stages)',
+  (rls_test.get('prev_b') ->> 'delete_total')::int = 22, rls_test.get('prev_b') ->> 'delete_total');
 select rls_test.ok('preview: one supplier is kept because a product names it',
   (rls_test.get('prev_b') ->> 'kept_suppliers')::int = 1);
 select rls_test.ok('preview: lists what is kept (profiles 4, products 2, documents 1)',
@@ -359,8 +360,8 @@ set local role service_role;
 select rls_test.expect_call_ok('execute: company B runs', 'run_b',
   format($q$ select public.erp_reset_execute(%L, %L, 'RESET ERP') $q$, rls_test.id('b_sa'), rls_test.id('req_b')));
 reset role;
-select rls_test.ok('completed: status COMPLETED with 15 records deleted (11 + 4 ledger parties)',
-  rls_test.get('run_b') ->> 'status' = 'COMPLETED' and (rls_test.get('run_b') ->> 'deleted_total')::int = 15 and (rls_test.get('run_b') -> 'deleted' ->> 'parties')::int = 4, rls_test.get('run_b')::text);
+select rls_test.ok('completed: status COMPLETED with 22 records deleted (11 + 4 ledger parties + support pipeline and its 6 stages)',
+  rls_test.get('run_b') ->> 'status' = 'COMPLETED' and (rls_test.get('run_b') ->> 'deleted_total')::int = 22 and (rls_test.get('run_b') -> 'deleted' ->> 'parties')::int = 4, rls_test.get('run_b')::text);
 select rls_test.ok('completed: per-table counts returned (customers 2, customer POs 2, suppliers 1)',
   (rls_test.get('run_b') -> 'deleted' ->> 'customers')::int = 2 and (rls_test.get('run_b') -> 'deleted' ->> 'customer_purchase_orders')::int = 2
   and (rls_test.get('run_b') -> 'deleted' ->> 'suppliers')::int = 1);
@@ -407,7 +408,7 @@ select rls_test.ok('completed: existing audit history kept, one completion event
   rls_test.n('audit_logs', rls_test.id('company_b')) = (rls_test.get('global_before') ->> 'audit_logs_b')::int + 1
   and exists (select 1 from public.audit_logs where company_id = rls_test.id('company_b') and action = 'erp_reset.completed'
               and actor_user_id = rls_test.id('b_sa') and resource_id = rls_test.get('run_b') ->> 'run_id'
-              and (metadata ->> 'deleted_total')::int = 15));
+              and (metadata ->> 'deleted_total')::int = 22));
 select rls_test.ok('completed: audit record and run contain no secrets',
   not exists (select 1 from public.audit_logs where company_id = rls_test.id('company_b') and action like 'erp_reset.%'
               and metadata::text ~* '(password|token|secret)')

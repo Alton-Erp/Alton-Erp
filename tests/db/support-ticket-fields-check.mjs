@@ -397,7 +397,8 @@ for (const q of [`select public.support_ticket_form()`, `select public.support_t
 }
 
 console.log('\nReset allowlist and rollback')
-ok('reset allowlist: four more tables (values and links before definitions and tickets)', Number(await val(`select count(*) from private.erp_reset_tables()`)) === 138
+const inReset = async () => Number(await val(`select count(*) from private.erp_reset_tables() where table_name in ('support_ticket_field_definitions', 'support_ticket_field_layout', 'support_ticket_field_values', 'support_ticket_products')`))
+ok('reset allowlist: the four tables (values and links before definitions and tickets)', (await inReset()) === 4
   && Number(await val(`select ord from private.erp_reset_tables() where table_name = 'support_ticket_field_values'`)) < Number(await val(`select ord from private.erp_reset_tables() where table_name = 'support_ticket_field_definitions'`)))
 const down = await read(path.join(root, 'supabase', 'rollback', `${NAME}_down.sql`))
 await db.exec('reset role')
@@ -408,10 +409,10 @@ await db.exec(down)
 await db.exec(`reset app.support_ticket_fields_rollback_force`)
 ok('rollback (forced): tables and functions gone, tickets kept', !(await val(`select to_regclass('public.support_ticket_field_values') is not null`))
   && !(await val(`select exists (select 1 from pg_proc where proname = 'support_ticket_create_v2')`)) && Number(await val(`select count(*) from public.support_tickets where id = $1`, [t1.id])) === 1)
-ok('rollback restores the previous reset allowlist and removes the permissions', Number(await val(`select count(*) from private.erp_reset_tables()`)) === 134
-  && Number(await val(`select count(*) from public.permissions where resource like 'support_ticket_%'`)) === 0)
+ok('rollback restores the previous reset allowlist and removes the permissions', (await inReset()) === 0
+  && Number(await val(`select count(*) from public.permissions where resource in ('support_ticket_fields', 'support_ticket_products')`)) === 0)
 await db.exec(await read(path.join(migDir, `${NAME}.sql`)))
-ok('re-applies after the rollback', Number(await val(`select count(*) from private.erp_reset_tables()`)) === 138 && !(await request('op', `select public.support_ticket_form()`)).error)
+ok('re-applies after the rollback', (await inReset()) === 4 && !(await request('op', `select public.support_ticket_form()`)).error)
 
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)

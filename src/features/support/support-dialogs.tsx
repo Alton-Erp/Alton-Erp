@@ -130,7 +130,7 @@ function TicketFormLoader(props: ComponentProps<typeof TicketForm>) {
       <DialogContent className="flex max-h-[92dvh] max-w-3xl flex-col gap-0 p-0" data-testid="ticket-dialog">
         <DialogHeader className="border-b px-6 py-4"><DialogTitle>{props.conversation ? 'Create ticket from conversation' : 'New ticket'}</DialogTitle>
           <DialogDescription>The ticket number and SLA targets are assigned when it is saved. <span className="text-red-600">*</span> = required.</DialogDescription></DialogHeader>
-        <NewTicketForm form={layout.data} conversation={props.conversation} customer={props.customer}
+        <NewTicketForm form={layout.data} conversation={props.conversation} customer={props.customer} pipelineId={props.pipelineId}
           onCreated={(r) => { props.onCreated(r); props.onOpenChange(false) }} onCancel={() => props.onOpenChange(false)} />
       </DialogContent>
     </Dialog>
@@ -138,6 +138,8 @@ function TicketFormLoader(props: ComponentProps<typeof TicketForm>) {
 }
 
 function TicketForm({ open, onOpenChange, conversation, customer, onCreated }: {
+  /** The pipeline board the ticket is created from (the configured form only; otherwise the default pipeline). */
+  pipelineId?: string | null
   open: boolean; onOpenChange: (o: boolean) => void
   conversation?: { id: string; subject: string | null } | null
   customer?: { id: string; label: string } | null

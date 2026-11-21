@@ -45,7 +45,7 @@ export async function fetchTicketForm(): Promise<TicketForm | null> {
 }
 
 export interface TicketProductInput { product_id: string; quantity: number | string }
-export const createTicketWithFields = (p: TicketCreate & { custom_fields: Record<string, unknown>; products: TicketProductInput[]; allow_archived_products?: boolean }) =>
+export const createTicketWithFields = (p: TicketCreate & { custom_fields: Record<string, unknown>; products: TicketProductInput[]; allow_archived_products?: boolean; pipeline_id?: string }) =>
   rpc<{ id: string; ticket_number: string; custom_fields: number; products: number }>('support_ticket_create_v2', { p })
 
 export interface TicketProduct {

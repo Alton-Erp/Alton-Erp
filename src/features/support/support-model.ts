@@ -93,7 +93,7 @@ export const TICKET_EVENT_LABELS: Record<string, string> = {
   CREATED: 'Ticket created', STATUS_CHANGED: 'Status changed', PRIORITY_CHANGED: 'Priority changed', ASSIGNED: 'Assigned', UPDATED: 'Details updated',
   MERGED: 'Duplicate merged in', MERGED_INTO: 'Merged into another ticket', REOPENED: 'Reopened', NOTE_ADDED: 'Internal note added',
   ATTACHMENT_ADDED: 'Attachment added', CONVERSATION_LINKED: 'Conversation linked', FIRST_RESPONSE: 'First response', AUTOMATION: 'Automation rule applied',
-  CSAT_RECORDED: 'Satisfaction rating recorded',
+  CSAT_RECORDED: 'Satisfaction rating recorded', STAGE_CHANGED: 'Pipeline stage changed',
 }
 
 export const TAG_COLORS = ['neutral', 'info', 'success', 'warning', 'danger', 'outsourced'] as const

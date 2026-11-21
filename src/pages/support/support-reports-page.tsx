@@ -18,6 +18,7 @@ import { SUPPORT_DATE_RANGE_PRESETS } from '@/lib/date-range'
 import { describeDataError } from '@/lib/errors'
 import { formatNumber, toIsoDate } from '@/lib/format'
 import { fetchSupportReports, type SupportReports } from '@/services/support'
+import { PipelineReportSection } from '@/features/support/pipeline/pipeline-report'
 import { UnifiedReportsSection } from '@/features/support/support-unified-components'
 
 function exportSheets(r: SupportReports) {
@@ -107,6 +108,7 @@ export default function SupportReportsPage() {
         </Card>
       </div>
       <div className="mt-4"><UnifiedReportsSection from={from} to={to} /></div>
+      <div className="mt-4"><PipelineReportSection from={from} to={to} /></div>
     </>
   )
 }

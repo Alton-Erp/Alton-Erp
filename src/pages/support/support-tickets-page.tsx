@@ -1,8 +1,9 @@
 import { Download, Loader2, Plus, Search, Ticket } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 
 import { EmptyState } from '@/components/common/empty-state'
+import { FilterTabs } from '@/components/common/filter-tabs'
 import { ErrorState } from '@/components/common/error-state'
 import { LoadingState } from '@/components/common/loading-state'
 import { PageHeader } from '@/components/common/page-header'
@@ -12,7 +13,9 @@ import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { useUrlParam } from '@/features/drilldown/use-drill'
 import { downloadSheets } from '@/features/products/spreadsheet'
+import { PipelineView } from '@/features/support/pipeline/pipeline-view'
 import { ChannelLabel, PresenceControl, PriorityBadge, SlaBadge, TicketStatusBadge } from '@/features/support/support-components'
 import { useSupportPermissions } from '@/features/support/use-support-permissions'
 import { TicketFormDialog } from '@/features/support/support-dialogs'
@@ -23,12 +26,17 @@ import {
 import { useAsync } from '@/hooks/use-async'
 import { describeDataError } from '@/lib/errors'
 import { formatDateTime, toIsoDate } from '@/lib/format'
+import { fetchPipelines } from '@/services/pipelines'
 import { fetchAgents, fetchTickets, type TicketFilters } from '@/services/support'
 
 const PAGE_SIZE = 25
 const ALL = 'all'
 
-/** /support/tickets — tickets with server-side filters, search, sort and pagination; export for support.manage_tickets. */
+/**
+ * /support/tickets — the Customer Support pipeline (Kanban / list, 20261227090000) and the full ticket table with
+ * server-side filters, search, sort and pagination; export for support.manage_tickets. Without pipelines (before the
+ * database update or without pipeline access) only the table is shown.
+ */
 export default function SupportTicketsPage() {
   const [params, setParams] = useSearchParams()
   const navigate = useNavigate()
@@ -43,6 +51,12 @@ export default function SupportTicketsPage() {
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
   const agents = useAsync(() => fetchAgents().catch(() => []), [])
+  const [infoTick, setInfoTick] = useState(0)
+  const pipelines = useAsync(() => (perms.pipelines ? fetchPipelines().catch(() => null) : Promise.resolve(null)), [perms.pipelines, infoTick])
+  const [view, setView] = useUrlParam('view', 'pipeline')
+  const showPipeline = Boolean(pipelines.data) && view !== 'table'
+  const [boardPipeline, setBoardPipeline] = useState<string | null>(null)
+  const onPipelineChange = useCallback((id: string) => setBoardPipeline(id), [])
 
   const filters: TicketFilters = {
     status: get('status') || undefined, statuses: get('open') ? OPEN_TICKET_STATUSES : undefined, priority: get('priority') || undefined,
@@ -51,7 +65,8 @@ export default function SupportTicketsPage() {
     limit: PAGE_SIZE, offset: page * PAGE_SIZE,
   }
   const key = JSON.stringify(filters)
-  const list = useAsync(() => fetchTickets(filters), [key, refresh]) // eslint-disable-line react-hooks/exhaustive-deps
+  const showTable = !pipelines.loading && !showPipeline
+  const list = useAsync(() => (showTable ? fetchTickets(filters) : Promise.resolve(null)), [key, refresh, showTable]) // eslint-disable-line react-hooks/exhaustive-deps
   const activeFilters = ['status', 'open', 'priority', 'channel', 'agent', 'unassigned', 'sla', 'from', 'to', 'q'].filter((k) => params.get(k))
 
   const exportAll = async () => {
@@ -81,7 +96,13 @@ export default function SupportTicketsPage() {
         {perms.manageTickets && <Button onClick={() => setCreateOpen(true)} data-testid="new-ticket"><Plus /> New ticket</Button>}
       </>} />
       {exportError && <p role="alert" className="mb-3 rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-800">{exportError}</p>}
-      <Card className="gap-0 overflow-hidden p-0">
+      {pipelines.data && (
+        <FilterTabs<'pipeline' | 'table'> label="Tickets view" value={showPipeline ? 'pipeline' : 'table'} onChange={setView} className="mb-3"
+          options={[{ value: 'pipeline', label: 'Pipeline' }, { value: 'table', label: 'All tickets (table)' }]} />
+      )}
+      {pipelines.loading && !pipelines.data && perms.pipelines ? <Card><LoadingState rows={6} /></Card>
+        : showPipeline && pipelines.data ? <PipelineView info={pipelines.data} reloadInfo={() => setInfoTick((n) => n + 1)} onPipelineChange={onPipelineChange} />
+        : <Card className="gap-0 overflow-hidden p-0">
         <div className="flex flex-wrap items-center gap-2 border-b p-3">
           <div className="relative min-w-56 flex-1">
             <Search aria-hidden className="absolute top-2.5 left-2.5 size-4 text-muted-foreground" />
@@ -140,8 +161,9 @@ export default function SupportTicketsPage() {
           <PaginationBar page={page} pageSize={PAGE_SIZE} total={list.data.total} disabled={list.loading}
             onPageChange={(p) => setParams((prev) => { const n = new URLSearchParams(prev); if (p) n.set('page', String(p)); else n.delete('page'); return n }, { replace: true })} />
         )}
-      </Card>
-      <TicketFormDialog open={createOpen} onOpenChange={setCreateOpen} onCreated={(r) => { setRefresh((n) => n + 1); navigate(`/support/tickets/${r.id}`) }} />
+      </Card>}
+      <TicketFormDialog open={createOpen} onOpenChange={setCreateOpen} pipelineId={showPipeline ? boardPipeline : null}
+        onCreated={(r) => { setRefresh((n) => n + 1); navigate(`/support/tickets/${r.id}`) }} />
     </>
   )
 }
