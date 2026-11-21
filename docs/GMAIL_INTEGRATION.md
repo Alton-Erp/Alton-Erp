@@ -319,3 +319,27 @@ select vault.create_secret('<GOOGLE_CRON_SECRET>', 'alton_gmail_cron_secret');
 - **WhatsApp:** conversations with unread messages.
 - **Emails:** unread received emails in the Inbox. Archived, snoozed, spam, trash and sent mail are excluded.
 - **Calls:** missed incoming calls that were not answered or called back later, whose conversation is not resolved, and that nobody marked handled. Use Calls → **Mark all handled**, or **Mark handled** on a call.
+
+## Scheduler secret and real sync health (migration 20261229090000)
+
+Production finding (21 Nov 2026): every scheduled request was answered **HTTP 401 "Not allowed."** by `google-gmail-sync`
+because the Vault secret `alton_gmail_cron_secret` was a different value from the Edge Function secret
+`GOOGLE_CRON_SECRET`. pg_cron still recorded every run as "succeeded" (the tick only queues the HTTP request with
+pg_net), so the settings screen said "Up to date" while mail arrived only with Sync now.
+
+* `google-gmail-sync` now also accepts the Vault scheduler secret, checked inside the database by
+  `public.support_gmail_scheduler_secret_ok` (service role only; the value never leaves the database). The Vault secret
+  is the scheduler's single source of truth; `GOOGLE_CRON_SECRET` keeps working for the function's own continuations.
+* Every scheduled request's pg_net id is recorded (`private.support_gmail_scheduler_calls`, 3 days), and
+  `support_gmail_schedule_status()` reads the real answers from `net._http_response`: health
+  (OK / FAILING / WAITING / NOT_CONFIGURED / NOT_SCHEDULED), a diagnosis, the last scheduled invocation and result,
+  the last successful Gmail sync, the last email stored, discovered / fetched / pending / failed counts.
+* Support → Settings → Email shows these facts and never shows "Up to date" while the automatic sync fails.
+
+Check in the SQL editor:
+
+```sql
+select k.called_at, r.status_code, left(r.content::text, 200)
+from private.support_gmail_scheduler_calls k left join net._http_response r on r.id = k.request_id
+order by k.id desc limit 5;
+```

@@ -3,7 +3,7 @@ import { useRef, useState } from 'react'
 
 import { StatusBadge } from '@/components/common/status-badge'
 import { Button } from '@/components/ui/button'
-import { lastBatchText, syncView } from '@/features/support/email-sync-model'
+import { lastBatchText, scheduleView, syncView } from '@/features/support/email-sync-model'
 import { usePolled } from '@/features/support/wa-web/use-polled'
 import { describeDataError } from '@/lib/errors'
 import { formatDateTime } from '@/lib/format'
@@ -17,9 +17,10 @@ import { fetchGmailSchedule, fetchSyncStatus, retryMailboxSync, syncMailboxNow, 
 export function EmailSyncPanel({ onNotice }: { onNotice: (n: { ok: boolean; text: string }) => void }) {
   const [active, setActive] = useState(false)
   const status = usePolled(() => fetchSyncStatus().catch(() => null), [], active ? 4000 : 30000)
-  const view = status.data ? syncView(status.data) : null
-  const schedule = usePolled(() => fetchGmailSchedule(), [], 60000)
+  const schedule = usePolled(() => fetchGmailSchedule(), [], active ? 15000 : 60000)
   const sch = schedule.data
+  const view = status.data ? syncView(status.data, sch) : null
+  const auto = sch ? scheduleView(sch, (iso) => formatDateTime(iso)) : null
   if (view && view.active !== active) setActive(view.active)
   const [busy, setBusy] = useState<string | null>(null)
   // One request per click: a ref, because several clicks in one tick all see the same `busy` state.
@@ -59,7 +60,17 @@ export function EmailSyncPanel({ onNotice }: { onNotice: (n: { ok: boolean; text
         </span>
       </div>
       {s === null && <p className="text-xs text-muted-foreground">Progress appears once migration 20261224090000 is applied.</p>}
-      {sch && (sch.scheduled && sch.job?.active && sch.secrets_configured
+      {auto && (
+        <div className="space-y-2 rounded-md bg-surface-muted/40 px-3 py-2" data-testid="email-auto-sync">
+          <span data-testid="email-auto-sync-state" data-health={sch?.health}><StatusBadge label={auto.label} tone={auto.tone} /></span>
+          {auto.problem && <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800" role="alert" data-testid="email-auto-sync-problem">
+            {auto.problem} Until this is fixed, new mail arrives only with Sync now.</p>}
+          <dl className="grid gap-x-4 gap-y-1 text-xs sm:grid-cols-[max-content_1fr]">
+            {auto.facts.map(([k, v]) => <div key={k} className="contents"><dt className="text-muted-foreground">{k}</dt><dd className="break-words" data-testid={`auto-${k.toLowerCase().replace(/[^a-z]+/g, '-')}`}>{v}</dd></div>)}
+          </dl>
+        </div>
+      )}
+      {sch && !auto && (sch.scheduled && sch.job?.active && sch.secrets_configured
         ? <p className="text-xs text-muted-foreground" data-testid="email-sync-schedule">Automatic sync: every 2 minutes on the server (no need to keep this page open).
             {sch.last_run ? ` Last scheduled run ${formatDateTime(sch.last_run.start_time)}: ${sch.last_run.status}.` : ''}</p>
         : <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900" role="alert" data-testid="email-sync-schedule">

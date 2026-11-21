@@ -260,9 +260,24 @@ export async function attachmentUrls(paths: string[]): Promise<Record<string, st
 }
 
 /** Automatic sync job (migration 20261225090000): scheduled, secrets present (never their values), last run. */
+export interface ScheduledRunResult {
+  account: string; ok: boolean; busy?: boolean; message: string; discovered?: number; queued?: number; fetched?: number; stored?: number; failed?: number
+  attachments?: number; attachments_failed?: number; remaining_detail?: { queue: number; queue_ready: number; failed: number; attachments: number; attachments_failed: number } | null
+}
+export interface ScheduledCall {
+  id: number; called_at: string; outcome: string; answered: boolean; http_status?: number | null; timed_out?: boolean | null; error?: string | null
+  refusal?: string | null; result?: ScheduledRunResult | null
+}
+export type ScheduleHealth = 'OK' | 'FAILING' | 'WAITING' | 'NOT_CONFIGURED' | 'NOT_SCHEDULED'
 export interface GmailSchedule {
   scheduler_available: boolean; scheduled: boolean; job: { schedule: string; active: boolean } | null; secrets_configured: boolean
+  /** pg_cron's record: only that the database tick ran, not that Gmail was synced. */
   last_run: { status: string; start_time: string; message: string | null } | null
+  // Migration 20261229090000: what the scheduled requests actually did (absent before it).
+  health?: ScheduleHealth; diagnosis?: string | null; calls?: ScheduledCall[]; last_call?: ScheduledCall | null
+  last_scheduled_success_at?: string | null; last_invocation_at?: string | null
+  mailbox?: { last_batch_at: string | null; last_success_at: string | null; last_error: string | null; last_error_at: string | null; history_at: string | null } | null
+  last_email_stored_at?: string | null; emails_stored_24h?: number
 }
 export async function fetchGmailSchedule(): Promise<GmailSchedule | null> {
   try {

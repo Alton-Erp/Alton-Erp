@@ -6,8 +6,8 @@ import path from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { lastBatchText, syncView } from '../../src/features/support/email-sync-model.ts'
-import type { SyncStatus } from '../../src/services/email.ts'
+import { lastBatchText, scheduleView, syncView } from '../../src/features/support/email-sync-model.ts'
+import type { GmailSchedule, SyncStatus } from '../../src/services/email.ts'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const src = (p: string) => readFileSync(path.join(root, p), 'utf8')
@@ -66,5 +66,48 @@ describe('mailbox sync progress', () => {
     assert.match(c, /disabled=\{running\}/)
     assert.match(c, /if \(inFlight\.current\) return/)
     assert.match(c, /you can leave this page/)
+  })
+})
+
+// Migration 20261229090000: the automatic sync's real answers.
+const sched = (o: Partial<GmailSchedule> = {}): GmailSchedule => ({ scheduler_available: true, scheduled: true, job: { schedule: '*/2 * * * *', active: true }, secrets_configured: true,
+  last_run: { status: 'succeeded', start_time: '2026-11-21T09:36:00Z', message: '1 row' }, health: 'OK', diagnosis: null, calls: [],
+  last_call: { id: 9, called_at: '2026-11-21T09:36:00Z', outcome: 'requested', answered: true, http_status: 200,
+    result: { account: 'a', ok: true, message: 'Mailbox sync: 2 new emails.', queued: 2, discovered: 0, fetched: 2, stored: 2, remaining_detail: { queue: 1, queue_ready: 0, failed: 1, attachments: 0, attachments_failed: 0 } } },
+  last_scheduled_success_at: '2026-11-21T09:36:00Z', last_invocation_at: '2026-11-21T09:36:00Z',
+  mailbox: { last_batch_at: '2026-11-21T09:36:00Z', last_success_at: '2026-11-21T09:36:00Z', last_error: null, last_error_at: null, history_at: null },
+  last_email_stored_at: '2026-11-21T09:35:50Z', emails_stored_24h: 2, ...o })
+const fmt = (iso: string) => iso.slice(11, 16)
+
+describe('automatic sync status (no more "Up to date" while the scheduler fails)', () => {
+  it('scheduler refused (HTTP 401) while pg_cron says "succeeded": never "Up to date"', () => {
+    const failing = sched({ health: 'FAILING', diagnosis: 'google-gmail-sync refused the scheduler (HTTP 401)…',
+      last_call: { id: 9, called_at: '2026-11-21T09:36:00Z', outcome: 'requested', answered: true, http_status: 401, refusal: 'Not allowed.', result: null } })
+    assert.equal(syncView(base(), failing).state, 'AUTO_SYNC_FAILING')
+    assert.equal(syncView(base(), failing).label, 'Automatic sync failing')
+    const v = scheduleView(failing, fmt)!
+    assert.match(v.problem ?? '', /HTTP 401/)
+    assert.equal(v.facts.find(([k]) => k === 'Last scheduled result')?.[1], '09:36: HTTP 401 — Not allowed.')
+  })
+  it('working scheduler: "Up to date" only when nothing is left', () => {
+    assert.equal(syncView(base(), sched()).state, 'UP_TO_DATE')
+    assert.equal(syncView(base(), sched({ health: 'NOT_CONFIGURED' })).state, 'AUTO_SYNC_FAILING')
+    assert.equal(syncView(base()).state, 'UP_TO_DATE') // before the database update: as before
+  })
+  it('separate facts: scheduler, last invocation, last result, last Gmail success, last email stored, discovered / fetched, pending, failed, last error', () => {
+    const v = scheduleView(sched({ mailbox: { last_batch_at: null, last_success_at: null, last_error: 'Gmail API error 503', last_error_at: '2026-11-21T09:30:00Z', history_at: null } }), fmt)!
+    const f = Object.fromEntries(v.facts)
+    assert.equal(f['Automatic scheduler'], 'every 2 minutes (*/2 * * * *)')
+    assert.equal(f['Last scheduled invocation'], '09:36')
+    assert.equal(f['Last successful Gmail sync'], '09:36')
+    assert.equal(f['Last email received and stored'], '09:35 (2 in the last 24 hours)')
+    assert.equal(f['Last scheduled run'], '2 discovered, 2 fetched, 2 new stored')
+    assert.equal(f['Messages pending'], '1 (1 waiting to retry)')
+    assert.equal(f['Failed (after 5 attempts)'], '1 messages, 0 attachments')
+    assert.equal(f['Last sync error'], 'Gmail API error 503 (09:30)')
+    assert.equal(v.problem, null)
+  })
+  it('before the database update there is no scheduler view (the earlier line is kept)', () => {
+    assert.equal(scheduleView(sched({ health: undefined }), fmt), null)
   })
 })

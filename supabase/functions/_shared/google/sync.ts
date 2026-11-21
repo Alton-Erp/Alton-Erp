@@ -487,13 +487,26 @@ function describe(s: SyncSummary): string {
   return `${s.kind === 'FULL' ? 'Full re-sync' : s.kind === 'REPLAY' ? 'Replay' : 'Mailbox sync'}: ${done.length ? done.join(', ') : 'no new mail'}.`
 }
 
-/** Authorises the scheduler (x-cron-secret) or an administrator (JWT, support.manage_integrations). */
+/**
+ * Authorises the scheduler (x-cron-secret) or an administrator (JWT, support.manage_integrations).
+ * The scheduler's secret is GOOGLE_CRON_SECRET (also used by this function's own continuation requests) or the
+ * database scheduler's Vault secret alton_gmail_cron_secret, checked inside the database (migration 20261229090000):
+ * the two were set separately in production, did not match, and every scheduled run was refused with HTTP 401.
+ */
 export async function authorizeScheduler(req: Request, deps: { env(name: string): string | undefined; admin(): Client; caller(auth: string): Client }):
   Promise<{ accounts: string[]; caller: Client | null } | { status: number; error: string }> {
   const cron = req.headers.get('x-cron-secret')
   if (cron) {
     const expected = secret('GOOGLE_CRON_SECRET', deps.env)
-    if (!expected || !safeEqual(cron, expected)) return { status: 401, error: 'Not allowed.' }
+    let allowed = Boolean(expected) && safeEqual(cron, expected!)
+    if (!allowed && cron.length >= 16 && cron.length <= 200) {
+      const { data, error } = await deps.admin().rpc<boolean>('support_gmail_scheduler_secret_ok', { p_secret: cron })
+      allowed = !error && data === true
+    }
+    if (!allowed) {
+      log('gmail-sync', 'warn', 'scheduler secret refused (neither GOOGLE_CRON_SECRET nor the Vault scheduler secret)', {})
+      return { status: 401, error: 'Not allowed.' }
+    }
     const { data, error } = await deps.admin().rpc<(string | { support_gmail_accounts: string })[]>('support_gmail_accounts')
     if (error) return { status: 500, error: 'Accounts could not be read.' }
     return { accounts: (data ?? []).map((x) => (typeof x === 'string' ? x : x.support_gmail_accounts)), caller: null }

@@ -654,6 +654,30 @@ describe('google-gmail-sync handler', () => {
     assert.equal((await syncFn(req({ action: 'continue', account: '99999999-9999-4999-8999-999999999999' }, { 'x-cron-secret': 'cron-1' }), d)).status, 400)
     assert.equal((await syncFn(req({ action: 'retry' }, { 'x-cron-secret': 'cron-1' }), d)).status, 403)
   })
+  it('the database scheduler\'s Vault secret is accepted (checked in the database); anything else is refused (20261229090000)', async () => {
+    const { d, c } = await setup()
+    const vault = 'vault-scheduler-secret-0123456789'
+    const base = d.admin()
+    const client = { ...base, rpc: async (fn: string, args: Record<string, unknown> = {}) =>
+      fn === 'support_gmail_scheduler_secret_ok' ? { data: (args.p_secret === vault) as never, error: null } : base.rpc(fn, args) } as Client
+    const dv = { ...d, admin: () => client }
+    const ok = await syncFn(req({}, { 'x-cron-secret': vault }), dv)
+    assert.equal(ok.status, 200)
+    assert.equal((await ok.json()).results[0].account, ACCOUNT)
+    assert.equal((await syncFn(req({}, { 'x-cron-secret': 'another-secret-0123456789' }), dv)).status, 401)
+    assert.equal((await syncFn(req({}, { 'x-cron-secret': 'short' }), dv)).status, 401)
+    // GOOGLE_CRON_SECRET (continuations) still works without asking the database.
+    const before = c.calls.filter((x) => x.fn === 'support_gmail_scheduler_secret_ok').length
+    assert.equal((await syncFn(req({}, { 'x-cron-secret': 'cron-1' }), d)).status, 200)
+    assert.equal(c.calls.filter((x) => x.fn === 'support_gmail_scheduler_secret_ok').length, before)
+  })
+  it('before the database update (no secret-check function) only GOOGLE_CRON_SECRET is accepted', async () => {
+    const { d } = await setup()
+    const base = d.admin()
+    const client = { ...base, rpc: async (fn: string, args: Record<string, unknown> = {}) =>
+      fn === 'support_gmail_scheduler_secret_ok' ? { data: null as never, error: { message: 'Could not find the function', code: 'PGRST202' } } : base.rpc(fn, args) } as Client
+    assert.equal((await syncFn(req({}, { 'x-cron-secret': 'vault-scheduler-secret-0123456789' }), { ...d, admin: () => client })).status, 401)
+  })
   it('work left after a batch: the next batch is started in the background (depth + 1); none when nothing is left', async () => {
     const many = { history: () => json(200, { history: Array.from({ length: 20 }, (_, i) => ({ id: String(101 + i), messagesAdded: [{ message: { id: `cccc0000${String(i).padStart(2, '0')}` } }] })), historyId: '130' }) }
     const s1 = await setup()
