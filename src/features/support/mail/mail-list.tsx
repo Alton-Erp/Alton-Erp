@@ -154,7 +154,7 @@ function Row({ r, folder, checked, onCheck, onOpen, act, canEdit, timezone, atts
       </div>
       {r.has_attachment && <Paperclip className="mt-3 size-4 shrink-0 text-[#5F6368]" aria-label="Has attachment" data-testid="mail-has-attachment" />}
       <span className={cn('w-20 shrink-0 text-right text-xs leading-10', canEdit && 'group-hover:hidden group-focus-within:hidden', unread ? 'font-bold text-[#1F1F1F]' : 'text-[#5F6368]')}>
-        {r.snoozed_until && folder === 'SNOOZED' ? <span className="text-[#B06000]">{mailListDate(r.snoozed_until, undefined, timezone)}</span> : mailListDate(r.last_at, undefined, timezone)}</span>
+        {r.snoozed_until && folder === 'SNOOZED' ? <span className="text-[#B06000]">{mailListDate(r.snoozed_until, undefined, timezone)}</span> : mailListDate(r.sort_at ?? r.last_at, undefined, timezone)}</span>
       {canEdit && (
         <span className="mt-0.5 hidden shrink-0 items-center group-focus-within:flex group-hover:flex" data-testid="mail-quick-actions">
           {r.folder === 'ARCHIVE' || folder === 'TRASH' || folder === 'SPAM'

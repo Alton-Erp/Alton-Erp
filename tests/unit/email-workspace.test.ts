@@ -310,3 +310,15 @@ describe('per-message tools: wiring and safety', () => {
     assert.match(src('supabase/functions/_shared/google/gmail.ts'), /original\(id: string, format: 'metadata' \| 'raw'\)/)
   })
 })
+
+describe('Inbox order after a reply (migration 20261230090000)', () => {
+  const m = readFileSync(path.join(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'), 'supabase/migrations/20261230090000_email_inbox_order.sql'), 'utf8')
+  it('Inbox sorts by the latest received email, Sent by the latest sent email, other folders by the latest activity', () => {
+    assert.match(m, /case v_folder when 'INBOX' then t\.last_in when 'SENT' then t\.last_out else t\.last_at end as sort_at/)
+    assert.match(m, /row_number\(\) over \(order by f\.sort_at desc nulls last, f\.last_at desc, f\.id\)/)
+  })
+  it('the list shows the folder\'s sort time (falls back to the latest activity before the update)', () => {
+    const list = readFileSync(path.join(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'), 'src/features/support/mail/mail-list.tsx'), 'utf8')
+    assert.match(list, /mailListDate\(r\.sort_at \?\? r\.last_at, undefined, timezone\)/)
+  })
+})

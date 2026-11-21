@@ -152,6 +152,8 @@ export interface MailboxQuery {
 }
 export interface MailThreadRow {
   id: string; last_at: string; message_count: number; unread_count: number; starred: boolean; important: boolean; snoozed_until: string | null
+  /** 20261230090000: the folder's sort time (Inbox: latest received, Sent: latest sent, others: latest activity) and both directions. */
+  sort_at?: string | null; last_in_at?: string | null; last_out_at?: string | null
   folder: 'INBOX' | 'ARCHIVE' | 'SPAM' | 'TRASH'; subject: string | null; snippet: string; last_direction: 'INBOUND' | 'OUTBOUND'
   last_send_state: 'PENDING' | 'SENT' | 'FAILED' | null; from_name: string | null; from_address: string | null; to: EmailAddress[]; senders: string[]
   has_attachment: boolean; labels: TagRef[]; customer_name: string | null; ticket_id: string | null; ticket_number: string | null
