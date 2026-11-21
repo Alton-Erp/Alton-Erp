@@ -1,6 +1,7 @@
 import { Lock } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
+import { useReloadOnChange, useSupportLive } from '@/features/support/live/use-support-live'
 import { LogConversationDialog } from '@/features/support/support-dialogs'
 import { useSupportPermissions } from '@/features/support/use-support-permissions'
 import { WaTemplateDialog } from '@/features/support/whatsapp-components'
@@ -34,7 +35,10 @@ export default function SupportWhatsAppPage() {
   const [logOpen, setLogOpen] = useState(false)
   const [infoOpen, setInfoOpen] = useState(() => typeof window !== 'undefined' && window.matchMedia?.('(min-width: 1280px)').matches === true)
   useEffect(() => { const t = setTimeout(() => { setTerm(search); setLimit(PAGE) }, 300); return () => clearTimeout(t) }, [search])
-  const list = usePolled(() => fetchWaInbox(view, { search: term, limit, offset: 0 }), [view, term, limit], 15_000)
+  const list = usePolled(() => fetchWaInbox(view, { search: term, limit, offset: 0 }), [view, term, limit], 30_000)
+  // New messages and read changes: reloaded in place when the WhatsApp change stamp moves (Realtime / 3 s check).
+  const live = useSupportLive()
+  useReloadOnChange(live.summary?.stamps.whatsapp, list.reload)
   const s = status.data
 
   return (

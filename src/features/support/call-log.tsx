@@ -6,16 +6,20 @@ import { EmptyState } from '@/components/common/empty-state'
 import { ErrorState } from '@/components/common/error-state'
 import { LoadingState } from '@/components/common/loading-state'
 import { PaginationBar } from '@/components/common/pagination-bar'
+import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { useReloadOnChange, useSupportLive } from '@/features/support/live/use-support-live'
 import { CallStatusBadge } from '@/features/support/phone-components'
 import { CALL_STATUS_META, formatDuration } from '@/features/support/support-model'
+import { useSupportPermissions } from '@/features/support/use-support-permissions'
 import { useAsync } from '@/hooks/use-async'
 import { describeDataError } from '@/lib/errors'
 import { formatDateTime } from '@/lib/format'
 import { fetchCalls } from '@/services/phone'
+import { markCallsHandled } from '@/services/support'
 
 const PAGE_SIZE = 25
 const ALL = 'all'
@@ -31,8 +35,28 @@ export function CallLog() {
   useEffect(() => { const t = setTimeout(() => { setTerm(search.trim()); setPage(0) }, 300); return () => clearTimeout(t) }, [search])
   const list = useAsync(() => fetchCalls({ direction: direction === ALL ? undefined : direction, status: status === ALL ? undefined : status, search: term || undefined,
     limit: PAGE_SIZE, offset: page * PAGE_SIZE }), [direction, status, term, page])
+  const live = useSupportLive()
+  useReloadOnChange(live.summary?.stamps.calls, list.reload)
+  const perms = useSupportPermissions()
+  const missed = live.summary?.missed_calls ?? 0
+  const [handling, setHandling] = useState<string | null>(null)
+  const handleAll = () => {
+    setHandling('…')
+    markCallsHandled(null).then((r) => { setHandling(`${r.handled} missed call${r.handled === 1 ? '' : 's'} marked handled.`); live.refresh(); list.reload() },
+      (e) => setHandling(describeDataError(e)))
+  }
   return (
     <Card className="gap-0 overflow-hidden p-0">
+      {(missed > 0 || (handling && handling !== '…')) && (
+        <div className="flex flex-wrap items-center gap-2 border-b bg-red-50 px-3 py-2 text-sm text-red-900" data-testid="missed-calls-banner" role="status">
+          {missed > 0 && <span><strong>{missed}</strong> missed call{missed === 1 ? '' : 's'} need{missed === 1 ? 's' : ''} attention (not called back yet).</span>}
+          {handling && handling !== '…' && <span className="text-red-800">{handling}</span>}
+          {missed > 0 && <span className="ml-auto flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => { setStatus('MISSED'); setDirection('INBOUND'); setPage(0) }} data-testid="show-missed">Show missed</Button>
+            {perms.reply && <Button size="sm" variant="outline" disabled={handling === '…'} onClick={handleAll} data-testid="handle-all-missed">Mark all handled</Button>}
+          </span>}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-2 border-b p-3">
         <div className="relative min-w-56 flex-1">
           <Search aria-hidden className="absolute top-2.5 left-2.5 size-4 text-muted-foreground" />

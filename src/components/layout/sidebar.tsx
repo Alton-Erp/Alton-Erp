@@ -17,6 +17,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { COMPANY } from '@/config/app'
 import { NAV_GROUPS, NAV_ITEMS, type NavItem } from '@/config/navigation'
 import { usePersistentState } from '@/hooks/use-persistent-state'
+import { BADGE_FOR, BADGE_LABEL, badgeText } from '@/features/support/live/live-model'
+import { useSupportLive } from '@/features/support/live/use-support-live'
 import { useVisibleNavItems } from '@/hooks/use-visible-nav'
 import { cn } from '@/lib/utils'
 
@@ -184,6 +186,10 @@ function useIsDesktop(): boolean {
 
 function SidebarLink({ item, isActive, collapsed, onNavigate }: { item: NavItem; isActive: boolean; collapsed: boolean; onNavigate: () => void }) {
   const Icon = item.icon
+  // Live counts (WhatsApp, Emails, Calls): red badge on the right; on the icon in the collapsed rail.
+  const { summary } = useSupportLive()
+  const count = summary && BADGE_FOR[item.key] ? summary[BADGE_FOR[item.key]] : 0
+  const badge = badgeText(count)
   const link = (
     <NavLink
       to={item.path}
@@ -202,8 +208,19 @@ function SidebarLink({ item, isActive, collapsed, onNavigate }: { item: NavItem;
         )
       }
     >
-      <Icon aria-hidden className="size-4 shrink-0" />
-      <span className={cn('truncate', collapsed && 'lg:sr-only')}>{item.title}</span>
+      <span className="relative shrink-0">
+        <Icon aria-hidden className="size-4" />
+        {badge && collapsed && (
+          <span aria-hidden className="absolute -top-1.5 -right-2 hidden h-3.5 min-w-3.5 items-center justify-center rounded-full bg-red-600 px-0.5 text-[9px] leading-none font-semibold text-white lg:flex">
+            {badge}</span>
+        )}
+      </span>
+      <span className={cn('min-w-0 flex-1 truncate', collapsed && 'lg:sr-only')}>{item.title}</span>
+      {badge && (
+        <span data-testid={`nav-badge-${item.key}`} aria-label={`${count} ${BADGE_LABEL[item.key]}`}
+          className={cn('ml-auto inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full bg-red-600 px-1.5 text-[11px] leading-none font-semibold text-white tabular-nums',
+            collapsed && 'lg:hidden')}>{badge}</span>
+      )}
     </NavLink>
   )
 
@@ -213,7 +230,7 @@ function SidebarLink({ item, isActive, collapsed, onNavigate }: { item: NavItem;
     <Tooltip>
       <TooltipTrigger asChild>{link}</TooltipTrigger>
       <TooltipContent side="right" className="hidden lg:block">
-        {item.title}
+        {item.title}{badge ? ` (${badge})` : ''}
       </TooltipContent>
     </Tooltip>
   )

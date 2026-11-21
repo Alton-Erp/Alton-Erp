@@ -3,6 +3,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 import { useAuth } from '@/auth/use-auth'
+import { useReloadOnChange, useSupportLive } from '@/features/support/live/use-support-live'
 import { ComposeWindow, type MailComposeTarget } from '@/features/support/mail/compose-window'
 import { MailList, type Act } from '@/features/support/mail/mail-list'
 import { formatMailSearch, hasFilters, isMailFolder, mailListDate, MAIL_FOLDERS, parseMailSearch, type MailFolder, type MailSearch } from '@/features/support/mail/mail-model'
@@ -89,6 +90,9 @@ export default function SupportEmailsPage() {
   const listKey = `${folder}|${label}|${q}|${offset}`
   const list = usePolled(() => (folder === 'DRAFTS' ? Promise.resolve(null) : fetchMailbox({ folder: folder as MailboxFolder, label: label || null, ...search, limit: LIMIT, offset })),
     [folder, label, q, offset], 30_000)
+  // New mail (synchronised by the server every 2 minutes) and read changes: reloaded in place when the email stamp moves.
+  const live = useSupportLive()
+  useReloadOnChange(live.summary?.stamps.email, list.reload)
   const [draftsTick, setDraftsTick] = useState(0)
   const drafts = usePolled(() => (perms.reply ? fetchEmailDrafts() : Promise.resolve([])), [draftsTick, perms.reply], 60_000)
   const compose = useAsync(() => fetchComposeContext().catch(() => null), [])
@@ -114,6 +118,7 @@ export default function SupportEmailsPage() {
       setNotice({ ok: false, text: describeDataError(e) })
     } finally {
       list.reload()
+      live.refresh()
     }
   }
   const row = page?.rows.find((r) => r.id === selectedId) ?? null

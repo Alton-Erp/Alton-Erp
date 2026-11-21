@@ -41,6 +41,7 @@
     "test:db:email-mailbox": "node tests/db/email-mailbox-check.mjs",
     "test:db:email-message-tools": "node tests/db/email-message-tools-check.mjs",
     "test:db:gmail-sync": "node tests/db/gmail-sync-resumable-check.mjs",
+    "test:db:support-live": "node tests/db/support-live-check.mjs",
     "test:db:unified": "node tests/db/support-unified-check.mjs",
     "test:db:softphone": "node tests/db/acefone-softphone-check.mjs",
     "test:db:bom-bulk": "node tests/db/bom-bulk-check.mjs",

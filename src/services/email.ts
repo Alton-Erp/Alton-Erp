@@ -258,3 +258,16 @@ export async function attachmentUrls(paths: string[]): Promise<Record<string, st
   if (error) throw error
   return Object.fromEntries((data ?? []).flatMap((d) => (d.signedUrl && d.path ? [[d.path, d.signedUrl] as const] : [])))
 }
+
+/** Automatic sync job (migration 20261225090000): scheduled, secrets present (never their values), last run. */
+export interface GmailSchedule {
+  scheduler_available: boolean; scheduled: boolean; job: { schedule: string; active: boolean } | null; secrets_configured: boolean
+  last_run: { status: string; start_time: string; message: string | null } | null
+}
+export async function fetchGmailSchedule(): Promise<GmailSchedule | null> {
+  try {
+    return await rpc<GmailSchedule>('support_gmail_schedule_status')
+  } catch {
+    return null
+  }
+}

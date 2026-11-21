@@ -235,7 +235,8 @@ ok('ticket events: SLA warning / breach / escalated', (await val(`select count(d
 // ---------------------------------------------------------------------------------------------
 console.log('\nReports and integration health')
 const today = await val(`select current_date::text`)
-const rep = await op(`select public.support_reports_unified($1::date - 7, $1::date + 1)`, [today])
+// The call fixtures above are dated 2026-11-13: the window always includes them (it used to end up empty a week later).
+const rep = await op(`select public.support_reports_unified(least($1::date - 7, '2026-11-13'::date), $1::date + 1)`, [today])
 ok('channel volume, calls, response times, tickets, agents, SLA, CSAT', rep.channel_totals.phone >= 2 && rep.channel_totals.email >= 5 && rep.channel_totals.whatsapp >= 4
   && rep.calls.missed >= 2 && rep.calls.missed_rate === 100 && rep.tickets.created >= 4 && Array.isArray(rep.agents) && rep.sla.tickets >= 1 && 'email' in rep.response_times, rep)
 ok('reports need support.view_reports', await refused('u_agent', `select public.support_reports_unified(current_date, current_date)`, [], /view_reports/))

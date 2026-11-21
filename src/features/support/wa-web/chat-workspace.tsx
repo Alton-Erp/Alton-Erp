@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/auth/use-auth'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useReloadOnChange, useSupportLive } from '@/features/support/live/use-support-live'
 import { CallButton } from '@/features/support/phone-components'
 import { CustomerFormDialog, TicketFormDialog } from '@/features/support/support-dialogs'
 import { TICKET_EVENT_LABELS, waWindowText } from '@/features/support/support-model'
@@ -50,7 +51,10 @@ export function ChatWorkspace({ id, infoOpen, setInfoOpen, onBack, onChanged }: 
   const [paneParam, setPane] = useUrlParam('pane', 'chat')
   const pane = (PANES.some((p) => p.value === paneParam) ? paneParam : 'chat') as WaPane
   const detail = usePolled(() => fetchConversation(id), [id], 10_000)
-  const thread = usePolled(() => fetchWaThread(id), [id], 5_000)
+  const thread = usePolled(() => fetchWaThread(id), [id], 15_000)
+  // In place: the composer text, the reply target and the reading position stay (see the scroll rule below).
+  const live = useSupportLive()
+  useReloadOnChange(live.summary?.stamps.whatsapp, () => { thread.reload(); detail.reload() })
   const agents = useAsync(() => fetchAgents().catch(() => []), [])
   const tags = useAsync(() => fetchTags().catch(() => []), [])
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
@@ -73,7 +77,7 @@ export function ChatWorkspace({ id, infoOpen, setInfoOpen, onBack, onChanged }: 
   const unread = detail.data?.conversation.unread_count ?? 0
   useEffect(() => {
     if (!unread) return
-    void markConversationRead(id).then(onChanged, () => {})
+    void markConversationRead(id).then(() => { onChanged(); live.refresh() }, () => {})
   }, [id, unread]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const t = thread.data ?? null

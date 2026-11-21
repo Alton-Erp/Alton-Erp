@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom'
 import { StatusBadge } from '@/components/common/status-badge'
 import { ConfirmDialog } from '@/components/common/confirm-dialog'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useReloadOnChange, useSupportLive } from '@/features/support/live/use-support-live'
 import { AttachmentPreview } from '@/features/support/mail/attachment-preview'
 import { MailIcon, ThreadActions, type Act } from '@/features/support/mail/mail-list'
 import { MailMessage, type MessageTools, type ReplyMode } from '@/features/support/mail/mail-message'
@@ -42,6 +43,9 @@ export function MailThread({ id, row, folder, act, labels, timezone, onBack, onC
   const tags = useAsync(() => fetchTags().catch(() => []), [])
   const compose = useAsync(() => fetchComposeContext().catch(() => null), [])
   const msgState = usePolled(() => fetchMessageState(id).catch(() => null), [id], 30_000)
+  // A reply or a new email in this thread appears without reopening it (expanded emails and the compose window stay).
+  const live = useSupportLive()
+  useReloadOnChange(live.summary?.stamps.email, () => { thread.reload(); detail.reload(); msgState.reload() })
   const [open, setOpen] = useState<Set<string> | null>(null)
   const [revealed, setRevealed] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
@@ -74,6 +78,7 @@ export function MailThread({ id, row, folder, act, labels, timezone, onBack, onC
     if (!unread) return
     void markConversationRead(id).then(() => {
       onChanged()
+      live.refresh()
       void fetchComposeContext().then((c) => (c.mailbox_modify ? mirrorMailboxRead(id) : null)).catch(() => {})
     }, () => {})
   }, [id, unread]) // eslint-disable-line react-hooks/exhaustive-deps

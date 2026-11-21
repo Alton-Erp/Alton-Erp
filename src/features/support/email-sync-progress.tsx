@@ -7,7 +7,7 @@ import { lastBatchText, syncView } from '@/features/support/email-sync-model'
 import { usePolled } from '@/features/support/wa-web/use-polled'
 import { describeDataError } from '@/lib/errors'
 import { formatDateTime } from '@/lib/format'
-import { fetchSyncStatus, retryMailboxSync, syncMailboxNow, type SyncResult } from '@/services/email'
+import { fetchGmailSchedule, fetchSyncStatus, retryMailboxSync, syncMailboxNow, type SyncResult } from '@/services/email'
 
 /**
  * Sync now / Full re-sync with live progress (migration 20261224090000). The work runs on the server in small
@@ -18,6 +18,8 @@ export function EmailSyncPanel({ onNotice }: { onNotice: (n: { ok: boolean; text
   const [active, setActive] = useState(false)
   const status = usePolled(() => fetchSyncStatus().catch(() => null), [], active ? 4000 : 30000)
   const view = status.data ? syncView(status.data) : null
+  const schedule = usePolled(() => fetchGmailSchedule(), [], 60000)
+  const sch = schedule.data
   if (view && view.active !== active) setActive(view.active)
   const [busy, setBusy] = useState<string | null>(null)
   // One request per click: a ref, because several clicks in one tick all see the same `busy` state.
@@ -57,6 +59,13 @@ export function EmailSyncPanel({ onNotice }: { onNotice: (n: { ok: boolean; text
         </span>
       </div>
       {s === null && <p className="text-xs text-muted-foreground">Progress appears once migration 20261224090000 is applied.</p>}
+      {sch && (sch.scheduled && sch.job?.active && sch.secrets_configured
+        ? <p className="text-xs text-muted-foreground" data-testid="email-sync-schedule">Automatic sync: every 2 minutes on the server (no need to keep this page open).
+            {sch.last_run ? ` Last scheduled run ${formatDateTime(sch.last_run.start_time)}: ${sch.last_run.status}.` : ''}</p>
+        : <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900" role="alert" data-testid="email-sync-schedule">
+            Automatic sync is not running: {!sch.scheduler_available ? 'the database scheduler (pg_cron) is not available'
+              : !sch.scheduled || !sch.job?.active ? 'the job alton-gmail-sync is not scheduled' : 'the Vault secrets alton_project_url / alton_gmail_cron_secret are missing'}.
+            New mail arrives only with Sync now until it is set up (see the Gmail integration guide).</p>)}
       {view && view.percent !== null && (
         <div className="h-2 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={view.percent} aria-label="Full re-sync progress"
           data-testid="email-sync-bar"><div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${view.percent}%` }} /></div>

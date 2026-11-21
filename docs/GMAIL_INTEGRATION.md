@@ -293,3 +293,29 @@ Checks:
 - `npm run test:db:gmail-sync` runs the real engine on the real SQL, against a simulated Gmail and faults: 500 and 2,000-message mailboxes, a worker killed mid-batch, expired history and page tokens, and partial attachment failures.
 - Unit tests: `tests/unit/gmail-functions.test.ts` and `tests/unit/email-sync-progress.test.ts`.
 - Smoke step: "Email sync progress".
+
+## Automatic sync and live updates (migration 20261225090000)
+
+**The schedule is in the database.** The migration creates a `pg_cron` job, `alton-gmail-sync`, that runs every 2 minutes. Each run POSTs `{ "action": "sync" }` to `google-gmail-sync` through `pg_net`, with the `x-cron-secret` header.
+- The secret and the project URL are read from **Supabase Vault** at run time, so neither is ever stored in a migration.
+- After applying the migration, add both once in the SQL editor:
+
+```
+select vault.create_secret('https://<project-ref>.supabase.co', 'alton_project_url');
+select vault.create_secret('<GOOGLE_CRON_SECRET>', 'alton_gmail_cron_secret');
+```
+
+- Support Settings → Email shows whether the job is scheduled and the secrets are present (never their values). The SQL check is `select public.support_gmail_schedule_status();` as an administrator, or `select * from cron.job_run_details order by start_time desc limit 5;`.
+- If an external scheduler already calls `google-gmail-sync`, remove it: overlapping calls are harmless (the mailbox lock answers "busy"), but they are unnecessary.
+- Sync now and Full re-sync remain available as fallbacks.
+
+**Live updates in the app.** One loop in the app shell keeps the sidebar badges and the WhatsApp, Emails and Calls screens current.
+- **Realtime:** it subscribes to `support_conversations`, `support_whatsapp_messages` and `support_call_signals`. The migration adds the first two to the `supabase_realtime` publication. RLS applies, so only users with `support.view` of the company receive changes.
+- **Summary:** each change reads the small `support_live_summary()` result: counts plus change stamps.
+- **Fallback poll:** every 3 seconds while the tab is visible, paused while it is hidden, and immediate when the user returns.
+- **Screens:** a screen reloads its list or thread in place when its stamp moves. The selected conversation, open email, compose text and reading position are kept.
+
+**Badges:**
+- **WhatsApp:** conversations with unread messages.
+- **Emails:** unread received emails in the Inbox. Archived, snoozed, spam, trash and sent mail are excluded.
+- **Calls:** missed incoming calls that were not answered or called back later, whose conversation is not resolved, and that nobody marked handled. Use Calls → **Mark all handled**, or **Mark handled** on a call.

@@ -710,7 +710,9 @@ const PHONE_DETAIL = (id) => {
 // Google Workspace Gmail (20261212090000). "Sent" only when the mock Gmail accepted the message.
 const GMAIL = { connected: false, sendOutcome: 'PENDING', sendCalls: [], startCalls: 0, originalCalls: [], syncCalls: [] }
 // Resumable sync progress (20261224090000); null = the function does not exist yet (before the migration).
-const SYNC = { status: null }
+const SYNC = { status: null, schedule: null }
+// Support live updates (20261225090000): served only by its own step (others see the pre-migration fallback).
+const LIVE = { on: false, summary: null, handled: [] }
 const GMAIL_CONFIG = () => ({
   config: { channel_account_id: 'sca-mail', provider: 'GOOGLE_WORKSPACE', mailbox_address: 'support@alton.example', display_name: 'Alton Support', signature: 'Alton Support Team',
     pubsub_topic: 'projects/alton-erp-123/topics/gmail-support', push_enabled: true, mailbox_modify_enabled: false, initial_sync_days: 7, max_attachment_mb: 10,
@@ -2234,6 +2236,17 @@ const api = http.createServer((req, res) => {
           PHONE_CONFIG.config.is_enabled = false
           PHONE_CONFIG.config.disconnected_at = new Date().toISOString()
           return send(res, 200, null)
+        case 'support_live_summary':
+          if (!LIVE.on) return send(res, 404, { code: 'PGRST202', message: 'Could not find the function public.support_live_summary' })
+          return send(res, 200, LIVE.summary)
+        case 'support_calls_mark_handled':
+          if (!LIVE.on) return send(res, 404, { code: 'PGRST202', message: 'Could not find the function public.support_calls_mark_handled' })
+          LIVE.handled.push(body.p_ids ?? null)
+          { const n = LIVE.summary.missed_calls; LIVE.summary = { ...LIVE.summary, missed_calls: 0, stamps: { ...LIVE.summary.stamps, calls: `c${Date.now()}` } }
+            return send(res, 200, { handled: n }) }
+        case 'support_gmail_schedule_status':
+          if (!SYNC.schedule) return send(res, 404, { code: 'PGRST202', message: 'Could not find the function public.support_gmail_schedule_status' })
+          return send(res, 200, SYNC.schedule)
         case 'support_email_sync_status':
           if (!SYNC.status) return send(res, 404, { code: 'PGRST202', message: 'Could not find the function public.support_email_sync_status' })
           return send(res, 200, SYNC.status)
@@ -8173,8 +8186,11 @@ await step('Email sync progress: batches continue on the server, progress and re
     // A full re-sync in progress: bar, processed / remaining, attachments still downloading; Full re-sync cannot start twice.
     SYNC.status = { running: false, full_requested: false, batch_no: 41, last_batch_at: NOW, last_batch: { fetched: 12, stored: 12, attachments: 3, bytes: 3145728, duration_ms: 9200, ok: true },
       last_error: null, last_error_stage: null, last_error_at: null, remaining: { ...none, queue: 1350, queue_ready: 1350, attachments: 40, attachments_ready: 40 }, job }
+    SYNC.schedule = { scheduler_available: true, scheduled: true, job: { schedule: '*/2 * * * *', active: true }, secrets_configured: true,
+      last_run: { status: 'succeeded', start_time: NOW, message: null } }
     await goto('/support/settings?tab=email')
     await waitFor(`document.querySelector('[data-testid=email-sync-state]')?.dataset.state === 'CONTINUING'`, 'sync in progress')
+    await waitFor(`document.querySelector('[data-testid=email-sync-schedule]')?.innerText.includes('Automatic sync: every 2 minutes on the server')`, 'schedule shown')
     assert(await evaluate(`document.querySelector('[data-testid=email-sync-bar]').getAttribute('aria-valuenow') === '25'
       && document.querySelector('[data-testid=email-sync-lines]').innerText.includes('450 of 1,800 new messages processed')
       && document.querySelector('[data-testid=email-sync-lines]').innerText.includes('40 attachments still downloading')
@@ -8190,6 +8206,9 @@ await step('Email sync progress: batches continue on the server, progress and re
     SYNC.status = { ...SYNC.status, running: true }
     await goto('/support/settings?tab=email')
     await waitFor(`document.querySelector('[data-testid=email-sync-state]')?.dataset.state === 'RUNNING' && document.querySelector('[data-testid=email-sync-now]').disabled`, 'running: buttons wait')
+    SYNC.schedule = { ...SYNC.schedule, secrets_configured: false, last_run: null }
+    await goto('/support/settings?tab=email')
+    await waitFor(`document.querySelector('[data-testid=email-sync-schedule]')?.innerText.includes('Vault secrets alton_project_url / alton_gmail_cron_secret are missing')`, 'schedule warning')
     // A failed batch and messages that gave up: needs attention, Retry.
     SYNC.status = { ...SYNC.status, running: false, job: null, last_batch: { ok: false, stage: 'history' }, last_error: 'Sync stopped at history: Gmail API error 503: backend',
       last_error_stage: 'history', last_error_at: NOW, remaining: { ...none, failed: 2, attachments: 1, attachments_failed: 1 } }
@@ -8204,7 +8223,78 @@ await step('Email sync progress: batches continue on the server, progress and re
   } finally {
     USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
     emailChannel.status = before
-    SYNC.status = null; GMAIL.connected = false
+    SYNC.status = null; SYNC.schedule = null; GMAIL.connected = false
+  }
+})
+
+await step('Support live updates: red badges for WhatsApp / Emails / Calls (99+, hidden at 0), updated without a page reload; lists reload in place keeping the open email and unsent text; missed calls handled; one polling loop', async () => {
+  const PERMS = ['support.view', 'support.manage_tickets', 'support.assign', 'support.reply', 'support.manage_integrations']
+  USERS['manager@test.invalid'].permissions.push(...PERMS)
+  const mailConv = supportConv('sc-mail', 'EMAIL', { subject: 'Cracked basin', customer_id: 'scu1', last_message_preview: 'The basin arrived cracked.' })
+  SUPPORT_INBOX.push(mailConv)
+  const emailChannel = SUPPORT_CHANNELS.find((c) => c.channel === 'EMAIL')
+  const before = emailChannel.status
+  LIVE.on = true; LIVE.handled = []
+  LIVE.summary = { whatsapp_unread: 5, email_unread: 12, missed_calls: 3, stamps: { whatsapp: 'w1', email: 'e1', calls: 'c1' }, at: NOW }
+  MAILBOX.web = true; MAILBOX.state = {}; GMAIL.connected = true; emailChannel.status = 'CONNECTED'
+  const badge = (k) => `document.querySelector('[data-testid=nav-badge-support-${k}]')?.innerText`
+  try {
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+    await setViewport(1440, 900)
+    await goto('/support/overview')
+    await waitFor(`${badge('whatsapp')} === '5' && ${badge('emails')} === '12' && ${badge('calls')} === '3'`, 'badges')
+    assert(await evaluate(`(() => { const b = document.querySelector('[data-testid=nav-badge-support-emails]'); const link = b.closest('a').getBoundingClientRect(); const r = b.getBoundingClientRect()
+      return b.classList.contains('bg-red-600') && b.classList.contains('text-white') && getComputedStyle(b).borderRadius !== '0px'
+        && r.right <= link.right && r.right > link.right - 24 && Math.abs((r.top + r.bottom) / 2 - (link.top + link.bottom) / 2) < 3
+        && b.getAttribute('aria-label') === '12 unread emails' })()`), 'red round badge on the right, vertically centred, with a label')
+    await screenshot('268-support-badges')
+    // Counts change on the server: the badges follow within the 3-second check, without reloading the page.
+    await evaluate(`window.__noReload = 'still here'`)
+    LIVE.summary = { ...LIVE.summary, email_unread: 150, whatsapp_unread: 0, stamps: { ...LIVE.summary.stamps, email: 'e2', whatsapp: 'w2' } }
+    await waitFor(`${badge('emails')} === '99+' && !document.querySelector('[data-testid=nav-badge-support-whatsapp]')`, '99+ and hidden at zero', 6000)
+    assert(await evaluate(`window.__noReload === 'still here'`), 'the page was reloaded')
+
+    // Emails: an open thread and an unsent message survive new mail arriving (in-place reloads).
+    await goto('/support/emails?folder=all&c=sc-mail')
+    await waitFor(`!!document.querySelector('[data-testid=email-em1]')`, 'thread open')
+    await click('[data-testid=new-email]')
+    await waitFor(`!!document.querySelector('#em-body')`, 'compose')
+    await fill('#em-subject', 'Draft in progress')
+    await fillEditor('#em-body', 'Half-written reply')
+    const listCalls = rpcCalls('support_email_mailbox').length
+    const threadCalls = rpcCalls('support_email_thread').length
+    await evaluate(`window.__noReload = 'mail'`)
+    LIVE.summary = { ...LIVE.summary, email_unread: 13, stamps: { ...LIVE.summary.stamps, email: 'e3' } }
+    for (let i = 0; i < 60 && (rpcCalls('support_email_mailbox').length === listCalls || rpcCalls('support_email_thread').length === threadCalls); i++) await sleep(100)
+    assert(rpcCalls('support_email_mailbox').length > listCalls && rpcCalls('support_email_thread').length > threadCalls, 'list and thread reloaded when the email stamp moved')
+    assert(await evaluate(`window.__noReload === 'mail' && /c=sc-mail/.test(location.search) && !!document.querySelector('[data-testid=email-em1]')
+      && document.querySelector('#em-subject').value === 'Draft in progress' && document.querySelector('#em-body').innerText.includes('Half-written reply')`), 'open email and unsent text kept')
+    await click('[data-testid=email-discard]')
+
+    // Calls: missed calls needing attention, Mark all handled clears the badge at once.
+    await goto('/support/calls')
+    await waitFor(`!!document.querySelector('[data-testid=missed-calls-banner]') && document.querySelector('[data-testid=missed-calls-banner]').innerText.includes('3 missed calls need attention')`, 'missed calls banner')
+    await click('[data-testid=handle-all-missed]')
+    await waitFor(`!document.querySelector('[data-testid=nav-badge-support-calls]') && document.querySelector('[data-testid=missed-calls-banner]')?.innerText.includes('3 missed calls marked handled')`, 'handled')
+    assert(LIVE.handled.length === 1 && LIVE.handled[0] === null, 'mark all handled request')
+
+    // One loop for the whole app: after moving between pages, about one summary request per 3 s.
+    await goto('/support/overview')
+    await click('a[href="/support/emails"]')
+    await click('a[href="/support/whatsapp"]')
+    await click('a[href="/support/calls"]')
+    await sleep(800)
+    const n0 = rpcCalls('support_live_summary').length
+    await sleep(6500)
+    const n = rpcCalls('support_live_summary').length - n0
+    assert(n >= 1 && n <= 4, `summary requests in 6.5 s: ${n} (one loop, 3 s apart)`)
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+    SUPPORT_INBOX.splice(SUPPORT_INBOX.indexOf(mailConv), 1)
+    emailChannel.status = before
+    LIVE.on = false; LIVE.summary = null; MAILBOX.web = false; MAILBOX.state = {}; GMAIL.connected = false
   }
 })
 

@@ -9,6 +9,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { COMPANY } from '@/config/app'
 import { NAV_ITEMS, findNavItemByPath } from '@/config/navigation'
 import { ErpPreferencesProvider } from '@/features/management/erp-preferences-provider'
+import { SupportLiveProvider } from '@/features/support/live/support-live'
 import { IncomingCallPanel } from '@/features/support/phone-components'
 import { usePersistentState } from '@/hooks/use-persistent-state'
 import { installGlobalErrorReporting } from '@/lib/error-reporting'
@@ -41,6 +42,7 @@ export function AppLayout() {
   return (
     <TooltipProvider>
       <ErpPreferencesProvider>
+      <SupportLiveProvider>
       <div className={cn('bg-surface-muted', workspace ? 'h-dvh overflow-hidden' : 'min-h-dvh')} data-layout={workspace ? 'workspace' : 'page'}>
         <a
           href="#main-content"
@@ -71,6 +73,7 @@ export function AppLayout() {
           </footer>}
         </div>
       </div>
+      </SupportLiveProvider>
       </ErpPreferencesProvider>
     </TooltipProvider>
   )

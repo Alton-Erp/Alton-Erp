@@ -9,14 +9,16 @@ import { PageHeader } from '@/components/common/page-header'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { CallFollowUp } from '@/features/support/call-follow-up'
+import { useSupportLive } from '@/features/support/live/use-support-live'
 import { CallStatusBadge } from '@/features/support/phone-components'
 import { InfoList } from '@/features/support/support-components'
 import { formatDuration } from '@/features/support/support-model'
+import { useSupportPermissions } from '@/features/support/use-support-permissions'
 import { useAsync } from '@/hooks/use-async'
 import { describeDataError } from '@/lib/errors'
 import { formatDateTime } from '@/lib/format'
 import { fetchCall } from '@/services/phone'
-import { attachmentUrl } from '@/services/support'
+import { attachmentUrl, markCallsHandled } from '@/services/support'
 
 /** /support/calls/:callId — one call: numbers, agent, times, durations, disposition, provider references, recording, links. */
 export default function SupportCallDetailPage() {
@@ -25,6 +27,11 @@ export default function SupportCallDetailPage() {
   const tz = access?.company?.timezone
   const q = useAsync(() => fetchCall(callId), [callId])
   const [recError, setRecError] = useState<string | null>(null)
+  const live = useSupportLive()
+  const perms = useSupportPermissions()
+  const [handled, setHandled] = useState<string | null>(null)
+  const markHandled = () => markCallsHandled([callId]).then((r) => { setHandled(r.handled ? 'Marked handled.' : 'Already handled.'); live.refresh() },
+    (e) => setHandled(describeDataError(e)))
   const header = <PageHeader title="Call details" breadcrumbs={[{ label: 'Support Centre' }, { label: 'Calls', to: '/support/calls' }, { label: 'Call details' }]}
     actions={<Button variant="outline" asChild><Link to="/support/calls"><ArrowLeft /> Call log</Link></Button>} />
   if (q.loading && !q.data) return <>{header}<LoadingState rows={8} /></>
@@ -38,7 +45,12 @@ export default function SupportCallDetailPage() {
       {header}
       <div className="grid gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <Card data-testid="call-detail">
-          <CardHeader className="flex flex-row items-center justify-between gap-2"><CardTitle>{c.direction === 'INBOUND' ? 'Incoming call' : 'Outgoing call'}</CardTitle><CallStatusBadge status={c.status} /></CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between gap-2"><CardTitle>{c.direction === 'INBOUND' ? 'Incoming call' : 'Outgoing call'}</CardTitle>
+            <span className="flex items-center gap-2">
+              {c.direction === 'INBOUND' && c.status === 'MISSED' && perms.reply && (handled
+                ? <span className="text-xs text-muted-foreground" role="status" data-testid="call-handled">{handled}</span>
+                : <Button size="sm" variant="outline" onClick={() => void markHandled()} data-testid="call-mark-handled">Mark handled</Button>)}
+              <CallStatusBadge status={c.status} /></span></CardHeader>
           <CardContent>
             <InfoList items={[
               ['Direction', c.direction === 'INBOUND' ? 'Inbound' : 'Outbound'],

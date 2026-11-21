@@ -271,3 +271,24 @@ export const isSupportMissing = (e: unknown) => {
   const code = (e as { code?: string } | null)?.code
   return code === 'PGRST202' || code === '42883' || code === 'PGRST205' || code === '42P01'
 }
+
+// --- Live updates (migration 20261225090000) -------------------------------------------------------------
+/** Sidebar badge counts and change stamps (counts only; support.view). */
+export interface LiveSummary {
+  whatsapp_unread: number; email_unread: number; missed_calls: number
+  stamps: { whatsapp: string | null; email: string | null; calls: string | null }
+  at: string
+}
+/** null before the migration (no badges; pages keep their own refresh). */
+export async function fetchLiveSummary(): Promise<LiveSummary | null> {
+  try {
+    const s = await rpc<LiveSummary | null>('support_live_summary')
+    return s ? { ...s, whatsapp_unread: Number(s.whatsapp_unread), email_unread: Number(s.email_unread), missed_calls: Number(s.missed_calls) } : null
+  } catch (e) {
+    const x = e as { code?: string; message?: string } | null
+    if (x?.code === 'PGRST202' || x?.code === '42883' || /could not find the function/i.test(x?.message ?? '')) return null
+    throw e
+  }
+}
+/** Marks missed calls handled (null = every missed call that needs attention). */
+export const markCallsHandled = (ids: string[] | null) => rpc<{ handled: number }>('support_calls_mark_handled', { p_ids: ids })
