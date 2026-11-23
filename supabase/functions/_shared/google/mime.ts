@@ -124,6 +124,31 @@ export interface ParsedEmail {
 export const MAX_TEXT = 500000
 export const MAX_HTML = 1000000
 
+/** File name extension for a part that has no file name, from its content type (fallback names like "image.png"). */
+const EXT_FOR_TYPE: Record<string, string> = {
+  'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp', 'image/svg+xml': 'svg', 'image/tiff': 'tif', 'image/heic': 'heic',
+  'image/heif': 'heif', 'image/x-icon': 'ico', 'image/vnd.microsoft.icon': 'ico', 'image/avif': 'avif',
+  'application/pdf': 'pdf', 'application/msword': 'doc', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.ms-excel': 'xls', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx', 'application/vnd.ms-powerpoint': 'ppt',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx', 'application/rtf': 'rtf', 'text/rtf': 'rtf',
+  'application/vnd.oasis.opendocument.text': 'odt', 'application/vnd.oasis.opendocument.spreadsheet': 'ods', 'application/vnd.oasis.opendocument.presentation': 'odp',
+  'application/zip': 'zip', 'application/x-zip-compressed': 'zip', 'application/vnd.rar': 'rar', 'application/x-rar-compressed': 'rar', 'application/x-7z-compressed': '7z',
+  'application/x-tar': 'tar', 'application/gzip': 'gz', 'application/x-gzip': 'gz',
+  'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/mp4': 'm4a', 'audio/aac': 'aac', 'audio/ogg': 'ogg', 'audio/flac': 'flac',
+  'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/x-msvideo': 'avi', 'video/x-matroska': 'mkv', 'video/webm': 'webm',
+  'text/csv': 'csv', 'text/calendar': 'ics', 'text/vcard': 'vcf', 'text/x-vcard': 'vcf', 'application/json': 'json', 'application/xml': 'xml', 'text/xml': 'xml',
+  'message/rfc822': 'eml', 'application/vnd.ms-outlook': 'msg',
+}
+/** A safe name for a part without one: "image.png", "invite.ics", "message.eml", "attachment.bin". */
+export function fallbackFileName(type: string): string {
+  if (type === 'message/rfc822') return 'message.eml'
+  if (type === 'text/calendar') return 'invite.ics'
+  const ext = EXT_FOR_TYPE[type] ?? (/^[a-z]+\/([a-z0-9]{1,8})$/.exec(type)?.[1] ?? 'bin')
+  return `${type.startsWith('image/') ? 'image' : 'attachment'}.${ext}`
+}
+/** Text parts that are another rendering of the body (never files): Gmail AMP, enriched text, Apple Watch HTML. */
+const BODY_ALTERNATIVES = new Set(['text/plain', 'text/html', 'text/x-amp-html', 'text/enriched', 'text/richtext', 'text/watch-html'])
+
 export function parseGmailMessage(msg: GmailMessage, maxAttachmentBytes: number): { email: ParsedEmail; inlineData: Map<string, string> } {
   const top = msg.payload
   let text: string | null = null
@@ -141,19 +166,26 @@ export function parseGmailMessage(msg: GmailMessage, maxAttachmentBytes: number)
     const partId = p.partId ?? String(count)
     if (parts.length < 100) parts.push({ part_id: partId, mime_type: type.slice(0, 120), ...(filename ? { filename: filename.slice(0, 255) } : {}), size: p.body?.size ?? 0 })
     if (type.startsWith('multipart/')) { for (const c of p.parts ?? []) walk(c, depth + 1); return }
-    const isAttachment = Boolean(filename) || /^\s*attachment/i.test(disp ?? '') || type === 'message/rfc822'
-    if (!isAttachment && (type === 'text/plain' || type === 'text/html') && p.body?.data) {
+    const contentId = headerOf(p, 'Content-ID')?.replace(/^<|>$/g, '').trim().slice(0, 250) || null
+    // Any leaf part that is not the text body is a file, whatever its type: named parts, "attachment" parts,
+    // forwarded messages, and nameless ones (embedded images with a Content-ID, calendar invites, unknown types).
+    const hasContent = Boolean(p.body?.attachmentId || p.body?.data)
+    const isBodyText = BODY_ALTERNATIVES.has(type) && !filename && !/^\s*attachment/i.test(disp ?? '')
+    const isAttachment = !isBodyText && (Boolean(filename) || /^\s*attachment/i.test(disp ?? '') || type === 'message/rfc822' || hasContent)
+    if (isBodyText && (type === 'text/plain' || type === 'text/html') && p.body?.data) {
       const decoded = decodeText(b64urlToBytes(p.body.data), param(ctype, 'charset'))
       if (type === 'text/plain' && text === null) text = decoded
       if (type === 'text/html' && html === null) html = decoded
       return
     }
     if (!isAttachment) return
-    const name = (filename || (type === 'message/rfc822' ? 'message.eml' : 'attachment')).replace(/[\r\n]/g, ' ').slice(0, 255)
+    const name = (filename || fallbackFileName(type)).replace(/[\r\n]/g, ' ').replaceAll(String.fromCharCode(0), '').replace(/[\\/]/g, '_').slice(0, 255)
     const ext = /\.([A-Za-z0-9]{1,8})$/.exec(name)?.[1]?.toLowerCase() ?? ''
     const size = p.body?.size ?? 0
+    // "Inline" = an image embedded in the body (it has a Content-ID). Documents some mail apps mark inline (Apple Mail)
+    // are ordinary attachments, so they are listed with the others.
     const a: AttachmentPart = { part_id: partId, attachment_id: p.body?.attachmentId ?? null, filename: name, mime_type: type.slice(0, 120), size,
-      content_id: headerOf(p, 'Content-ID')?.replace(/^<|>$/g, '').slice(0, 250) ?? null, inline: /^\s*inline/i.test(disp ?? '') }
+      content_id: contentId, inline: type.startsWith('image/') && Boolean(contentId) && !/^\s*attachment/i.test(disp ?? '') }
     if (BLOCKED_EXTENSIONS.includes(ext)) Object.assign(a, { state: 'BLOCKED', reason: `.${ext} files are not stored (executable or script).` })
     else if (size > maxAttachmentBytes) Object.assign(a, { state: 'TOO_LARGE', reason: `Larger than the ${Math.round(maxAttachmentBytes / 1048576)} MB limit.` })
     else if (!a.attachment_id && !p.body?.data) Object.assign(a, { state: 'TOO_LARGE', reason: 'No content.' })

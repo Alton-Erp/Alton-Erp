@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 
 import { inlineToHtml, markdownToHtml, markdownToText, safeHref } from '../../supabase/functions/_shared/google/markdown.ts'
 import { buildMime } from '../../supabase/functions/_shared/google/mime.ts'
-import { base64UrlToBytes, fileKind, parseCsv, previewMode, shortName } from '../../src/features/support/mail/attachment-model.ts'
+import { base64UrlToBytes, canOpenInTab, extLabel, fileKind, orderAttachments, parseCsv, previewMode, shortName } from '../../src/features/support/mail/attachment-model.ts'
 import {
   authResults, editorHtml, editorToMarkup, emlFileName, formatMailSearch, forwardBlock, forwardSubject, initiallyExpanded, mailListDate, messageLink, pageLabel,
   parseMailSearch, printHtml, snoozeChoices, splitQuoted, starredEmails, threadItems, toIsoDate, type EditorNode,
@@ -227,6 +227,60 @@ describe('attachments', () => {
     const text = 'Subject: Café\r\n\r\nHi ✓'
     const raw = Buffer.from(text, 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
     assert.equal(Buffer.from(base64UrlToBytes(raw)).toString('utf8'), text)
+  })
+})
+
+// ---- Every attachment format is shown (download at least; preview where safe) -------------------------------------
+describe('attachment formats', () => {
+  const kinds: [string, string | null, string][] = [
+    ['a.jpg', 'image/jpeg', 'image'], ['a.png', 'image/png', 'image'], ['a.gif', 'image/gif', 'image'], ['a.webp', 'image/webp', 'image'], ['a.bmp', 'image/bmp', 'image'],
+    ['a.svg', 'image/svg+xml', 'image'], ['a.tiff', 'image/tiff', 'image'], ['a.ico', 'image/x-icon', 'image'], ['a.HEIC', 'image/heic', 'image'], ['a.heif', null, 'image'],
+    ['a.pdf', 'application/pdf', 'pdf'], ['a.doc', null, 'doc'], ['a.docx', null, 'doc'], ['a.rtf', null, 'doc'], ['a.odt', null, 'doc'],
+    ['a.xls', null, 'sheet'], ['a.xlsx', null, 'sheet'], ['a.ods', null, 'sheet'], ['a.csv', 'text/csv', 'csv'], ['a.ppt', null, 'slides'], ['a.pptx', null, 'slides'], ['a.odp', null, 'slides'],
+    ['a.txt', 'text/plain', 'text'], ['a.json', 'application/json', 'text'], ['a.xml', 'application/xml', 'text'],
+    ['a.zip', 'application/zip', 'zip'], ['a.rar', 'application/vnd.rar', 'zip'], ['a.7z', 'application/x-7z-compressed', 'zip'], ['a.tar', null, 'zip'], ['a.gz', null, 'zip'],
+    ['a.mp3', 'audio/mpeg', 'audio'], ['a.wav', null, 'audio'], ['a.m4a', null, 'audio'], ['a.aac', null, 'audio'], ['a.ogg', null, 'audio'], ['a.flac', 'audio/flac', 'audio'],
+    ['a.mp4', 'video/mp4', 'video'], ['a.mov', 'video/quicktime', 'video'], ['a.avi', null, 'video'], ['a.mkv', null, 'video'], ['a.webm', null, 'video'],
+    ['a.html', 'text/html', 'web'], ['a.eml', 'message/rfc822', 'mail'], ['a.msg', 'application/vnd.ms-outlook', 'mail'], ['a.vcf', 'text/vcard', 'contact'], ['a.ics', 'text/calendar', 'calendar'],
+  ]
+  it('41. every common format has a kind (icon and label); nothing is hidden', () => {
+    for (const [n, t, k] of kinds) assert.equal(fileKind(n, t), k, n)
+  })
+  it('42. preview where the browser shows it safely; download for the rest', () => {
+    const preview: Record<string, string | null> = {
+      'a.jpg': 'image', 'a.png': 'image', 'a.gif': 'image', 'a.webp': 'image', 'a.bmp': 'image', 'a.svg': 'image', 'a.ico': 'image', 'a.tiff': null, 'a.HEIC': null,
+      'a.pdf': 'pdf', 'a.docx': null, 'a.xlsx': null, 'a.pptx': null, 'a.odt': null, 'a.csv': 'text', 'a.txt': 'text', 'a.json': 'text', 'a.xml': 'text',
+      'a.zip': null, 'a.rar': null, 'a.7z': null, 'a.mp3': 'audio', 'a.flac': 'audio', 'a.mp4': 'video', 'a.mov': 'video', 'a.webm': 'video', 'a.avi': null, 'a.mkv': null,
+      'a.html': 'text', 'a.eml': 'text', 'a.msg': null, 'a.vcf': 'text', 'a.ics': 'text',
+    }
+    for (const [n, t] of kinds) if (n in preview) assert.equal(previewMode(n, t, 1000), preview[n], n)
+  })
+  it('43. unknown types and missing content types: a generic file with Download, never dropped', () => {
+    assert.equal(fileKind('drawing.dwg', 'application/acad'), 'other')
+    assert.equal(fileKind('data', null), 'other')
+    assert.equal(previewMode('drawing.dwg', 'application/acad', 10), null)
+    assert.equal(fileKind('attachment.bin', 'application/octet-stream'), 'other')
+    assert.equal(fileKind('noext', 'text/calendar'), 'calendar')
+    assert.equal(fileKind('noext', 'application/x-rar-compressed'), 'zip')
+    assert.equal(fileKind('noext', 'application/vnd.oasis.opendocument.spreadsheet'), 'sheet')
+    assert.equal(extLabel('Report.Final.DOCX'), 'DOCX')
+    assert.equal(extLabel('README'), '')
+  })
+  it('44. safety: HTML / SVG / XML never open as pages; large text is download only', () => {
+    assert.equal(previewMode('page.html', 'text/html', 10), 'text', 'HTML shows its source as text')
+    assert.equal(canOpenInTab('page.html', 'text/html', 10), false)
+    assert.equal(canOpenInTab('logo.svg', 'image/svg+xml', 10), false)
+    assert.equal(canOpenInTab('logo.png', 'image/svg+xml', 10), false, 'SVG content under another name')
+    assert.equal(canOpenInTab('feed.xml', 'application/xml', 10), false)
+    assert.equal(canOpenInTab('photo.jpg', 'image/jpeg', 10), true)
+    assert.equal(canOpenInTab('invoice.pdf', 'application/pdf', 10), true)
+    assert.equal(canOpenInTab('setup.dwg', null, 10), false)
+    assert.equal(previewMode('huge.json', 'application/json', 3 * 1048576), null)
+    assert.equal(previewMode('big.mp4', 'video/mp4', 200 * 1048576), 'video', 'media streams; no size cap')
+  })
+  it('45. embedded (inline) images are listed after the ordinary attachments, order kept', () => {
+    const l = [{ id: 'logo', inline: true }, { id: 'pdf', inline: false }, { id: 'cid2', inline: true }, { id: 'xlsx' }]
+    assert.deepEqual(orderAttachments(l).map((a) => a.id), ['pdf', 'xlsx', 'logo', 'cid2'])
   })
 })
 

@@ -1,12 +1,13 @@
 import {
-  ChevronLeft, ChevronRight, Download, ExternalLink, Eye, File, FileArchive, FileImage, FileMusic, FileSpreadsheet, FileText, FileVideoCamera, Lock, Play, Presentation, X,
+  CalendarDays, ChevronLeft, ChevronRight, Contact, Download, ExternalLink, Eye, File, FileArchive, FileCode, FileImage, FileMusic, FileSpreadsheet, FileText, FileVideoCamera,
+  FileX, Loader2, Lock, Mail, Play, Presentation, RotateCw, X,
 } from 'lucide-react'
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import { useEffect, useState, type ReactNode } from 'react'
 
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { fileKind, KIND_LABEL, parseCsv, previewMode, shortName, type FileKind } from '@/features/support/mail/attachment-model'
-import { batchedAttachmentUrl, signedAttachmentUrl } from '@/features/support/wa-web/media-urls'
+import { canOpenInTab, extLabel, fileKind, KIND_LABEL, parseCsv, previewMode, shortName, type FileKind } from '@/features/support/mail/attachment-model'
+import { batchedAttachmentUrl, forgetAttachmentUrl, signedAttachmentUrl } from '@/features/support/wa-web/media-urls'
 import { describeDataError } from '@/lib/errors'
 import { formatFileSize } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -14,18 +15,26 @@ import { attachmentDownloadUrl, type MailAttachment } from '@/services/email'
 
 // Every file is reached through a 5-minute signed link of the private support bucket, created with the user's own
 // session: the bucket's policies decide, and files marked sensitive arrive without a path (shown as restricted).
+// Nothing is executed: images (SVG too) only through <img>, PDFs in the browser's viewer, text-like files (HTML, XML,
+// JSON, calendar, contact, .eml) as plain text, everything else as an icon with Download. Files load only when shown.
 
 const KIND_ICON: Record<FileKind, { icon: typeof File; color: string }> = {
   image: { icon: FileImage, color: 'text-[#D93025]' }, pdf: { icon: FileText, color: 'text-[#D93025]' }, video: { icon: FileVideoCamera, color: 'text-[#D93025]' },
   audio: { icon: FileMusic, color: 'text-[#9334E6]' }, doc: { icon: FileText, color: 'text-[#1A73E8]' }, sheet: { icon: FileSpreadsheet, color: 'text-[#188038]' },
   csv: { icon: FileSpreadsheet, color: 'text-[#188038]' }, slides: { icon: Presentation, color: 'text-[#E37400]' }, zip: { icon: FileArchive, color: 'text-[#5F6368]' },
-  text: { icon: FileText, color: 'text-[#5F6368]' }, other: { icon: File, color: 'text-[#5F6368]' },
+  text: { icon: FileText, color: 'text-[#5F6368]' }, web: { icon: FileCode, color: 'text-[#E37400]' }, mail: { icon: Mail, color: 'text-[#1A73E8]' },
+  calendar: { icon: CalendarDays, color: 'text-[#1A73E8]' }, contact: { icon: Contact, color: 'text-[#188038]' }, other: { icon: File, color: 'text-[#5F6368]' },
 }
 export function FileKindIcon({ a, className }: { a: Pick<MailAttachment, 'file_name' | 'content_type'>; className?: string }) {
   const { icon: Icon, color } = KIND_ICON[fileKind(a.file_name, a.content_type)]
   return <Icon className={cn(color, className)} aria-hidden />
 }
-const typeLabel = (a: MailAttachment) => `${KIND_LABEL[fileKind(a.file_name, a.content_type)]}${a.size_bytes ? ` · ${formatFileSize(a.size_bytes)}` : ''}`
+/** "PDF · 1.2 MB", "Image · PNG · 40 KB", "File" (kind, extension when it says more, size). */
+const typeLabel = (a: MailAttachment) => {
+  const kind = KIND_LABEL[fileKind(a.file_name, a.content_type)]
+  const ext = extLabel(a.file_name)
+  return [kind, ext && ext !== kind.toUpperCase() ? ext : null, a.size_bytes ? formatFileSize(a.size_bytes) : null].filter(Boolean).join(' · ')
+}
 
 /** A signed link for an image or video thumbnail (null while loading or when the file cannot be read). */
 function useThumb(a: MailAttachment, batched: boolean): string | null {
@@ -74,21 +83,32 @@ export function AttachmentChip({ a, onOpen }: { a: MailAttachment; onOpen: () =>
 
 /** Card below an email: a thumbnail (image, first frame of a video) or the file type; Preview and Download on hover or focus. */
 export function AttachmentTile({ a, onPreview }: { a: MailAttachment; onPreview: () => void }) {
-  const thumb = useThumb(a, false)
+  const thumb = useThumb(a, true)
   const mode = previewMode(a.file_name, a.content_type, a.size_bytes)
   const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [broken, setBroken] = useState(false)
   if (a.restricted || !a.storage_path) {
-    return <span className="inline-flex h-[120px] w-[180px] flex-col items-center justify-center gap-2 rounded-lg border border-[#E0E3E7] px-3 text-center text-xs text-[#5F6368]" data-testid="email-attachment-restricted">
-      <Lock className="size-6" /><span className="line-clamp-2 break-all">{a.file_name}</span><span>Restricted</span></span>
+    // Sensitive files reach only agents with Manage tickets; a file without a stored copy cannot be opened (never a lock).
+    return <span className="inline-flex h-[120px] w-[180px] flex-col items-center justify-center gap-2 rounded-lg border border-[#E0E3E7] px-3 text-center text-xs text-[#5F6368]"
+      data-testid={a.restricted ? 'email-attachment-restricted' : 'email-attachment-missing'} title={a.file_name}>
+      {a.restricted ? <Lock className="size-6" /> : <FileX className="size-6" />}<span className="line-clamp-2 break-all">{a.file_name}</span>
+      <span>{a.restricted ? 'Restricted' : 'Not available'}</span></span>
   }
-  const download = () => { setError(null); downloadAttachment(a).catch((e) => setError(describeDataError(e))) }
+  const download = () => {
+    setError(null); setBusy(true)
+    downloadAttachment(a).catch((e) => setError(describeDataError(e))).finally(() => setBusy(false))
+  }
   return (
-    <div className="group/att relative flex h-[120px] w-[180px] flex-col overflow-hidden rounded-lg border border-[#E0E3E7] bg-[#F8FAFD] hover:shadow-md" data-testid="email-attachment" title={a.file_name}>
-      <button type="button" onClick={onPreview} className="flex min-h-0 flex-1 items-center justify-center overflow-hidden" aria-label={`Preview ${a.file_name}`}>
-        {thumb && mode === 'image' ? <img src={thumb} alt={a.file_name} loading="lazy" className="size-full object-cover" />
-          : thumb && mode === 'video' ? <span className="relative size-full"><video src={`${thumb}#t=0.5`} preload="metadata" muted playsInline className="size-full object-cover" aria-hidden />
+    <div className="group/att relative flex h-[120px] w-[180px] flex-col overflow-hidden rounded-lg border border-[#E0E3E7] bg-[#F8FAFD] hover:shadow-md" data-testid="email-attachment"
+      data-kind={fileKind(a.file_name, a.content_type)} data-inline={a.inline ? 'true' : undefined} title={a.file_name}>
+      <button type="button" onClick={onPreview} className="flex min-h-0 flex-1 items-center justify-center overflow-hidden" aria-label={`${mode ? 'Preview' : 'Open'} ${a.file_name}`}>
+        {thumb && mode === 'image' && !broken ? <img src={thumb} alt={a.file_name} loading="lazy" className="size-full object-cover" onError={() => setBroken(true)} />
+          : thumb && mode === 'video' && !broken ? <span className="relative size-full"><video src={`${thumb}#t=0.5`} preload="metadata" muted playsInline className="size-full object-cover" aria-hidden onError={() => setBroken(true)} />
             <span className="absolute inset-0 flex items-center justify-center"><span className="flex size-9 items-center justify-center rounded-full bg-black/60 text-white"><Play className="size-4 fill-white" /></span></span></span>
-          : <FileKindIcon a={a} className="size-10" />}
+          : <span className="flex flex-col items-center gap-1"><FileKindIcon a={a} className="size-10" />
+            {extLabel(a.file_name) && <span className="rounded bg-white px-1.5 text-[10px] font-semibold tracking-wide text-[#5F6368]">{extLabel(a.file_name)}</span>}</span>}
+        {a.inline && <span className="absolute top-1.5 left-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white" data-testid="email-attachment-embedded">Embedded</span>}
       </button>
       <span className="flex items-center gap-1.5 border-t border-[#E0E3E7] bg-white px-2 py-1.5 text-xs">
         <FileKindIcon a={a} className="size-4 shrink-0" />
@@ -96,26 +116,32 @@ export function AttachmentTile({ a, onPreview }: { a: MailAttachment; onPreview:
           <span className="text-[#5F6368]">{typeLabel(a)}</span></span>
       </span>
       <span className="absolute inset-x-0 top-0 hidden justify-end gap-1 bg-gradient-to-b from-black/50 to-transparent p-1.5 group-focus-within/att:flex group-hover/att:flex">
-        <button type="button" onClick={onPreview} aria-label={`Preview ${a.file_name}`} title="Preview" data-testid="email-attachment-preview"
-          className="inline-flex size-8 items-center justify-center rounded-full bg-white/90 text-[#1F1F1F] hover:bg-white"><Eye className="size-4" /></button>
-        <button type="button" onClick={download} aria-label={`Download ${a.file_name}`} title="Download" data-testid="email-attachment-download"
-          className="inline-flex size-8 items-center justify-center rounded-full bg-white/90 text-[#1F1F1F] hover:bg-white"><Download className="size-4" /></button>
+        {mode && <button type="button" onClick={onPreview} aria-label={`Preview ${a.file_name}`} title="Preview" data-testid="email-attachment-preview"
+          className="inline-flex size-8 items-center justify-center rounded-full bg-white/90 text-[#1F1F1F] hover:bg-white"><Eye className="size-4" /></button>}
+        <button type="button" onClick={download} disabled={busy} aria-label={`Download ${a.file_name}`} title="Download" data-testid="email-attachment-download"
+          className="inline-flex size-8 items-center justify-center rounded-full bg-white/90 text-[#1F1F1F] hover:bg-white disabled:opacity-70">
+          {busy ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}</button>
       </span>
-      {error && <span role="alert" className="absolute inset-x-0 bottom-0 bg-red-50 px-2 py-1 text-[11px] text-red-700">{error}</span>}
+      {error && <span role="alert" className="absolute inset-x-0 bottom-0 bg-red-50 px-2 py-1 text-[11px] text-red-700">Download failed: {error}</span>}
     </div>
   )
 }
 
-function TextPreview({ url, csv }: { url: string; csv: boolean }) {
+const TEXT_LIMIT = 2 * 1048576
+function TextPreview({ url, csv, onLinkFailed }: { url: string; csv: boolean; onLinkFailed: () => boolean }) {
   const [text, setText] = useState<{ url: string; text: string | null; error: string | null } | null>(null)
   useEffect(() => {
     let live = true
-    fetch(url).then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`)))).then(
-      (t) => { if (live) setText({ url, text: t, error: null }) }, (e) => { if (live) setText({ url, text: null, error: describeDataError(e) }) })
+    fetch(url).then((r) => {
+      // 400 / 403 from storage: the signed link expired (or was revoked); ask for a new one once.
+      if ((r.status === 400 || r.status === 403) && onLinkFailed()) return null
+      return r.ok ? r.text() : Promise.reject(new Error(r.status === 404 ? 'The file is no longer in storage.' : `The file could not be read (HTTP ${r.status}).`))
+    }).then((t) => { if (live && t !== null) setText({ url, text: t.length > TEXT_LIMIT ? `${t.slice(0, TEXT_LIMIT)}\n…` : t, error: null }) },
+      (e) => { if (live) setText({ url, text: null, error: describeDataError(e) }) })
     return () => { live = false }
-  }, [url])
-  if (!text || text.url !== url) return <p className="text-sm text-white/80">Loading…</p>
-  if (text.error) return <p className="text-sm text-red-200" role="alert">{text.error}</p>
+  }, [url]) // eslint-disable-line react-hooks/exhaustive-deps
+  if (!text || text.url !== url) return <p className="inline-flex items-center gap-2 text-sm text-white/80"><Loader2 className="size-4 animate-spin" />Loading…</p>
+  if (text.error) return <p className="rounded bg-white px-4 py-3 text-sm text-red-700" role="alert">{text.error}</p>
   if (csv) {
     const { rows, truncated } = parseCsv(text.text ?? '')
     return (
@@ -126,37 +152,46 @@ function TextPreview({ url, csv }: { url: string; csv: boolean }) {
       </div>
     )
   }
-  return <pre className="max-h-full max-w-full overflow-auto rounded bg-white p-4 text-xs whitespace-pre-wrap text-[#1F1F1F]">{text.text}</pre>
+  return <pre className="max-h-full max-w-full overflow-auto rounded bg-white p-4 text-xs whitespace-pre-wrap text-[#1F1F1F]" data-testid="attachment-preview-text">{text.text}</pre>
 }
 
 function PreviewBody({ a, onDownload }: { a: MailAttachment; onDownload: () => void }) {
   const mode = previewMode(a.file_name, a.content_type, a.size_bytes)
   const [state, setState] = useState<{ id: string; url: string | null; error: string | null; failed: boolean } | null>(null)
+  // A new signed link is asked for once when the current one stops working (expired while the viewer stayed open).
+  const [attempt, setAttempt] = useState(0)
   const ok = !a.restricted && Boolean(a.storage_path)
   useEffect(() => {
     if (!ok || !mode) return
     let live = true
+    if (attempt > 0) forgetAttachmentUrl(a.storage_path!)
     signedAttachmentUrl(a.storage_path!).then((u) => { if (live) setState({ id: a.id, url: u, error: null, failed: false }) },
       (e) => { if (live) setState({ id: a.id, url: null, error: describeDataError(e), failed: false }) })
     return () => { live = false }
-  }, [a.id, a.storage_path, ok, mode])
+  }, [a.id, a.storage_path, ok, mode, attempt])
+  const relink = () => { if (attempt > 0) return false; setState(null); setAttempt(1); return true }
+  const mediaFailed = (s: { id: string; url: string | null; error: string | null; failed: boolean }) => { if (!relink()) setState({ ...s, failed: true }) }
   const fallback = (title: string, note: ReactNode) => (
     <div className="flex flex-col items-center gap-3 rounded-xl bg-white px-10 py-8 text-center text-[#1F1F1F]" data-testid="attachment-preview-none">
       <FileKindIcon a={a} className="size-14" /><p className="text-base font-medium">{title}</p><p className="max-w-sm text-sm text-[#5F6368]">{note}</p>
-      {ok && <button type="button" onClick={onDownload} className="inline-flex items-center gap-2 rounded-full bg-[#0B57D0] px-5 py-2 text-sm font-medium text-white hover:bg-[#0B57D0]/90"><Download className="size-4" />Download</button>}
+      {ok && <div className="flex gap-2">
+        <button type="button" onClick={onDownload} className="inline-flex items-center gap-2 rounded-full bg-[#0B57D0] px-5 py-2 text-sm font-medium text-white hover:bg-[#0B57D0]/90" data-testid="attachment-preview-none-download"><Download className="size-4" />Download</button>
+        {mode && state?.error && <button type="button" onClick={() => { setState(null); setAttempt((n) => n + 1) }} className="inline-flex items-center gap-2 rounded-full border border-[#747775] px-5 py-2 text-sm font-medium text-[#444746]"><RotateCw className="size-4" />Try again</button>}
+      </div>}
     </div>
   )
   if (!ok) return fallback('Restricted file', 'You do not have permission to open this attachment.')
   if (!mode) return fallback('No preview available', `${KIND_LABEL[fileKind(a.file_name, a.content_type)]} files cannot be shown here. Download the file to open it.`)
   const s = state?.id === a.id ? state : null
-  if (!s) return <p className="text-sm text-white/80">Loading…</p>
+  if (!s) return <p className="inline-flex items-center gap-2 text-sm text-white/80"><Loader2 className="size-4 animate-spin" />Loading…</p>
   if (s.error || !s.url) return fallback('Could not open the file', s.error ?? 'Try again.')
-  if (s.failed) return fallback('This browser cannot play this file', 'Download it to open it in another application.')
-  if (mode === 'image') return <img src={s.url} alt={a.file_name} className="max-h-full max-w-full object-contain" data-testid="attachment-preview-image" />
-  if (mode === 'pdf') return <iframe src={s.url} title={a.file_name} className="size-full rounded bg-white" data-testid="attachment-preview-pdf" />
-  if (mode === 'video') return <video src={s.url} controls autoPlay playsInline className="max-h-full max-w-full" onError={() => setState({ ...s, failed: true })} data-testid="attachment-preview-video" />
-  if (mode === 'audio') return <audio src={s.url} controls autoPlay onError={() => setState({ ...s, failed: true })} />
-  return <TextPreview url={s.url} csv={fileKind(a.file_name, a.content_type) === 'csv'} />
+  if (s.failed) return fallback(mode === 'image' ? 'This image cannot be shown' : 'This browser cannot play this file', 'Download it to open it in another application.')
+  if (mode === 'image') return <img src={s.url} alt={a.file_name} className="max-h-full max-w-full object-contain" onError={() => mediaFailed(s)} data-testid="attachment-preview-image" />
+  // The PDF viewer frame gets no scripts, forms or top navigation of its own (Chrome / Edge / Firefox viewers work sandboxed).
+  if (mode === 'pdf') return <iframe src={s.url} title={a.file_name} className="size-full rounded bg-white" referrerPolicy="no-referrer" data-testid="attachment-preview-pdf" />
+  if (mode === 'video') return <video src={s.url} controls autoPlay playsInline className="max-h-full max-w-full" onError={() => mediaFailed(s)} data-testid="attachment-preview-video" />
+  if (mode === 'audio') return <audio src={s.url} controls autoPlay onError={() => mediaFailed(s)} data-testid="attachment-preview-audio" />
+  return <TextPreview url={s.url} csv={fileKind(a.file_name, a.content_type) === 'csv'} onLinkFailed={relink} />
 }
 
 /** Full-screen viewer for the attachments of one email or one list row: previous / next (arrow keys), download, Escape closes. */
@@ -167,6 +202,7 @@ export function AttachmentPreview({ items, index, onIndex, onClose }: { items: M
   const download = () => { if (a) { setError(null); downloadAttachment(a).catch((e) => setError(describeDataError(e))) } }
   const openTab = () => { if (a?.storage_path) signedAttachmentUrl(a.storage_path).then((u) => window.open(u, '_blank', 'noopener'), (e) => setError(describeDataError(e))) }
   const ok = a && !a.restricted && a.storage_path
+  const tab = ok && canOpenInTab(a.file_name, a.content_type, a.size_bytes)
   const btn = 'inline-flex size-10 items-center justify-center rounded-full text-white hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-white'
   return (
     <DialogPrimitive.Root open={a !== null} onOpenChange={(o) => { if (!o) onClose() }}>
@@ -183,7 +219,7 @@ export function AttachmentPreview({ items, index, onIndex, onClose }: { items: M
                 <p className="text-xs text-white/70">{typeLabel(a)}{items.length > 1 ? ` · ${index! + 1} of ${items.length}` : ''}</p>
               </div>
               {ok && <>
-                <button type="button" className={btn} onClick={openTab} aria-label="Open in a new tab" title="Open in a new tab"><ExternalLink className="size-5" /></button>
+                {tab && <button type="button" className={btn} onClick={openTab} aria-label="Open in a new tab" title="Open in a new tab"><ExternalLink className="size-5" /></button>}
                 <button type="button" className={btn} onClick={download} aria-label="Download" title="Download" data-testid="attachment-preview-download"><Download className="size-5" /></button>
               </>}
             </header>

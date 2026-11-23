@@ -10,6 +10,8 @@ export async function signedAttachmentUrl(path: string): Promise<string> {
   urls.set(path, { url, until: Date.now() + 240_000 })
   return url
 }
+/** Drops a cached link (it stopped working, e.g. expired while a viewer stayed open) so the next call signs a new one. */
+export const forgetAttachmentUrl = (path: string) => { urls.delete(path) }
 export const openAttachment = (path: string) => signedAttachmentUrl(path).then((u) => { window.open(u, '_blank', 'noopener') })
 
 // Thumbnails asked for in the same render are signed together (one storage request for a whole page of the email list).

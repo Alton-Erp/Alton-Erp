@@ -180,6 +180,52 @@ describe('MIME parsing', () => {
     assert.deepEqual(parseAddressList('"Doe, J" <J@X.example>, y@x.example (Why), undisclosed-recipients:;, bad'), [{ email: 'j@x.example', name: 'Doe, J' }, { email: 'y@x.example', name: 'Why' }])
     assert.equal(decodeEncodedWords('=?ISO-8859-1?Q?Caf=E9_ok?= =?UTF-8?B?4pyT?='), 'Café ok✓')
   })
+  it('every attachment format is kept: nested multipart, inline images, nameless parts, unknown types', () => {
+    const leaf = (partId: string, mimeType: string, filename: string, extra: Record<string, unknown> = {}) =>
+      ({ partId, mimeType, filename, headers: [], body: { size: 10, attachmentId: `ATT-${partId}` }, ...extra })
+    const files = ['a.jpg:image/jpeg', 'a.png:image/png', 'a.gif:image/gif', 'a.webp:image/webp', 'a.svg:image/svg+xml', 'a.pdf:application/pdf',
+      'a.docx:application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'a.xlsx:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'a.pptx:application/vnd.openxmlformats-officedocument.presentationml.presentation', 'a.csv:text/csv', 'a.txt:text/plain', 'a.json:application/json', 'a.xml:text/xml',
+      'a.zip:application/zip', 'a.rar:application/vnd.rar', 'a.7z:application/x-7z-compressed', 'a.mp3:audio/mpeg', 'a.mp4:video/mp4', 'a.heic:image/heic',
+      'a.ics:text/calendar', 'a.vcf:text/vcard', 'a.html:text/html', 'a.msg:application/vnd.ms-outlook', 'drawing.dwg:application/acad', 'blob:application/octet-stream']
+    const m = { id: 'aaaa000010', payload: { partId: '', mimeType: 'multipart/mixed', headers: [{ name: 'From', value: 'a@b.example' }], parts: [
+      { partId: '0', mimeType: 'multipart/related', parts: [
+        { partId: '0.0', mimeType: 'multipart/alternative', parts: [
+          { partId: '0.0.0', mimeType: 'text/plain', headers: [], body: { size: 5, data: b64u('Hello') } },
+          { partId: '0.0.1', mimeType: 'text/x-amp-html', headers: [], body: { size: 5, data: b64u('<amp>') } },
+          { partId: '0.0.2', mimeType: 'text/html', headers: [], body: { size: 9, data: b64u('<p>Hi <img src="cid:logo1"></p>') } }] },
+        // embedded image without a file name (only a Content-ID) — was dropped before
+        { partId: '0.1', mimeType: 'image/png', filename: '', headers: [{ name: 'Content-ID', value: '<logo1>' }, { name: 'Content-Disposition', value: 'inline' }], body: { size: 300, attachmentId: 'ATT-cid' } },
+        // a document an Apple Mail sender marks inline is still an ordinary attachment
+        leaf('0.2', 'application/pdf', 'quote.pdf', { headers: [{ name: 'Content-Disposition', value: 'inline; filename="quote.pdf"' }] })] },
+      ...files.map((f, i) => { const [n, t] = f.split(':'); return leaf(String(i + 1), t, n) }),
+      // nameless calendar invite and unknown type: kept with safe names
+      { partId: '90', mimeType: 'text/calendar', filename: '', headers: [], body: { size: 40, data: b64u('BEGIN:VCALENDAR') } },
+      { partId: '91', mimeType: 'application/x-custom', filename: '', headers: [], body: { size: 40, attachmentId: 'ATT-91' } },
+      // a forwarded message, and a part without any content type
+      { partId: '92', mimeType: 'message/rfc822', filename: '', headers: [], body: { size: 400, attachmentId: 'ATT-92' } },
+      { partId: '93', mimeType: '', filename: 'notes', headers: [], body: { size: 4, attachmentId: 'ATT-93' } },
+      // a file name trying to climb out of the folder
+      leaf('94', 'text/plain', '../../etc/passwd.txt'),
+      // over the limit: recorded (shown as too large), not dropped
+      { partId: '95', mimeType: 'video/quicktime', filename: 'site visit.mov', headers: [], body: { size: 30 * 1048576, attachmentId: 'ATT-95' } }] } }
+    const { email, inlineData } = parseGmailMessage(m as never, 10 * 1048576)
+    assert.equal(email.body_text, 'Hello')
+    assert.ok(email.body_html?.includes('Hi') && !email.body_html.includes('amp'), 'AMP part is a body rendering, not a file')
+    const by = Object.fromEntries(email.attachments.map((a) => [a.filename, a]))
+    for (const f of files) { const [n, t] = f.split(':'); assert.ok(by[n] && by[n].mime_type === t && by[n].state === undefined, n) }
+    assert.deepEqual([by['image.png'].inline, by['image.png'].content_id, by['image.png'].attachment_id], [true, 'logo1', 'ATT-cid'])
+    assert.equal(by['quote.pdf'].inline, false)
+    assert.equal(by['a.jpg'].inline, false)
+    assert.ok(by['invite.ics'] && inlineData.get('90'), 'small nameless invite kept, content carried inline')
+    assert.equal(by['attachment.bin']?.mime_type, 'application/x-custom')
+    assert.ok(by['message.eml'])
+    assert.ok(by.notes, 'missing content type keeps the file')
+    assert.ok(!email.attachments.some((a) => a.filename.includes('/') || a.filename.includes('\\')) && by['.._.._etc_passwd.txt'], 'no path separators in names')
+    assert.equal(by['site visit.mov'].state, 'TOO_LARGE')
+    assert.ok(!email.attachments.some((a) => ['0.0.0', '0.0.1', '0.0.2'].includes(a.part_id)), 'body parts are not attachments')
+    assert.equal(email.attachments.length, files.length + 2 + 6)
+  })
   it('no text part: text derived from the HTML', () => {
     const m = { id: 'aaaa000009', payload: { mimeType: 'text/html', headers: [{ name: 'From', value: 'a@b.example' }], body: { data: b64u('<p>Only <i>html</i></p>') } } }
     const { email } = parseGmailMessage(m as never, 1048576)

@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { EmailHtmlFrame, EmailSendBadge } from '@/features/support/email-components'
-import { base64UrlToBytes } from '@/features/support/mail/attachment-model'
+import { base64UrlToBytes, orderAttachments } from '@/features/support/mail/attachment-model'
 import { AttachmentTile } from '@/features/support/mail/attachment-preview'
 import { MailIcon } from '@/features/support/mail/mail-list'
 import { addrs, authResults, emlFileName, mailListDate, splitQuoted } from '@/features/support/mail/mail-model'
@@ -104,7 +104,10 @@ export function MailMessage({ e, expanded, starred, onToggle, timezone, tools }:
   const [original, setOriginal] = useState(false)
   const inbound = e.direction === 'INBOUND'
   const name = e.from_name || e.from_address || 'Unknown sender'
-  const files: MailAttachment[] = e.attachments.filter((a) => !a.inline)
+  // Every stored file is listed, including images embedded in the body: the safe HTML view never loads images, so the
+  // list is the only place they appear (ordinary attachments first).
+  const files: MailAttachment[] = orderAttachments(e.attachments)
+  const embedded = files.filter((a) => a.inline).length
   const body = splitQuoted(e.body_text ?? '')
   const onGmail = Boolean(e.gmail_message_id)
   const starBtn = (
@@ -205,6 +208,7 @@ export function MailMessage({ e, expanded, starred, onToggle, timezone, tools }:
         {files.length > 0 && (
           <div className="mt-4 border-t border-[#F1F3F4] pt-3" data-testid="email-attachments">
             <p className="mb-2 text-xs font-medium text-[#444746]">{files.length} attachment{files.length > 1 ? 's' : ''}
+              {embedded > 0 && <span className="ml-1 font-normal text-[#5F6368]" data-testid="email-attachments-embedded">({embedded} embedded image{embedded > 1 ? 's' : ''})</span>}
               {files.some((a) => a.restricted) && <span className="ml-2 font-normal text-[#5F6368]"><Lock className="mr-0.5 inline size-3" />some are restricted</span>}</p>
             <div className="flex flex-wrap gap-3">{files.map((a, i) => <AttachmentTile key={a.id} a={a} onPreview={() => tools.onPreview(files, i)} />)}</div>
           </div>

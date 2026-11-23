@@ -219,6 +219,8 @@ export interface MailAttachment {
   id: string; file_name: string; content_type: string | null; size_bytes: number | null; storage_path: string | null; restricted: boolean
   /** The email it came with (list chips only). */
   email_id?: string
+  /** An image embedded in the email body (Content-ID); thread attachments only. */
+  inline?: boolean
 }
 export interface RowAttachments { count: number; items: MailAttachment[] }
 /** Attachment chips of the list rows (at most 8 per conversation, newest email first). Empty before the migration. */
