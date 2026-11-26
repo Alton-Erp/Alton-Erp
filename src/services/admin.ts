@@ -145,6 +145,8 @@ export async function fetchLabelProducts(term: string, onlyWithBarcode: boolean)
 // ---------------------------------------------------------------------------
 export type DocEntityType = 'PRODUCT' | 'BATCH' | 'WAREHOUSE' | 'PRODUCTION_ORDER' | 'OUTSOURCING_ORDER' | 'CUSTOMER_PO' | 'SALES_ORDER' | 'DISPATCH' | 'INVOICE'
   | 'ADJUSTMENT_NOTE' | 'CUSTOMER' | 'COMPANY' | 'SUPPLIER_PO' | 'GOODS_RECEIPT' | 'STOCK_ADJUSTMENT'
+  // Supplier (purchase) invoices, Alton Accounts (migration 20261231090300)
+  | 'PURCHASE_INVOICE'
 export interface DocumentRow {
   id: string; company_id: string; document_type: string; title: string; description: string | null; related_entity_type: DocEntityType
   related_entity_id: string; related_reference: string; status: 'ACTIVE' | 'ARCHIVED'; current_version: number; created_by: string | null

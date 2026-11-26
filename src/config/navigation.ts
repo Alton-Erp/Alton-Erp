@@ -1,6 +1,15 @@
 import type { LucideIcon } from 'lucide-react'
 import {
+  Activity,
   ArrowLeftRight,
+  BookText,
+  CalendarDays,
+  FileSpreadsheet,
+  FolderTree,
+  Landmark,
+  ListOrdered,
+  NotebookPen,
+  Scale,
   Ban,
   BellRing,
   BookUser,
@@ -23,6 +32,9 @@ import {
   ClipboardList,
   Factory,
   FileBarChart,
+  CreditCard,
+  FileText,
+  GitCompareArrows,
   FileMinus,
   FilePlus,
   FilePlus2,
@@ -76,6 +88,10 @@ export type NavKey =
   | 'purchase-orders'
   | 'goods-receipts'
   | 'grn-dashboard'
+  // Supplier invoices (Alton Accounts Phase 3, migration 20261231090300)
+  | 'purchase-invoices'
+  | 'purchase-invoice-matching'
+  | 'purchase-invoice-reports'
   // 5. Production & Outsourcing
   | 'production'
   | 'production-orders'
@@ -108,6 +124,33 @@ export type NavKey =
   | 'ledger'
   | 'ledger-customers'
   | 'ledger-suppliers'
+  // 8b. Accounts (Alton Accounts, migration 20261231090000)
+  | 'accounts-dashboard'
+  | 'accounts-chart'
+  | 'accounts-ledgers'
+  | 'accounts-journal-new'
+  | 'accounts-journals'
+  | 'accounts-vouchers'
+  | 'accounts-trial-balance'
+  | 'accounts-general-ledger'
+  | 'accounts-day-book'
+  | 'accounts-opening'
+  | 'accounts-cost-centres'
+  | 'accounts-budgets'
+  | 'accounts-cost-centre-reports'
+  | 'accounts-posting-monitor'
+  | 'accounts-settings'
+  // Bank & cash (migration 20261231090400)
+  | 'accounts-bank-accounts'
+  | 'accounts-cash-accounts'
+  | 'accounts-bank-book'
+  | 'accounts-cash-book'
+  | 'accounts-transfers'
+  | 'accounts-payment-accounts'
+  | 'accounts-bank-reconciliation'
+  | 'accounts-bank-reports'
+  | 'accounts-gstr2b'
+  | 'accounts-gst-returns'
   // 10. Support Centre
   | 'support-overview'
   | 'support-inbox'
@@ -140,7 +183,7 @@ export interface NavItem {
   hideInSidebar?: boolean
 }
 
-export type NavGroupId = 'overview' | 'products' | 'inventory' | 'purchase' | 'production' | 'sales' | 'billing' | 'ledger' | 'support' | 'reports'
+export type NavGroupId = 'overview' | 'products' | 'inventory' | 'purchase' | 'production' | 'sales' | 'billing' | 'ledger' | 'accounts' | 'support' | 'reports'
 
 export const NAV_GROUPS: { id: NavGroupId; label: string }[] = [
   { id: 'overview', label: 'Management Dashboard' },
@@ -151,6 +194,7 @@ export const NAV_GROUPS: { id: NavGroupId; label: string }[] = [
   { id: 'sales', label: 'Sales & Orders' },
   { id: 'billing', label: 'Billing & Invoicing' },
   { id: 'ledger', label: 'Ledger' },
+  { id: 'accounts', label: 'Accounts' },
   { id: 'support', label: 'Support Centre' },
   { id: 'reports', label: 'Reports & Settings' },
 ]
@@ -297,6 +341,33 @@ export const NAV_ITEMS: NavItem[] = [
     group: 'purchase',
     description: 'GRNs today and this month, pending receipts, rejected goods and unlinked GRNs.',
     keywords: ['grn', 'goods received', 'dashboard', 'pending'],
+  },
+  {
+    key: 'purchase-invoices',
+    title: 'Supplier Invoices',
+    path: '/purchases/invoices',
+    icon: FileText,
+    group: 'purchase',
+    description: 'Supplier (purchase) invoices: matched to goods receipts or direct, approval, posting, GST verification and payments.',
+    keywords: ['supplier invoice', 'purchase invoice', 'bill', 'vendor bill', 'payable', 'itc'],
+  },
+  {
+    key: 'purchase-invoice-matching',
+    title: 'GRN Matching',
+    path: '/purchases/invoices/matching',
+    icon: GitCompareArrows,
+    group: 'purchase',
+    description: 'Goods receipt lines still to invoice per supplier: ordered, accepted, invoiced and remaining quantities.',
+    keywords: ['matching', 'three way match', 'grn invoice', 'uninvoiced'],
+  },
+  {
+    key: 'purchase-invoice-reports',
+    title: 'Supplier Invoice Reports',
+    path: '/purchases/invoices/reconciliation',
+    icon: ChartColumn,
+    group: 'purchase',
+    description: 'Purchase register, GRN vs invoice, supplier outstanding, AP ageing, GST pending, ITC summary, price variance and cost-centre expense.',
+    keywords: ['purchase register', 'ap ageing', 'outstanding', 'itc', 'gst pending', 'price variance', 'reconciliation'],
   },
 
   // 5. Production & Outsourcing
@@ -559,6 +630,233 @@ export const NAV_ITEMS: NavItem[] = [
     keywords: ['supplier', 'vendor', 'payable', 'creditor', 'payment'],
   },
 
+  // 8b. Accounts: double-entry books from posted vouchers (separate from the operational billing analytics)
+  {
+    key: 'accounts-dashboard',
+    title: 'Accounting Dashboard',
+    path: '/accounts',
+    icon: Landmark,
+    group: 'accounts',
+    description: 'Accounting results from posted vouchers: postings this financial year, drafts, items needing attention and whether the books balance.',
+    keywords: ['accounts', 'accounting', 'books', 'finance', 'gl'],
+  },
+  {
+    key: 'accounts-chart',
+    title: 'Chart of Accounts',
+    path: '/accounts/chart',
+    icon: FolderTree,
+    group: 'accounts',
+    description: 'Account groups and ledger accounts as a hierarchy, with posted balances.',
+    keywords: ['chart of accounts', 'coa', 'account group', 'ledger'],
+  },
+  {
+    key: 'accounts-ledgers',
+    title: 'Ledger Accounts',
+    path: '/accounts/ledgers',
+    icon: BookText,
+    group: 'accounts',
+    description: 'Every ledger account with its classification, posting rules and balance. Add bank, cash and expense accounts here.',
+    keywords: ['ledger account', 'bank account', 'cash', 'expense head'],
+  },
+  {
+    key: 'accounts-journal-new',
+    title: 'Journal Entry',
+    path: '/accounts/journals/new',
+    icon: NotebookPen,
+    group: 'accounts',
+    description: 'Manual journal voucher: several debit and credit lines, save as draft, validate, then post (posting needs confirmation).',
+    keywords: ['journal', 'jv', 'journal entry', 'manual entry', 'adjustment'],
+  },
+  {
+    key: 'accounts-journals',
+    title: 'Journal Register',
+    path: '/accounts/journals',
+    icon: ScrollText,
+    group: 'accounts',
+    description: 'Manual journal vouchers by date, number, account, status and creator: open, edit drafts and reverse posted journals.',
+    keywords: ['journal register', 'journals', 'jv'],
+  },
+  {
+    key: 'accounts-vouchers',
+    title: 'Voucher Register',
+    path: '/accounts/vouchers',
+    icon: ListOrdered,
+    group: 'accounts',
+    description: 'All accounting vouchers (posted, reversed, draft and discarded) with filters by date, type, source, account and status.',
+    keywords: ['voucher', 'journal', 'register', 'reversal'],
+  },
+  {
+    key: 'accounts-trial-balance',
+    title: 'Trial Balance',
+    path: '/accounts/trial-balance',
+    icon: Scale,
+    group: 'accounts',
+    description: 'Opening, period and closing debit / credit of every account from posted vouchers.',
+    keywords: ['trial balance', 'tb', 'debit', 'credit'],
+  },
+  {
+    key: 'accounts-general-ledger',
+    title: 'General Ledger',
+    path: '/accounts/general-ledger',
+    icon: BookOpen,
+    group: 'accounts',
+    description: 'Posted entries of one ledger account (or one customer / supplier on a control account) with a running balance.',
+    keywords: ['general ledger', 'gl', 'account statement', 'running balance'],
+  },
+  {
+    key: 'accounts-day-book',
+    title: 'Day Book',
+    path: '/accounts/day-book',
+    icon: CalendarDays,
+    group: 'accounts',
+    description: 'Every posted voucher of a day or period with its lines.',
+    keywords: ['day book', 'daybook', 'journal'],
+  },
+  {
+    key: 'accounts-cost-centres',
+    title: 'Cost Centres',
+    path: '/accounts/cost-centres',
+    icon: Network,
+    group: 'accounts',
+    description: 'Cost centre master: codes, types, hierarchy, effective dates and active / inactive status.',
+    keywords: ['cost centre', 'department', 'branch', 'project', 'profit centre'],
+  },
+  {
+    key: 'accounts-budgets',
+    title: 'Cost Centre Budgets',
+    path: '/accounts/cost-centres/budgets',
+    icon: Wallet,
+    group: 'accounts',
+    description: 'Annual and monthly budgets per cost centre and account: import, versions, approval and history.',
+    keywords: ['budget', 'cost centre budget', 'plan'],
+  },
+  {
+    key: 'accounts-cost-centre-reports',
+    title: 'Cost Centre Reports',
+    path: '/accounts/cost-centres/reports',
+    icon: ChartColumn,
+    group: 'accounts',
+    description: 'Cost centre summary, ledger, profitability and budget versus actual from posted vouchers.',
+    keywords: ['cost centre report', 'department expenses', 'budget vs actual', 'profitability'],
+  },
+  {
+    key: 'accounts-opening',
+    title: 'Opening Balances',
+    path: '/accounts/opening-balances',
+    icon: FileSpreadsheet,
+    group: 'accounts',
+    description: 'Ledger, party, cash, bank, capital and other balances as at the books start date: import, reconcile with the ERP, approve and post.',
+    keywords: ['opening balance', 'opening', 'books start'],
+  },
+  {
+    key: 'accounts-posting-monitor',
+    title: 'Posting Monitor',
+    path: '/accounts/posting-monitor',
+    icon: Activity,
+    group: 'accounts',
+    description: 'Automatic posting of invoices, notes, receipts, supplier payments and goods receipts: run, retry, dismiss and missing account mappings.',
+    keywords: ['posting', 'automatic', 'failed', 'mapping', 'integration'],
+  },
+  {
+    key: 'accounts-settings',
+    title: 'Accounting Settings',
+    path: '/accounts/settings',
+    icon: Settings2,
+    group: 'accounts',
+    description: 'Books start date, financial year, date rules, accounting periods, posting account mappings and cost centres.',
+    keywords: ['accounting settings', 'period', 'close period', 'posting rules', 'cost centre'],
+  },
+  {
+    key: 'accounts-bank-accounts',
+    title: 'Bank Accounts',
+    path: '/accounts/bank-accounts',
+    icon: Landmark,
+    group: 'accounts',
+    description: 'Company bank accounts linked to their bank ledgers; masked account numbers.',
+    keywords: ['bank account', 'ifsc', 'current account', 'overdraft'],
+  },
+  {
+    key: 'accounts-cash-accounts',
+    title: 'Cash Accounts',
+    path: '/accounts/cash-accounts',
+    icon: Wallet,
+    group: 'accounts',
+    description: 'Main, petty and factory cash accounts with custodians and the negative-balance policy.',
+    keywords: ['cash', 'petty cash', 'cash in hand'],
+  },
+  {
+    key: 'accounts-bank-book',
+    title: 'Bank Book',
+    path: '/accounts/bank-book',
+    icon: BookOpen,
+    group: 'accounts',
+    description: 'Posted bank receipts, payments and transfers with running balance and reconciliation status.',
+    keywords: ['bank book', 'bank statement', 'passbook'],
+  },
+  {
+    key: 'accounts-cash-book',
+    title: 'Cash Book',
+    path: '/accounts/cash-book',
+    icon: BookText,
+    group: 'accounts',
+    description: 'Cash receipts and payments with running balance and daily opening / closing.',
+    keywords: ['cash book', 'daily cash'],
+  },
+  {
+    key: 'accounts-transfers',
+    title: 'Bank & Cash Transfers',
+    path: '/accounts/transfers',
+    icon: ArrowLeftRight,
+    group: 'accounts',
+    description: 'Bank to bank, bank to cash and cash to bank transfers (contra vouchers).',
+    keywords: ['transfer', 'contra', 'fund transfer', 'cash deposit', 'withdrawal'],
+  },
+  {
+    key: 'accounts-payment-accounts',
+    title: 'Payment Accounts',
+    path: '/accounts/payment-accounts',
+    icon: CreditCard,
+    group: 'accounts',
+    description: 'The verified bank / cash account of each receipt and supplier payment before posting.',
+    keywords: ['payment account', 'receipt account', 'unmapped payment'],
+  },
+  {
+    key: 'accounts-bank-reconciliation',
+    title: 'Bank Reconciliation',
+    path: '/accounts/bank-reconciliation',
+    icon: Scale,
+    group: 'accounts',
+    description: 'Statement import, matching, bank charges and interest, and the bank reconciliation statement.',
+    keywords: ['bank reconciliation', 'brs', 'statement', 'matching'],
+  },
+  {
+    key: 'accounts-bank-reports',
+    title: 'Bank & Cash Reports',
+    path: '/accounts/bank-reconciliation/reports',
+    icon: FileBarChart,
+    group: 'accounts',
+    description: 'Account summary, outstanding cheques, deposits in transit, unmatched statement lines, charges, transfers and cash position.',
+    keywords: ['outstanding cheques', 'deposits in transit', 'cash position', 'bank charges'],
+  },
+  {
+    key: 'accounts-gstr2b',
+    title: 'GSTR-2B Matching',
+    path: '/accounts/gst/gstr-2b',
+    icon: FileSpreadsheet,
+    group: 'accounts',
+    description: 'Import the GSTR-2B file downloaded from the GST portal, match it with supplier invoices (maker-checker) and review the exceptions.',
+    keywords: ['gstr-2b', 'gstr2b', 'itc', 'input tax credit', 'gst matching', 'supplier invoices'],
+  },
+  {
+    key: 'accounts-gst-returns',
+    title: 'GST Returns',
+    path: '/accounts/gst/returns',
+    icon: FileBarChart,
+    group: 'accounts',
+    description: 'GSTR-1 and GSTR-3B working data, sales / purchase / RCM registers, liability, payments, ledger reconciliation and exceptions. Returns are filed by you on the GST portal.',
+    keywords: ['gstr-1', 'gstr-3b', 'gst return', 'hsn summary', 'gst liability', 'gst register', 'rcm'],
+  },
+
   // 10. Support Centre
   {
     key: 'support-overview',
@@ -731,6 +1029,9 @@ export const NAV_PERMISSIONS: Record<NavKey, PermissionCode | null> = {
   'purchase-orders': 'purchases.read',
   'goods-receipts': 'purchases.read',
   'grn-dashboard': 'purchases.read',
+  'purchase-invoices': 'purchase_invoices.read',
+  'purchase-invoice-matching': 'purchase_invoices.read',
+  'purchase-invoice-reports': 'purchase_invoices.read',
   production: 'manufacturing.read',
   'production-orders': 'manufacturing.read',
   'production-planning': 'production_plan.create',
@@ -759,6 +1060,31 @@ export const NAV_PERMISSIONS: Record<NavKey, PermissionCode | null> = {
   ledger: 'ledger.read',
   'ledger-customers': 'ledger.read',
   'ledger-suppliers': 'ledger.read',
+  'accounts-dashboard': 'accounting_reports.read',
+  'accounts-chart': 'accounts.read',
+  'accounts-ledgers': 'accounts.read',
+  'accounts-journal-new': 'vouchers.create',
+  'accounts-journals': 'vouchers.read',
+  'accounts-vouchers': 'vouchers.read',
+  'accounts-trial-balance': 'accounting_reports.read',
+  'accounts-general-ledger': 'accounting_reports.read',
+  'accounts-day-book': 'accounting_reports.read',
+  'accounts-opening': 'accounting_opening.import',
+  'accounts-cost-centres': 'accounts.read',
+  'accounts-budgets': 'accounting_budgets.read',
+  'accounts-cost-centre-reports': 'accounting_reports.read',
+  'accounts-posting-monitor': 'accounting_posting.manage',
+  'accounts-settings': 'accounting_settings.manage',
+  'accounts-bank-accounts': 'bank_accounts.read',
+  'accounts-cash-accounts': 'cash_accounts.read',
+  'accounts-bank-book': 'bank_accounts.read',
+  'accounts-cash-book': 'cash_accounts.read',
+  'accounts-transfers': 'bank_accounts.read',
+  'accounts-payment-accounts': 'bank_accounts.read',
+  'accounts-bank-reconciliation': 'bank_reconciliation.read',
+  'accounts-bank-reports': 'bank_reconciliation.read',
+  'accounts-gstr2b': 'gst_reconciliation.read',
+  'accounts-gst-returns': 'gst.read',
   'support-overview': 'support.view',
   'support-inbox': 'support.view',
   'support-tickets': 'support.view',
