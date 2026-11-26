@@ -1,4 +1,5 @@
 import type { ExistingBom } from '@/features/production/bom-import'
+import { normalizeSearch, searchFilter } from '@/lib/search'
 import { requireSupabase } from '@/lib/supabase'
 import type { Json } from '@/types/database'
 import type { BatchRow, ReservationRow, StockDetailRow } from '@/types/database-inventory'
@@ -42,7 +43,22 @@ async function rpc<T = Json>(fn: string, args: Record<string, unknown>): Promise
 // ---------------------------------------------------------------------------
 // BOMs
 // ---------------------------------------------------------------------------
-export async function fetchBoms(status: BomStatus | 'ACTIVE' | null): Promise<BomListRow[]> {
+/**
+ * Server-side related-record search (migration 20261231090900): the matching rows of a list view, under the caller's row-level security.
+ * BOMs match on code / version / finished product / any component; orders on number, product, BOM, warehouses, components, batches, vendor…
+ * The functions return the view rows as one JSON array, already filtered by status (null = all) and capped at 2,000.
+ */
+async function searchRpc<R>(fn: 'bom_search' | 'production_order_search' | 'outsourcing_order_search', search: string, status: string | null): Promise<R[]> {
+  const client = requireSupabase() as unknown as { rpc(f: string, a: Record<string, unknown>): PromiseLike<{ data: unknown; error: unknown }> }
+  const { data, error } = await client.rpc(fn, { p_search: search, p_status: status, p_limit: 2000 })
+  if (error) throw error
+  return Array.isArray(data) ? (data as R[]) : []
+}
+
+/** BOMs; with a search, every word must match the BOM, its finished product or one of its components (server-side, no row limit gap). */
+export async function fetchBoms(status: BomStatus | 'ACTIVE' | null, search = ''): Promise<BomListRow[]> {
+  const q = normalizeSearch(search)
+  if (q) return searchRpc<BomListRow>('bom_search', q, status)
   let query = db().from('bom_list_v2').select('*').order('bom_code').order('version', { ascending: false }).limit(2000)
   if (status === 'ACTIVE') query = query.neq('status', 'ARCHIVED')
   else if (status) query = query.eq('status', status)
@@ -233,7 +249,9 @@ export const fetchBomRequirements = (bomId: string, quantity: number, warehouseI
 // ---------------------------------------------------------------------------
 // Production orders
 // ---------------------------------------------------------------------------
-export async function fetchProductionOrders(status: ProductionStatus | 'OPEN' | null): Promise<ProductionOrderListRow[]> {
+export async function fetchProductionOrders(status: ProductionStatus | 'OPEN' | null, search = ''): Promise<ProductionOrderListRow[]> {
+  const q = normalizeSearch(search)
+  if (q) return searchRpc<ProductionOrderListRow>('production_order_search', q, status)
   let query = db().from('production_order_list').select('*').order('created_at', { ascending: false }).limit(2000)
   if (status === 'OPEN') query = query.not('status', 'in', '(COMPLETED,CANCELLED)')
   else if (status) query = query.eq('status', status)
@@ -291,8 +309,11 @@ export async function fetchProductionEvents(orderId: string): Promise<Production
   return data ?? []
 }
 
-export async function fetchConsumption(filters: { orderId?: string | null; from?: string; to?: string }): Promise<ConsumptionListRow[]> {
+export const CONSUMPTION_SEARCH_FIELDS = ['production_order_number', 'sku', 'product_name', 'batch_number', 'warehouse_code', 'location_code', 'transaction_number', 'status', 'source_type'] as const
+export async function fetchConsumption(filters: { orderId?: string | null; from?: string; to?: string; search?: string }): Promise<ConsumptionListRow[]> {
   let query = db().from('production_consumption_list').select('*').order('created_at', { ascending: false }).limit(3000)
+  const search = searchFilter(filters.search, CONSUMPTION_SEARCH_FIELDS)
+  if (search) query = query.or(search)
   if (filters.orderId) query = query.eq('production_order_id', filters.orderId)
   if (filters.from) query = query.gte('consumption_date', filters.from)
   if (filters.to) query = query.lte('consumption_date', filters.to)
@@ -301,8 +322,12 @@ export async function fetchConsumption(filters: { orderId?: string | null; from?
   return data ?? []
 }
 
-export async function fetchOutputs(filters: { orderId?: string | null; from?: string; to?: string }): Promise<OutputListRow[]> {
+export const OUTPUT_SEARCH_FIELDS = ['receipt_number', 'production_order_number', 'sku', 'product_name', 'batch_number', 'good_location_code', 'good_warehouse_code',
+  'good_transaction_number', 'quality_status', 'status'] as const
+export async function fetchOutputs(filters: { orderId?: string | null; from?: string; to?: string; search?: string }): Promise<OutputListRow[]> {
   let query = db().from('production_output_list').select('*').order('created_at', { ascending: false }).limit(3000)
+  const search = searchFilter(filters.search, OUTPUT_SEARCH_FIELDS)
+  if (search) query = query.or(search)
   if (filters.orderId) query = query.eq('production_order_id', filters.orderId)
   if (filters.from) query = query.gte('production_date', filters.from)
   if (filters.to) query = query.lte('production_date', filters.to)
@@ -471,7 +496,9 @@ export async function fetchProductFlags(productId: string) {
 // ---------------------------------------------------------------------------
 // Outsourcing
 // ---------------------------------------------------------------------------
-export async function fetchOutsourcingOrders(status: OutsourcingStatus | 'OPEN' | null): Promise<OutsourcingOrderListRow[]> {
+export async function fetchOutsourcingOrders(status: OutsourcingStatus | 'OPEN' | null, search = ''): Promise<OutsourcingOrderListRow[]> {
+  const q = normalizeSearch(search)
+  if (q) return searchRpc<OutsourcingOrderListRow>('outsourcing_order_search', q, status)
   let query = db().from('outsourcing_order_list').select('*').order('created_at', { ascending: false }).limit(2000)
   if (status === 'OPEN') query = query.not('status', 'in', '(COMPLETED,CANCELLED)')
   else if (status) query = query.eq('status', status)
@@ -504,8 +531,12 @@ export async function fetchOutsourcingMaterials(orderId: string): Promise<Outsou
   return data ?? []
 }
 
-export async function fetchOutsourcingReceipts(filters: { from?: string; to?: string }): Promise<OutsourcingReceiptListRow[]> {
+export const OUTSOURCING_RECEIPT_SEARCH_FIELDS = ['receipt_number', 'outsourcing_order_number', 'supplier_name', 'sku', 'product_name', 'batch_number', 'supplier_document_number',
+  'accepted_location_code', 'accepted_warehouse_code', 'status'] as const
+export async function fetchOutsourcingReceipts(filters: { from?: string; to?: string; search?: string }): Promise<OutsourcingReceiptListRow[]> {
   let query = db().from('outsourcing_receipt_list').select('*').order('created_at', { ascending: false }).limit(3000)
+  const search = searchFilter(filters.search, OUTSOURCING_RECEIPT_SEARCH_FIELDS)
+  if (search) query = query.or(search)
   if (filters.from) query = query.gte('receipt_date', filters.from)
   if (filters.to) query = query.lte('receipt_date', filters.to)
   const { data, error } = await query
@@ -799,13 +830,13 @@ export const traceBatch = (batchId: string) => rpc<TraceResult>('production_trac
 
 /** Batch / lot search for traceability (batch number, SKU or product name). */
 export async function searchLots(term: string): Promise<(BatchRow & { sku: string; product_name: string })[]> {
-  const clean = term.replace(/[^\p{L}\p{N} ._/-]/gu, ' ').trim().slice(0, 50)
+  const clean = normalizeSearch(term)
   if (!clean) return []
-  const products = await db().from('products').select('id, sku, product_name').or(`sku.ilike.%${clean}%,product_name.ilike.%${clean}%`).limit(20)
+  const products = await db().from('products').select('id, sku, product_name').or(searchFilter(clean, ['sku', 'product_name', 'barcode', 'ean'])!).limit(20)
   if (products.error) throw products.error
   const ids = (products.data ?? []).map((p) => p.id)
   let query = db().from('inventory_batches').select('*').order('created_at', { ascending: false }).limit(30)
-  query = ids.length ? query.or(`batch_number.ilike.%${clean}%,product_id.in.(${ids.join(',')})`) : query.ilike('batch_number', `%${clean}%`)
+  query = query.or(searchFilter(clean, ['batch_number'], () => (ids.length ? [`product_id.in.(${ids.join(',')})`] : []))!)
   const { data, error } = await query
   if (error) throw error
   const lots = data ?? []

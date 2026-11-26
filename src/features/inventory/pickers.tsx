@@ -7,6 +7,7 @@ import { StockSourceBadge } from '@/features/inventory/inventory-badges'
 import { formatQty, STOCK_SOURCE_LABELS, type StockSourceCode } from '@/features/inventory/inventory-model'
 import type { LocationOption } from '@/features/inventory/use-storage'
 import { useDebouncedValue } from '@/hooks/use-debounced-value'
+import { normalizeSearch } from '@/lib/search'
 import { describeDataError } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import { fetchLotsAt, findProductByCode, searchProducts, type ProductOption } from '@/services/inventory'
@@ -37,7 +38,7 @@ export function ProductPicker({
   const [results, setResults] = useState<ProductOption[]>([])
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
-  const term = useDebouncedValue(text, 250)
+  const term = useDebouncedValue(normalizeSearch(text), 250)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {

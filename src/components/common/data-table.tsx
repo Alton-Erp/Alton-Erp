@@ -1,5 +1,5 @@
-import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Search, SearchX, X } from 'lucide-react'
-import { useMemo, useState, type ReactNode } from 'react'
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Loader2, Search, SearchX, X } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import { EmptyState, type EmptyStateProps } from '@/components/common/empty-state'
 import { ErrorState } from '@/components/common/error-state'
@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { SEARCH_DEBOUNCE_MS, matchesSearch, normalizeSearch, searchWords } from '@/lib/search'
 import { cn } from '@/lib/utils'
 
 export interface DataTableColumn<T> {
@@ -48,6 +49,18 @@ interface DataTableProps<T> {
   className?: string
   /** Search text to start with (e.g. from a link). */
   initialQuery?: string
+  /**
+   * Called with the normalised search text after typing pauses (300 ms), so the page can also search on the server (records beyond the
+   * loaded rows). Identical texts are not repeated. The table keeps filtering the loaded rows with the same rule meanwhile.
+   */
+  onQueryChange?: (query: string) => void
+  /** A server search is running (spinner in the search box; the rows stay visible). */
+  searching?: boolean
+  /**
+   * The search the server already applied to `data` (it may match related records — a BOM's components, an order's vendor — that the
+   * columns do not show). While the box holds this same text the rows are shown as returned, not filtered again.
+   */
+  serverQuery?: string
 }
 
 const ALIGN: Record<NonNullable<DataTableColumn<unknown>['align']>, string> = {
@@ -74,15 +87,30 @@ export function DataTable<T>({
   className,
   onRowClick,
   initialQuery,
+  onQueryChange,
+  searching = false,
+  serverQuery,
 }: DataTableProps<T>) {
   const [query, setQuery] = useState(initialQuery ?? '')
+  // Server search: report the normalised text once typing pauses; never the same text twice in a row.
+  const lastSent = useRef(normalizeSearch(initialQuery))
+  useEffect(() => {
+    if (!onQueryChange) return
+    const id = setTimeout(() => {
+      const q = normalizeSearch(query)
+      if (q !== lastSent.current) { lastSent.current = q; onQueryChange(q) }
+    }, SEARCH_DEBOUNCE_MS)
+    return () => clearTimeout(id)
+  }, [query, onQueryChange])
   const [page, setPage] = useState(0)
   const [sort, setSort] = useState<{ id: string; ascending: boolean } | null>(null)
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
+    // Every word of the search must occur somewhere in the row's searchable columns (any order, any position).
+    const applied = serverQuery !== undefined && normalizeSearch(serverQuery).toLowerCase() === normalizeSearch(query).toLowerCase()
+    const words = applied ? [] : searchWords(query)
     const searchable = columns.filter((c) => c.searchValue)
-    const matched = q ? data.filter((row) => searchable.some((c) => c.searchValue!(row).toLowerCase().includes(q))) : data
+    const matched = words.length ? data.filter((row) => matchesSearch(searchable.map((c) => c.searchValue!(row)), words)) : data
     const sortColumn = sort ? columns.find((c) => c.id === sort.id && c.sortValue) : undefined
     if (!sortColumn || !sort) return matched
     const dir = sort.ascending ? 1 : -1
@@ -94,7 +122,7 @@ export function DataTable<T>({
       if (y === null) return -1
       return (typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y))) * dir
     })
-  }, [data, columns, query, sort])
+  }, [data, columns, query, sort, serverQuery])
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize))
   const currentPage = Math.min(page, pageCount - 1)
@@ -117,7 +145,7 @@ export function DataTable<T>({
         compact
         icon={SearchX}
         title="No matching records"
-        description={`Nothing matches “${query.trim()}”. Try a different search term.`}
+        description={`Nothing matches “${normalizeSearch(query)}”. Every word must appear in the record (any order, any part of a word). Try fewer or shorter words.`}
         action={
           <Button variant="outline" size="sm" onClick={() => updateQuery('')}>
             Clear search
@@ -215,10 +243,12 @@ export function DataTable<T>({
         <div className="flex flex-col gap-3 border-b px-5 py-4 md:flex-row md:items-center md:justify-between">
           {searchable && (
             <div className="relative w-full md:max-w-xs">
-              <Search aria-hidden className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+              {searching ? <Loader2 aria-label="Searching" className="absolute top-1/2 left-3 size-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+                : <Search aria-hidden className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />}
               <Input
                 value={query}
                 onChange={(e) => updateQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Escape' && query) { e.preventDefault(); updateQuery('') } }}
                 placeholder={searchPlaceholder}
                 aria-label={searchPlaceholder}
                 className="pr-8 pl-9"

@@ -1,3 +1,4 @@
+import { searchFilter } from '@/lib/search'
 import { requireSupabase } from '@/lib/supabase'
 import type { Json } from '@/types/database'
 import type { AdjustmentFilters } from '@/features/inventory/adjustments-model'
@@ -111,9 +112,11 @@ export interface ProductOption {
 /** Exact barcode or SKU match (keyboard-wedge scanners send the code + Enter). */
 export const findProductByCode = (code: string) => rpc<(ProductOption & { matched_on: 'BARCODE' | 'SKU' })[]>('inventory_find_product_by_code', { p_code: code })
 
-/** Type-ahead product search (SKU, name, barcode). */
+/** Fields searched by the product pickers (every word must occur in one of them). */
+export const PICKER_PRODUCT_FIELDS = ['sku', 'product_name', 'barcode', 'ean', 'model_number', 'supplier_model_number', 'brand', 'description'] as const
+/** Type-ahead product search (SKU, name, barcode, EAN, model, brand, description — any part of any word). */
 export async function searchProducts(term: string, includeInactive = false): Promise<ProductOption[]> {
-  const clean = term.replace(/[^\p{L}\p{N} ._/-]/gu, ' ').trim().slice(0, 60)
+  const filter = searchFilter(term, PICKER_PRODUCT_FIELDS)
   let query = db()
     .from('products')
     .select('id, sku, product_name, base_unit, track_batches, track_expiry, status')
@@ -121,7 +124,7 @@ export async function searchProducts(term: string, includeInactive = false): Pro
     .order('sku')
     .limit(15)
   if (!includeInactive) query = query.eq('status', 'ACTIVE')
-  if (clean) query = query.or(`sku.ilike.%${clean}%,product_name.ilike.%${clean}%,barcode.ilike.%${clean}%`)
+  if (filter) query = query.or(filter)
   const { data, error } = await query
   if (error) throw error
   return (data ?? []).map((p) => ({
@@ -229,6 +232,8 @@ export interface RegisterFilters {
 
 export const sanitizeTerm = (v: string) => v.replace(/[^\p{L}\p{N} ._/-]/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 80)
 
+/** Stock register fields searched (product identity, category, type and source). */
+export const REGISTER_SEARCH_FIELDS = ['sku', 'product_name', 'barcode', 'brand', 'model_number', 'category_name', 'product_type', 'default_source_type'] as const
 export async function fetchProductStock(
   filters: RegisterFilters,
   sort: { column: string; ascending: boolean },
@@ -236,8 +241,8 @@ export async function fetchProductStock(
   pageSize: number,
 ): Promise<{ rows: ProductStockRow[]; total: number }> {
   let query = db().from('inventory_product_stock').select('*', { count: 'exact' }).is('archived_at', null)
-  const term = sanitizeTerm(filters.search)
-  if (term) query = query.or(`sku.ilike.%${term}%,product_name.ilike.%${term}%,barcode.ilike.%${term}%`)
+  const search = searchFilter(filters.search, REGISTER_SEARCH_FIELDS)
+  if (search) query = query.or(search)
   if (filters.categoryId) query = query.eq('category_id', filters.categoryId)
   if (filters.productType) query = query.eq('product_type', filters.productType)
   if (filters.stockStatus) query = query.eq('stock_status', filters.stockStatus as StockStatus)
@@ -263,10 +268,13 @@ export interface DetailFilters {
   expiringBefore?: string | null
 }
 
+/** Stock-by-location fields searched (product, batch, category, warehouse, location / bin, source). */
+export const DETAIL_SEARCH_FIELDS = ['sku', 'product_name', 'barcode', 'batch_number', 'category_name', 'warehouse_code', 'warehouse_name', 'location_code', 'location_name',
+  'source_type'] as const
 function detailQuery(filters: DetailFilters, count: boolean) {
   let query = db().from('inventory_stock_detail').select('*', count ? { count: 'exact' } : undefined)
-  const term = sanitizeTerm(filters.search)
-  if (term) query = query.or(`sku.ilike.%${term}%,product_name.ilike.%${term}%,barcode.ilike.%${term}%,batch_number.ilike.%${term}%`)
+  const search = searchFilter(filters.search, DETAIL_SEARCH_FIELDS)
+  if (search) query = query.or(search)
   if (filters.productId) query = query.eq('product_id', filters.productId)
   if (filters.categoryId) query = query.eq('category_id', filters.categoryId)
   if (filters.productType) query = query.eq('product_type', filters.productType)
@@ -351,14 +359,17 @@ export interface MovementFilters {
   reference: string
 }
 
+/** Movement fields searched (product, document / transaction and reference numbers, batch, warehouse, location / bin, type, reason). */
+export const MOVEMENT_SEARCH_FIELDS = ['sku', 'product_name', 'transaction_number', 'batch_number', 'reference_number', 'warehouse_code', 'warehouse_name', 'location_code',
+  'location_name', 'counterpart_location_code', 'counterpart_warehouse_code', 'transaction_type', 'reason'] as const
 function movementQuery(filters: MovementFilters, count: boolean) {
   let query = db()
     .from('inventory_transaction_list')
     .select('*', count ? { count: 'exact' } : undefined)
     .gte('transaction_date', filters.from.toISOString())
     .lte('transaction_date', filters.to.toISOString())
-  const term = sanitizeTerm(filters.search)
-  if (term) query = query.or(`sku.ilike.%${term}%,product_name.ilike.%${term}%,transaction_number.ilike.%${term}%,batch_number.ilike.%${term}%`)
+  const search = searchFilter(filters.search, MOVEMENT_SEARCH_FIELDS)
+  if (search) query = query.or(search)
   const ref = sanitizeTerm(filters.reference)
   if (ref) query = query.ilike('reference_number', `%${ref}%`)
   if (filters.productId) query = query.eq('product_id', filters.productId)

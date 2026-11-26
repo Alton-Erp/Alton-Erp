@@ -28,7 +28,9 @@ export default function MaterialConsumptionPage() {
   const [orderId, setOrderId] = useState('')
   const [open, setOpen] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
-  const rows = useAsync(() => fetchConsumption({ from: toIsoDate(range.from), to: toIsoDate(range.to) }), [range, refresh])
+  // Search runs on the server too (all fields of the period, not only the loaded rows).
+  const [serverSearch, setServerSearch] = useState('')
+  const rows = useAsync(() => fetchConsumption({ from: toIsoDate(range.from), to: toIsoDate(range.to), search: serverSearch }), [range, refresh, serverSearch])
   const canIssue = has('production_material.issue')
   const running = useAsync(() => (canIssue ? fetchRunningOrders() : Promise.resolve([])), [canIssue, refresh])
   const order = running.data?.find((o) => o.id === orderId)
@@ -68,7 +70,10 @@ export default function MaterialConsumptionPage() {
         columns={columns}
         data={rows.data ?? []}
         getRowId={(c) => c.id}
-        loading={rows.loading}
+        loading={rows.loading && !serverSearch}
+        onQueryChange={setServerSearch}
+        serverQuery={rows.loading ? undefined : serverSearch}
+        searching={rows.loading && Boolean(serverSearch)}
         error={rows.error ? new Error(describeDataError(rows.error)) : null}
         onRetry={rows.reload}
         pageSize={25}

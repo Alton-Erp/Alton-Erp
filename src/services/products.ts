@@ -1,8 +1,8 @@
 import { applyConditions, type Condition, type FilterBuilder } from '@/features/drilldown/drill-conditions'
-import { productSearchPattern } from '@/features/products/product-search'
 import { categoryCodeFor, type ProductInput, type ProductType, type SourceType } from '@/features/products/product-model'
 import type { BulkDeletePreview, BulkDeleteResult, DuplicateHint } from '@/features/products/product-bulk-delete'
 import { describeProductError } from '@/lib/errors'
+import { ilikeValue, inCondition, searchFilter, searchWords, type WordConditions } from '@/lib/search'
 import { requireSupabase } from '@/lib/supabase'
 import type { Database, ProductCategoryRow, ProductRow } from '@/types/database'
 
@@ -74,16 +74,34 @@ async function fromMaster<T>(run: (relation: string) => PromiseLike<{ data: T; e
 /** The calculated Cost sorts on the view; on the products table, by the standard cost. */
 const sortColumnFor = (relation: string, column: string) => (relation === 'products' && column === 'master_cost' ? 'standard_cost' : column)
 
-function buildQuery(params: Omit<ProductListParams, 'page' | 'pageSize' | 'sort'>, columns: string, count: boolean, relation = 'products') {
+/** Fields the Product Master search covers (every word of the search must occur in one of them, or in the category name / code). */
+export const PRODUCT_SEARCH_FIELDS = ['sku', 'product_name', 'barcode', 'ean', 'model_number', 'brand', 'supplier_model_number', 'supplier_product_name', 'group_head',
+  'description', 'hsn_code', 'product_type', 'default_source_type', 'base_unit'] as const
+
+/**
+ * Related conditions per search word: categories whose name or code contains the word, and (for a number) a dimension equal to it.
+ * One small query for the categories; nothing when the search is empty.
+ */
+export async function productSearchExtras(search: string): Promise<WordConditions | undefined> {
+  const words = searchWords(search)
+  if (words.length === 0) return undefined
+  // Any word may name a category: one OR over the words.
+  const { data } = await requireSupabase().from('product_categories').select('id, name, code')
+    .or(words.flatMap((w) => [`name.ilike.${ilikeValue(w)}`, `code.ilike.${ilikeValue(w)}`]).join(','))
+  const cats = (data ?? []) as { id: string; name: string; code: string | null }[]
+  return (w: string) => [
+    ...inCondition('category_id', cats.filter((c) => `${c.name} ${c.code ?? ''}`.toLowerCase().includes(w)).map((c) => c.id)),
+    ...(/^\d+(\.\d+)?$/.test(w) ? ['length_cm', 'width_cm', 'height_cm'].map((c) => `${c}.eq.${w}`) : []),
+  ]
+}
+
+function buildQuery(params: Omit<ProductListParams, 'page' | 'pageSize' | 'sort'>, columns: string, count: boolean, relation = 'products', extra?: WordConditions) {
   // The view has every products column (plus the cost columns), so it is typed as the products table.
   let query = requireSupabase().from(relation as 'products').select(columns, count ? { count: 'exact' } : undefined)
 
-  const like = productSearchPattern(params.search)
-  if (like) {
-    query = query.or(
-      ['sku', 'product_name', 'barcode', 'ean', 'model_number', 'brand', 'supplier_model_number', 'supplier_product_name', 'group_head'].map((c) => `${c}.ilike.${like}`).join(','),
-    )
-  }
+  // ERP search rule (src/lib/search.ts): the phrase in any field, or every word in some field / the category / a dimension.
+  const filter = searchFilter(params.search, PRODUCT_SEARCH_FIELDS, extra)
+  if (filter) query = query.or(filter)
   if (params.categoryId === 'none') query = query.is('category_id', null)
   else if (params.categoryId) query = query.eq('category_id', params.categoryId)
   if (params.sourceType) query = query.eq('default_source_type', params.sourceType)
@@ -111,7 +129,8 @@ function buildQuery(params: Omit<ProductListParams, 'page' | 'pageSize' | 'sort'
 
 export async function listProducts(params: ProductListParams): Promise<{ rows: ProductRow[]; total: number }> {
   const from = params.page * params.pageSize
-  const { data, error, count } = await fromMaster((relation) => buildQuery(params, '*', true, relation)
+  const extra = await productSearchExtras(params.search)
+  const { data, error, count } = await fromMaster((relation) => buildQuery(params, '*', true, relation, extra)
     .order(sortColumnFor(relation, params.sort.column), { ascending: params.sort.ascending, nullsFirst: false })
     .order('id')
     .range(from, from + params.pageSize - 1))
@@ -125,8 +144,9 @@ export async function listAllProducts(
   limit = 20000,
 ): Promise<ProductRow[]> {
   const rows: ProductRow[] = []
+  const extra = await productSearchExtras(params.search)
   for (let from = 0; from < limit; from += 1000) {
-    const { data, error } = await fromMaster((relation) => buildQuery(params, '*', false, relation)
+    const { data, error } = await fromMaster((relation) => buildQuery(params, '*', false, relation, extra)
       .order(sortColumnFor(relation, params.sort.column), { ascending: params.sort.ascending, nullsFirst: false })
       .order('id')
       .range(from, from + 999))

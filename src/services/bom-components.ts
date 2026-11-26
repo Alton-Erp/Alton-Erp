@@ -1,3 +1,4 @@
+import { searchFilter } from '@/lib/search'
 import { requireSupabase } from '@/lib/supabase'
 import type { ProductOption } from '@/services/inventory'
 
@@ -43,9 +44,10 @@ async function withStock(rows: Row[]): Promise<BomComponentOption[]> {
 
 /** Type-ahead: active products whose name, SKU, barcode, EAN or supplier model number contains the term. */
 export async function searchBomComponents(term: string, limit = 20): Promise<BomComponentOption[]> {
-  const t = clean(term)
+  // ERP search rule (src/lib/search.ts): every word anywhere in name, SKU, barcode, EAN, models, brand or description.
+  const filter = searchFilter(term, ['product_name', 'sku', 'barcode', 'ean', 'supplier_model_number', 'model_number', 'brand', 'description'])
   let q = requireSupabase().from('products').select(COLUMNS).is('archived_at', null).eq('status', 'ACTIVE').order('sku').limit(limit)
-  if (t) q = q.or(['product_name', 'sku', 'barcode', 'ean', 'supplier_model_number'].map((c) => `${c}.ilike.%${t}%`).join(','))
+  if (filter) q = q.or(filter)
   const { data, error } = await q
   if (error) throw error
   return withStock((data ?? []) as Row[])

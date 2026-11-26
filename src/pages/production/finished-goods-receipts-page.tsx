@@ -28,7 +28,9 @@ export default function FinishedGoodsReceiptsPage() {
   const [orderId, setOrderId] = useState('')
   const [open, setOpen] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
-  const rows = useAsync(() => fetchOutputs({ from: toIsoDate(range.from), to: toIsoDate(range.to) }), [range, refresh])
+  // Search runs on the server too (all fields of the period, not only the loaded rows).
+  const [serverSearch, setServerSearch] = useState('')
+  const rows = useAsync(() => fetchOutputs({ from: toIsoDate(range.from), to: toIsoDate(range.to), search: serverSearch }), [range, refresh, serverSearch])
   const canReceive = has('production_output.receive')
   const running = useAsync(() => (canReceive ? fetchRunningOrders() : Promise.resolve([])), [canReceive, refresh])
   const order = running.data?.find((o) => o.id === orderId)
@@ -68,7 +70,10 @@ export default function FinishedGoodsReceiptsPage() {
         columns={columns}
         data={rows.data ?? []}
         getRowId={(r) => r.id}
-        loading={rows.loading}
+        loading={rows.loading && !serverSearch}
+        onQueryChange={setServerSearch}
+        serverQuery={rows.loading ? undefined : serverSearch}
+        searching={rows.loading && Boolean(serverSearch)}
         error={rows.error ? new Error(describeDataError(rows.error)) : null}
         onRetry={rows.reload}
         pageSize={25}

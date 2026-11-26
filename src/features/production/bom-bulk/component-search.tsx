@@ -3,6 +3,7 @@ import { useEffect, useId, useState } from 'react'
 
 import { Input } from '@/components/ui/input'
 import { useDebouncedValue } from '@/hooks/use-debounced-value'
+import { normalizeSearch } from '@/lib/search'
 import { describeDataError } from '@/lib/errors'
 import { searchComponents, type ComponentHit } from '@/services/bom-bulk'
 
@@ -20,7 +21,7 @@ export function ComponentSearch({ label, value, onChange, activeOnly = false, te
 }) {
   const id = useId()
   const [text, setText] = useState('')
-  const term = useDebouncedValue(text, 250)
+  const term = useDebouncedValue(normalizeSearch(text), 250)
   const [found, setFound] = useState<{ term: string; hits: ComponentHit[] }>({ term: '', hits: [] })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)

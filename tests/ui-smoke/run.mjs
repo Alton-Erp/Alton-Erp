@@ -253,6 +253,195 @@ const MANAGER_ID = USERS['manager@test.invalid'].id
 const VIEWER_ID = USERS['viewer@test.invalid'].id
 const NOW = new Date().toISOString()
 const TODAY = NOW.slice(0, 10)
+
+// ---------------------------------------------------------------------------
+// Alton Accounts (migrations 20261231090000 / 20261231090100): mock accounting API
+// ---------------------------------------------------------------------------
+const ACC_FY = TODAY.slice(5, 7) >= '04' ? Number(TODAY.slice(0, 4)) : Number(TODAY.slice(0, 4)) - 1
+const ACC_START = `${ACC_FY}-04-01`
+const ACC_FY_LABEL = `${ACC_FY}-${String((ACC_FY + 1) % 100).padStart(2, '0')}`
+const ACC = {
+  posted: 0,
+  runs: 0,
+  groups: [
+    { id: 'ag-as', group_code: 'AS', group_name: 'Assets', parent_group_id: null, classification: 'ASSET', normal_balance: 'DEBIT', is_system: true, is_active: true, sort_order: 1, description: null },
+    { id: 'ag-bank', group_code: 'AS.CA.BANK', group_name: 'Bank Accounts', parent_group_id: 'ag-as', classification: 'ASSET', normal_balance: 'DEBIT', is_system: true, is_active: true, sort_order: 5, description: null },
+    { id: 'ag-deb', group_code: 'AS.CA.DEB', group_name: 'Sundry Debtors', parent_group_id: 'ag-as', classification: 'ASSET', normal_balance: 'DEBIT', is_system: true, is_active: true, sort_order: 6, description: null },
+    { id: 'ag-in', group_code: 'IN', group_name: 'Income', parent_group_id: null, classification: 'INCOME', normal_balance: 'CREDIT', is_system: true, is_active: true, sort_order: 19, description: null },
+    { id: 'ag-sal', group_code: 'IN.SAL', group_name: 'Sales Accounts', parent_group_id: 'ag-in', classification: 'INCOME', normal_balance: 'CREDIT', is_system: true, is_active: true, sort_order: 20, description: null },
+  ],
+}
+const accAccount = (id, code, name, group, cls, nature, balance, extra = {}) => ({ id, account_code: code, account_name: name, group_id: group, group_name: ACC.groups.find((g) => g.id === group).group_name,
+  classification: cls, normal_balance: cls === 'ASSET' ? 'DEBIT' : 'CREDIT', account_nature: nature, is_postable: true, allow_manual_posting: true, requires_party: false, is_control: false,
+  is_system: false, system_key: null, is_active: true, description: null, balance, line_count: 2, ...extra })
+ACC.accounts = [
+  accAccount('acc-bank', '1210', 'HDFC Current A/c', 'ag-bank', 'ASSET', 'BANK', '11800.00'),
+  accAccount('acc-deb', '1300', 'Sundry Debtors (Control)', 'ag-deb', 'ASSET', 'RECEIVABLE_CONTROL', '0.00', { requires_party: true, allow_manual_posting: false, is_control: true, is_system: true }),
+  accAccount('acc-sales', '4100', 'Sales', 'ag-sal', 'INCOME', 'GENERAL', '-10000.00', { is_system: true }),
+  accAccount('acc-gst', '2210', 'Output CGST', 'ag-sal', 'INCOME', 'TAX', '-1800.00', { is_system: true }),
+]
+const accLine = (n, acc, dr, cr, party = null) => { const a = ACC.accounts.find((x) => x.id === acc); return { id: `al${n}`, line_no: n, account_id: acc, account_code: a.account_code,
+  account_name: a.account_name, party_id: party, party_name: party ? 'Mock Customer' : null, debit: dr, credit: cr, narration: null } }
+const accVoucher = (over = {}) => ({ id: 'av1', voucher_type: 'SAL', voucher_type_name: 'Sales', voucher_number: `SAL/${ACC_FY_LABEL.slice(2)}/000001`, financial_year: ACC_FY_LABEL,
+  voucher_date: TODAY, reference_number: 'INV/1', narration: 'Sales invoice INV/1 — Mock Customer', status: 'POSTED', source: 'AUTO', source_type: 'SALES_INVOICE', source_id: 'inv1',
+  source_number: 'INV/1', reversal_of_voucher_id: null, reversal_of_number: null, reversed_by_voucher_id: null, reversed_by_number: null, reversal_reason: null, reversed_at: null,
+  reversed_by_name: null, total_debit: '11800.00', total_credit: '11800.00', row_version: 2, created_at: NOW, created_by_name: 'Smoke Tester', updated_at: NOW, posted_at: NOW,
+  posted_by_name: 'Smoke Tester', discarded_at: null, discard_reason: null,
+  lines: [accLine(1, 'acc-deb', '11800.00', '0', 'party1'), accLine(2, 'acc-sales', '0', '10000.00'), accLine(3, 'acc-gst', '0', '1800.00')],
+  issues: [], audit: [{ action: 'accounting.voucher.posted', at: NOW, by: 'Smoke Tester', metadata: {} }], ...over })
+const accDraft = () => accVoucher({ id: 'av2', voucher_type: 'JV', voucher_type_name: 'Journal Voucher', voucher_number: null, status: 'DRAFT', source: 'MANUAL', source_type: null, source_id: null,
+  source_number: null, posted_at: null, posted_by_name: null, narration: 'Bank charges', lines: [accLine(1, 'acc-bank', '0', '250.00'), accLine(2, 'acc-sales', '250.00', '0')] })
+const accListRow = (v) => ({ id: v.id, voucher_number: v.voucher_number, voucher_type: v.voucher_type, voucher_type_name: v.voucher_type_name, voucher_date: v.voucher_date,
+  reference_number: v.reference_number, narration: v.narration, status: v.status, source: v.source, source_type: v.source_type, source_number: v.source_number, total_debit: v.total_debit,
+  total_credit: v.total_credit, reversal_of_voucher_id: null, created_by: MANAGER_ID, created_by_name: 'Smoke Tester', created_at: NOW, posted_at: v.posted_at })
+const accTbRow = (a, opening, dr, cr) => ({ account_id: a.id, account_code: a.account_code, account_name: a.account_name, group_name: a.group_name, classification: a.classification,
+  normal_balance: a.normal_balance, is_active: true, opening_debit: '0', opening_credit: '0', period_debit: dr, period_credit: cr,
+  closing_debit: Number(dr) > Number(cr) ? (Number(dr) - Number(cr)).toFixed(2) : '0', closing_credit: Number(cr) > Number(dr) ? (Number(cr) - Number(dr)).toFixed(2) : '0' })
+const accEvents = () => [
+  { id: 'ae1', source_type: 'SALES_INVOICE', source_id: 'inv1', event_action: 'POST', source_number: 'INV/1', source_date: TODAY, amount: '11800.00', status: 'POSTED', attempts: 0,
+    last_attempt_at: NOW, error_code: null, error_message: null, voucher_id: 'av1', voucher_number: accVoucher().voucher_number, dismiss_reason: null, dismissed_at: null, posted_at: NOW, created_at: NOW },
+  { id: 'ae2', source_type: 'CUSTOMER_RECEIPT', source_id: 'rc1', event_action: 'POST', source_number: 'RCPT/1', source_date: TODAY, amount: '5000.00', status: 'NEEDS_ACCOUNT_MAPPING',
+    attempts: 0, last_attempt_at: NOW, error_code: 'NEEDS_ACCOUNT_MAPPING', error_message: 'Map an active account in Accounting Settings > Posting rules for: Customer receipts by upi (cash / bank account).',
+    voucher_id: null, voucher_number: null, dismiss_reason: null, dismissed_at: null, posted_at: null, created_at: NOW },
+]
+const accPeriods = () => Array.from({ length: 12 }, (_, i) => { const d = new Date(Date.UTC(ACC_FY, 3 + i, 1)); const e = new Date(Date.UTC(ACC_FY, 4 + i, 0))
+  return { id: `ap${i + 1}`, financial_year: ACC_FY_LABEL, period_no: i + 1, period_name: d.toLocaleString('en-GB', { month: 'short', year: 'numeric', timeZone: 'UTC' }),
+    start_date: d.toISOString().slice(0, 10), end_date: e.toISOString().slice(0, 10), status: 'OPEN', status_reason: null, closed_at: null, reopened_at: null, draft_vouchers: 0, posted_vouchers: i === 0 ? 1 : 0 } })
+const accOpening = () => ({ id: 'ob1', batch_number: 'OB-0001', as_of_date: ACC_START, source: 'MANUAL', file_name: null, notes: null, status: 'DRAFT', acknowledgements: [],
+  voucher_number: null, created_by_name: 'Smoke Tester', approved_by_name: null, posted_by_name: null, created_at: NOW, approved_at: null, posted_at: null,
+  line_total_debit: '5000.00', line_total_credit: '5000.00',
+  lines: [{ id: 'obl1', line_no: 1, account_id: 'acc-bank', account_code: '1210', account_name: 'HDFC Current A/c', party_id: null, party_name: null, party_code: null, balance_category: 'CASH_BANK',
+    debit: '5000.00', credit: '0', description: 'Bank balance' }, { id: 'obl2', line_no: 2, account_id: 'acc-sales', account_code: '4100', account_name: 'Sales', party_id: null, party_name: null,
+    party_code: null, balance_category: 'LEDGER', debit: '0', credit: '5000.00', description: null }],
+  checks: [{ code: 'BALANCED', label: 'Total debit equals total credit', status: 'PASS', acknowledgeable: false, expected: '5000.00', actual: '5000.00', difference: '0' },
+    { code: 'RECEIVABLE_MATCH', label: 'Debtors equal the ERP customer opening balances, party by party', status: 'FAIL', acknowledgeable: true, expected: '2000.00', actual: '0', difference: '-2000.00',
+      details: [{ party: 'Mock Customer', erp: 2000, batch: 0, difference: -2000 }] }] })
+const ACC_CC = () => [
+  { id: 'cc1', cost_centre_code: 'PROD', cost_centre_name: 'Production', description: null, parent_cost_centre_id: null, cost_centre_type: 'PRODUCTION', effective_from: null,
+    effective_to: null, is_active: true, updated_at: NOW, allocation_count: 3, posted_allocation_count: 3, budget_line_count: 1, child_count: 0 },
+  { id: 'cc2', cost_centre_code: 'ADMIN', cost_centre_name: 'Administration', description: 'Office', parent_cost_centre_id: null, cost_centre_type: 'ADMINISTRATION', effective_from: null,
+    effective_to: null, is_active: true, updated_at: NOW, allocation_count: 0, posted_allocation_count: 0, budget_line_count: 0, child_count: 1 },
+  { id: 'cc3', cost_centre_code: 'WH', cost_centre_name: 'Warehouse', description: null, parent_cost_centre_id: 'cc2', cost_centre_type: 'WAREHOUSE', effective_from: null,
+    effective_to: null, is_active: true, updated_at: NOW, allocation_count: 0, posted_allocation_count: 0, budget_line_count: 0, child_count: 0 },
+]
+const accBudget = (status = 'DRAFT') => ({ id: 'bud1', financial_year: ACC_FY_LABEL, fy_start: ACC_START, version: 1, budget_name: 'Operating budget', status, source: 'IMPORT', notes: null,
+  file_name: 'budget.xlsx', revision_of_budget_id: null, revision_of_version: null, created_at: NOW, approved_at: status === 'APPROVED' ? NOW : null, created_by_name: 'Smoke Tester',
+  approved_by_name: status === 'APPROVED' ? 'Smoke Tester' : null, total_annual: '600000.00',
+  lines: [{ id: 'bl1', line_no: 1, cost_centre_id: 'cc1', cost_centre_code: 'PROD', cost_centre_name: 'Production', account_id: 'acc-sales', account_code: '4100', account_name: 'Sales',
+    classification: 'INCOME', annual_amount: '600000.00', months: Array(12).fill('50000.00'), notes: null }],
+  history: [{ action: 'CREATED', note: null, at: NOW, by: 'Smoke Tester', details: {} }, { action: 'IMPORTED', note: null, at: NOW, by: 'Smoke Tester', details: {} }] })
+// Supplier invoices (Phase 3): one invoice moving SUBMITTED (price variance) → APPROVED → POSTED → GST verified → paid.
+const PI = { status: 'SUBMITTED', gst: 'PENDING_VERIFICATION', paid: 0, proposed: null }
+// GSTR-2B (Phase 5, Gate C): one verified import with an error row, one partial match awaiting approval.
+const G2B = { committed: false, approved: false }
+// GST returns (Phase 5, Gate D): one approved period (snapshot) and one open period (live, adjusted).
+const GR = { filed: null, closed: false }
+const grSec = (taxable, igst, cgst, sgst, docs = 1, adj = null) => ({ label: null, calculated: { documents: docs, taxable, igst, cgst, sgst, cess: '0' },
+  adjusted: { documents: docs, taxable: adj ?? taxable, igst, cgst, sgst, cess: '0' }, value_status: adj ? 'ADJUSTED' : 'CALCULATED',
+  adjustments: adj ? [{ id: 'ra1', field: 'taxable', tax_head: 'TAXABLE', amount: '500.00', reason: 'Advance received, tax paid', status: 'APPROVED' }] : [], rows: [] })
+const grBase = (period, approved) => ({ period: period === 'gp-oct' ? '2026-10' : '2026-11', from: period === 'gp-oct' ? '2026-10-01' : '2026-11-01', to: period === 'gp-oct' ? '2026-10-31' : '2026-11-30',
+  config_version_no: 1, unmatched_adjustments: [], source: approved ? 'SNAPSHOT' : 'LIVE',
+  value_status: approved ? (GR.filed ? 'FILED' : 'APPROVED') : 'ADJUSTED', period_status: approved ? 'APPROVED' : 'UNDER_REVIEW',
+  snapshot: approved ? { id: 'gs1', version_no: 1, snapshot_hash: 'b'.repeat(64), created_at: NOW, has_return_working: true } : null, live_differs: false,
+  filing: approved && GR.filed ? { id: 'gf1', return_type: 'GSTR3B', arn: GR.filed, filed_on: TODAY, note: null, recorded_by_name: 'Smoke Tester', recorded_at: NOW, note_on_filing: 'Recorded by a user' } : null,
+  exceptions: [{ code: 'MISSING_HSN', severity: 'ERROR', source_kind: 'SALES_INVOICE', source_id: 'si9', document_no: 'INV-0009', document_date: TODAY, message: '1 line(s) without HSN / SAC.' }],
+  disclaimer: 'Working data for preparing the return on the GST portal. This system does not file returns and has no GSTN / portal connection.' })
+const grGstr1 = (period, approved) => ({ ...grBase(period, approved), return_type: 'GSTR1', b2cl_invoice_threshold: 100000,
+  sections: { B2B: { ...grSec('1000.00', '180.00', '0', '0'), rows: [{ kind: 'INVOICE', id: 'si1', number: 'INV-0001', date: TODAY, customer: 'Acme', gstin: '29AABCQ1234A1Z5',
+    place_of_supply: '29', value: '1180.00', sign: 1, taxable: '1000.00', igst: '180.00', cgst: '0', sgst: '0', cess: '0', rates: [{ rate: 18, taxable: '1000.00', igst: '180.00', cgst: '0', sgst: '0' }] }] },
+    B2CS: grSec('500.00', '0', '45.00', '45.00'), CDNR: grSec('-100.00', '-18.00', '0', '0') },
+  hsn: [{ hsn_sac: '6910', uqc: 'PCS', rate: 18, b2b: true, quantity: 2, taxable: '900.00', igst: '162.00', cgst: '0', sgst: '0', cess: '0' }],
+  documents_issued: [{ nature: 'Invoices for outward supply', series: 'INV', from: 'INV-0001', to: 'INV-0007', total: 7, cancelled: 1, net_issued: 6 }],
+  excluded: { draft_or_pending: 2, cancelled: 1, proforma: 0 } })
+const grGstr3b = (period, approved) => ({ ...grBase(period, approved), return_type: 'GSTR3B',
+  sections: { '3.1(a)': grSec('201500.00', '36180.00', '45.00', '45.00', 0, approved ? null : '202000.00'), '3.1(b)': grSec('2000.00', '0', '0', '0', 0), '4(A)(5)': grSec('0', '90.00', '90.00', '90.00', 0) },
+  net_itc: { igst: '90.00', cgst: '90.00', sgst: '90.00', cess: '0' }, '3.2_inter_state_unregistered': [{ place_of_supply: '29', taxable: '200000.00', igst: '36000.00' }],
+  '6.1': [{ head: 'IGST', payable_per_return: '36180.00', liability_per_ledger: '200.00', paid_through_itc: { IGST: '150.00' }, paid_in_cash: '0', interest: '0', late_fee: '0', open_after_set_off: '50.00' }],
+  credit: { IGST: { accrued_to_period_end: '500.00', used_to_period: '150.00', used_in_posted_set_offs: '510.00', available_at_period_end: '350.00', cumulative_headroom: '350.00',
+    ledger_balance: '440.00', current_available: '440.00', available: '350.00' } },
+  itc_evidence: { note: 'GSTR-2B results are evidence only: ITC comes from approved maker-checker decisions, never from GSTR-2B.', by_gstr2b_status: { APPROVED: { decisions: 1, itc: '180.00' } }, events: [] } })
+const grPeriods = () => [{ id: 'gp-nov', period_code: '2026-11', frequency: 'MONTHLY', period_start: '2026-11-01', period_end: '2026-11-30', status: 'UNDER_REVIEW', snapshot_version: null,
+    open_amendments: 0, prepared_by: null, row_version: 2 },
+  { id: 'gp-oct', period_code: '2026-10', frequency: 'MONTHLY', financial_year: '2026-27', period_start: '2026-10-01', period_end: '2026-10-31', status: GR.closed ? 'CLOSED' : 'APPROVED',
+    snapshot_version: 1, open_amendments: 0, prepared_by: 'u2', row_version: GR.closed ? 6 : 5 }]
+const geControls = () => [...['SNAPSHOT_MISSING', 'GST_ACCOUNTS_UNMAPPED', 'ADJUSTMENTS_DRAFT', 'AMENDMENTS_UNRESOLVED', 'ITC_PROPOSALS_PENDING', 'GSTR2B_UNAPPROVED_MATCHES', 'SET_OFF_DRAFT',
+  'PAYMENTS_UNPOSTED'].map((code) => ({ code, severity: 'BLOCKER', count: 0, passed: true, message: `${code} message` })),
+  { code: 'SOURCE_ERRORS', severity: 'WARNING', count: 2, passed: false, message: 'Source documents with missing or invalid GST information.' },
+  { code: 'LEDGER_UNRECONCILED', severity: 'WARNING', count: 0, passed: true, message: 'Tax heads where documents and GST ledgers differ.' }]
+const geHead = (report) => ({ report, company: { legal_name: 'Alton Hi-Tech Sanitary Ware', display_name: 'Alton' }, gstin: '27AABCA1234A1Z5', period_id: 'gp-oct', period_code: '2026-10',
+  from: '2026-10-01', to: '2026-10-31', financial_year: '2026-27', period_status: GR.closed ? 'CLOSED' : 'APPROVED', config_version_no: 1,
+  snapshot: { id: 'gs1', version_no: 1, snapshot_hash: 'b'.repeat(64), created_at: NOW, has_return_working: true }, filings: GR.filed ? [{ return_type: 'GSTR3B', arn: GR.filed, filed_on: TODAY }] : [],
+  value_status: GR.filed ? 'FILED' : 'APPROVED', generated_at: NOW,
+  disclaimer: 'Prepared by Alton ERP for review and working purposes. This document is not proof of filing with the GST Portal. The taxpayer must independently verify and file the return on the official GST Portal.' })
+const g2bImport = () => ({ id: 'g2b1', return_period: '2026-10', file_name: 'GSTR2B_102026.xlsx', file_kind: 'XLSX', mime_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  file_size: 20480, declared_sha256: 'a'.repeat(64), computed_sha256: 'a'.repeat(64), storage_path: 'c/gstr2b/g2b1.xlsx', bucket: 'gst-files', status: G2B.committed ? 'COMMITTED' : 'VERIFIED',
+  rejection_reason: null, status_reason: null, total_rows: 3, valid_rows: 2, error_rows: 1, duplicate_rows: 0, parser: { sheets: [{ sheet: 'B2B', section: 'B2B', rows: 3 }], skipped: ['ISD'] },
+  commit_summary: G2B.committed ? { NEW: 2, AMENDMENT: 0, CHANGED: 0, DUPLICATE_OF_EARLIER: 0, SKIPPED: 1 } : {}, uploaded_by_name: 'Smoke Tester', committed_by_name: null, created_at: NOW,
+  verified_at: NOW, committed_at: G2B.committed ? NOW : null, row_version: 2 })
+const g2bLine = (n, status, doc, errors = []) => ({ id: `gl${n}`, line_no: n, sheet_name: 'B2B', source_row: n + 5, section: 'B2B', original_row: { 'GSTIN of supplier': '27AABCP1234A1Z5',
+  'Invoice details / Invoice number': doc }, supplier_gstin: '27AABCP1234A1Z5', supplier_name: 'Shree Ceramics', doc_type: 'INVOICE', doc_number: doc, doc_date: TODAY, is_amendment: false,
+  original_doc_number: null, taxable_value: '420.00', igst: '0', cgst: '37.80', sgst: '38.30', cess: '0', row_status: status, errors, duplicate_of_line: null, commit_outcome: G2B.committed && status === 'VALID' ? 'NEW' : null })
+const g2bMatch = () => ({ id: 'gm1', document_id: 'gd1', purchase_invoice_id: 'pi1', method: 'AUTO', outcome: 'PARTIAL', mismatches: [], differences: { sgst: { gstr2b: 38.3, books: 37.8, difference: 0.5 } },
+  tolerance: '1.00', config_version_no: 1,
+  status: G2B.approved ? 'APPROVED' : 'PROPOSED', reason: null, decision_note: G2B.approved ? 'Supplier rounding' : null, reversal_reason: null, invoice_number: 'PINV-000001',
+  supplier_invoice_number: 'S1/M-002', supplier_gstin: '27AABCP1234A1Z5', doc_number: 'S1/M-002', version_no: 1, is_current_version: true, proposed_by_name: 'Other Accountant',
+  decided_by_name: G2B.approved ? 'Smoke Tester' : null, proposed_at: NOW, history: [{ action: 'PROPOSED', reason: null, by: 'Other Accountant', created_at: NOW }] })
+const piLookups = () => ({ initialized: true, today: TODAY, books_start_date: ACC_START, pi_price_tolerance_percent: 0, pi_amount_tolerance: 0, company_state_code: '27',
+  suppliers: [{ id: 'sup1', supplier_code: 'SUP1', name: 'Shree Ceramics', gstin: '27AABCP1234A1Z5', state_code: '27', payment_terms: 'DAYS_30' }],
+  accounts: [{ id: 'acc-6500', account_code: '6500', account_name: 'Electricity', classification: 'EXPENSE', cost_centre_policy: 'REQUIRED' },
+    { id: 'acc-6200', account_code: '6200', account_name: 'Rent', classification: 'EXPENSE', cost_centre_policy: 'OPTIONAL' }],
+  cost_centres: ACC_CC() })
+const piInvoice = (id = 'pi1', status = PI.status) => ({ id, invoice_number: id === 'pi1' ? 'PINV-000001' : 'PINV-000009', supplier_id: 'sup1', supplier_code: 'SUP1',
+  supplier_name: 'Shree Ceramics', party_id: 'p-sup1', party_code: 'SUP1', supplier_gstin: '27AABCP1234A1Z5', supplier_invoice_number: id === 'pi1' ? 'S1/M-002' : 'S1/NEW-9',
+  supplier_invoice_date: TODAY, recorded_date: TODAY, due_date: TODAY, purchase_order_id: null, purchase_order_number: null, invoice_type: 'GOODS', supply_category: 'TAXABLE',
+  place_of_supply_state_code: '27', tax_treatment: 'INTRA_STATE', reverse_charge: false, currency: 'INR', subtotal: '420.00', discount_total: '0', taxable_value: '420.00',
+  cgst_total: '37.80', sgst_total: '37.80', igst_total: '0', cess_total: '0', round_off: '0', grand_total: '495.60', supplier_stated_total: '495.60', narration: null, status,
+  variance_status: status === 'SUBMITTED' ? 'EXCEPTION' : status === 'DRAFT' ? 'NONE' : 'APPROVED', variance_note: status === 'SUBMITTED' || status === 'DRAFT' ? null : 'Supplier price revision agreed',
+  gst_status: status === 'POSTED' ? PI.gst : 'PENDING_VERIFICATION', gst_verification: PI.gst === 'ELIGIBLE' ? { status: 'ELIGIBLE', reason: 'Checked against the supplier copy', checks: {} } : null,
+  gst_verified_at: null, voucher_id: status === 'POSTED' ? 'av-pin' : null, voucher_number: status === 'POSTED' ? 'PIN/26-27/000001' : null,
+  gst_voucher_id: PI.gst === 'ELIGIBLE' ? 'av-pin2' : null, gst_voucher_number: PI.gst === 'ELIGIBLE' ? 'PIN/26-27/000002' : null,
+  reconciliation: status === 'POSTED' ? { lines: [{ line_no: 1, receipt: 'GRN-0001', quantity: 4, receipt_payable_share: '472.00', invoice_amount: '495.60', creditors_adjustment: '23.60' }],
+    receipt_share_total: '472.00', creditors_posted_by_invoice: '23.60', invoice_total: '495.60', reconciled: true } : null,
+  row_version: 3, created_at: NOW, created_by_name: 'Smoke Tester', approved_at: null, approved_by_name: null, posted_at: status === 'POSTED' ? NOW : null, posted_by_name: null,
+  reversed_at: null, reversal_reason: null, cancelled_at: null, cancel_reason: null,
+  outstanding: status === 'POSTED' ? (495.6 - PI.paid).toFixed(2) : null, paid: status === 'POSTED' ? PI.paid.toFixed(2) : null,
+  lines: [{ id: 'pil1', line_no: 1, line_kind: 'GRN', goods_receipt_id: 'grn1', goods_receipt_line_id: 'grl1', account_id: null, account_code: null, account_name: null,
+    description: 'Wash basin', quantity: '4.000', unit_price: '105.0000', discount: '0', taxable_value: '420.00', gst_rate: '18.00', cgst: '37.80', sgst: '37.80', igst: '0', cess: '0',
+    matched_net: status === 'POSTED' ? '400.00' : null, matched_gst: status === 'POSTED' ? '72.00' : null, matched_payable: status === 'POSTED' ? '472.00' : null,
+    grn_unit_cost: status === 'POSTED' ? '100.0000' : null, grn_gst_rate: status === 'POSTED' ? '18.00' : null, receipt_number: 'GRN-0001', receipt_date: TODAY, product_name: 'Wash basin',
+    grn_accepted: '10.000', grn_payable: '1180.00', grn_net: '1000.00', grn_unit_cost_now: '100.0000', grn_rate: '18.00', grn_invoiced_elsewhere: '6.000', allocations: [] }],
+  payments: PI.paid ? [{ id: 'spa1', payment_id: 'spay1', payment_number: 'SPAY-0001', payment_date: TODAY, payment_status: 'RECORDED', amount: PI.paid.toFixed(2), status: 'ACTIVE',
+    reversal_reason: null, created_at: NOW }] : [],
+  history: [{ action: 'CREATED', note: null, details: {}, at: NOW, by: 'Smoke Tester' }, { action: 'SUBMITTED', note: null, details: {}, at: NOW, by: 'Smoke Tester' }],
+  issues: status === 'SUBMITTED' ? [{ code: 'PRICE_VARIANCE', blocking: false, line_no: 1, amount: '20.00',
+    message: 'Line 1: invoice price 105.00 vs receipt cost 100.00 (difference 20.00, 5%) is outside the tolerance and needs approval.' }] : [] })
+// Bank & cash (Phase 4).
+const BK = { transfers: [], imports: [], matched: false, adjusted: false, policyCash: false }
+const bkAcc = (id, kind, code, name, extra = {}) => ({ id, account_kind: kind, account_code: code, account_name: name, ledger_account_id: 'l-' + id, ledger_code: kind === 'BANK' ? '1230' : '1110',
+  ledger_name: name, bank_name: kind === 'BANK' ? 'HDFC Bank' : null, branch_name: kind === 'BANK' ? 'Pune MIDC' : null, account_holder_name: kind === 'BANK' ? 'Alton' : null,
+  account_number_masked: kind === 'BANK' ? 'XXXXXXXXXX5678' : null, ifsc: kind === 'BANK' ? 'HDFC0001234' : null, bank_account_type: kind === 'BANK' ? 'CURRENT' : null, currency: 'INR',
+  opening_balance: null, opening_balance_type: null, opening_balance_date: null, opening_balance_reference: null, custodian_user_id: null, custodian_name: kind === 'CASH' ? 'Smoke Tester' : null,
+  allow_negative_balance: false, is_active: true, notes: null, row_version: 1, ledger_balance: kind === 'BANK' ? '196036.00' : '500.00', last_statement_date: null, unmatched_statement_lines: 0, ...extra })
+const BK_ACCOUNTS = () => [bkAcc('hdfc', 'BANK', 'HDFC-CA', 'HDFC Current'), bkAcc('petty', 'CASH', 'PETTY', 'Petty Cash')]
+const bkLookups = () => ({ initialized: true, today: TODAY, accounts: BK_ACCOUNTS(),
+  ledgers: [{ id: 'l-hdfc', account_code: '1230', account_name: 'HDFC Current', account_nature: 'BANK', linked: true }, { id: 'l-sbi', account_code: '1240', account_name: 'SBI Current', account_nature: 'BANK', linked: false },
+    { id: 'l-petty', account_code: '1110', account_name: 'Petty Cash', account_nature: 'CASH', linked: true }],
+  expense_ledgers: [{ id: 'acc-6600', account_code: '6600', account_name: 'Bank Charges', cost_centre_policy: 'OPTIONAL' }], users: [{ id: 'u1', full_name: 'Smoke Tester' }] })
+const bkTransfer = (t) => ({ voucher_id: null, voucher_number: null, reversal_voucher_number: null, reversal_reason: null, cancel_reason: null, row_version: 1, from_account_code: 'HDFC-CA',
+  from_account_name: 'HDFC Current', from_kind: 'BANK', to_account_code: 'PETTY', to_account_name: 'Petty Cash', to_kind: 'CASH', charges_account_code: null, charges_account_name: null,
+  created_by_name: 'Smoke Tester', posted_at: null, ...t })
+const bkLedger = () => BK.matched ? [] : [
+  { line_id: 'gl1', voucher_id: 'av-ctr', voucher_number: 'CTR/26-27/000002', date: TODAY, voucher_type: 'CTR', source_type: 'BANK_TRANSFER', is_reversal: false, counterparty: 'SBI Current',
+    narration: 'Transfer out', reference: 'NEFT-SBI', payment_method: 'TRANSFER', amount: '-1000.00', matched: '0', remaining: '-1000.00', state: 'UNMATCHED' },
+  { line_id: 'gl2', voucher_id: 'av-ctr', voucher_number: 'CTR/26-27/000002', date: TODAY, voucher_type: 'CTR', source_type: 'BANK_TRANSFER', is_reversal: false, counterparty: 'Bank Charges',
+    narration: 'Transfer charges', reference: 'NEFT-SBI', payment_method: 'TRANSFER', amount: '-25.00', matched: '0', remaining: '-25.00', state: 'UNMATCHED' }]
+const bkStatement = () => [
+  ...(BK.matched ? [] : [{ line_id: 'st1', date: TODAY, value_date: TODAY, description: 'NEFT-SBI INCL CHG', reference: null, bank_txn_id: null, amount: '-1025.00', running_balance: '193975.00',
+    category: 'OTHER', adjustment_voucher_id: null, matched: '0', remaining: '-1025.00', state: 'UNMATCHED' }]),
+  ...(BK.adjusted ? [] : [{ line_id: 'st2', date: TODAY, value_date: TODAY, description: 'SMS CHARGES QTR', reference: null, bank_txn_id: null, amount: '-59.00', running_balance: '193916.00',
+    category: 'CHARGES', adjustment_voucher_id: null, matched: '0', remaining: '-59.00', state: 'UNMATCHED' }])]
+const accDenied = (perm) => ({ code: '42501', message: `You are not allowed to perform this action (requires ${perm}).` })
+const accHasAny = (...perms) => perms.some((p) => has(p))
 const stamp = { created_by: null, updated_by: null, created_at: NOW, updated_at: NOW }
 const warehouses = [{ id: 'w1', company_id: COMPANY_ID, warehouse_code: 'MAIN', warehouse_name: 'Mock main store', address: null, status: 'ACTIVE', is_default: true, ...stamp }]
 const locations = [
@@ -1427,6 +1616,16 @@ function logicTerm(row, term) {
   return not ? !r : r
 }
 
+/** The ERP search rule for mocked search RPCs: every word (case-insensitive) somewhere in the row's text or its related rows. */
+function mockSearch(rows, search, related = () => []) {
+  const words = [...new Set(String(search ?? '').toLowerCase().split(/\s+/).filter(Boolean))]
+  const text = (r) => Object.values(r).filter((v) => typeof v === 'string').join(' ')
+  return rows.filter((r) => { const hay = [r, ...related(r)].map(text).join(' ').toLowerCase(); return words.every((w) => hay.includes(w)) })
+}
+
+/** p_status of the search RPCs: null = all, ACTIVE = not archived, OPEN = not completed / cancelled, else that status. */
+const mockStatus = (rows, st) => rows.filter((r) => !st || (st === 'ACTIVE' ? r.status !== 'ARCHIVED' : st === 'OPEN' ? !['COMPLETED', 'CANCELLED'].includes(r.status) : r.status === st))
+
 function filterRows(rows, params) {
   let out = rows
   for (const [key, value] of params) {
@@ -2511,6 +2710,13 @@ const api = http.createServer((req, res) => {
           Object.assign(ERP_SETTINGS.settings, body.p_settings ?? {})
           return send(res, 200, ERP_SETTINGS)
         }
+        // ERP search RPCs (20261231090900): every word in the row or its related records (BOM components).
+        case 'bom_search':
+          return send(res, 200, mockStatus(mockSearch(tables.bom_list_v2 ?? [], body.p_search, (b) => (tables.bom_item_list ?? []).filter((i) => i.bom_id === b.id)), body.p_status))
+        case 'production_order_search':
+          return send(res, 200, mockStatus(mockSearch(tables.production_order_list ?? [], body.p_search), body.p_status))
+        case 'outsourcing_order_search':
+          return send(res, 200, mockStatus(mockSearch(tables.outsourcing_order_list ?? [], body.p_search), body.p_status))
         case 'global_search':
           return send(res, 200, String(body.p_term).toLowerCase().includes('wc') ? [
             { module: 'Product', id: 'p1', reference: 'MOCK-WC-1', title: 'Mock Closet 1', subtitle: 'Finished good · HSN 6910', link: '/products/p1' },
@@ -3001,6 +3207,322 @@ const api = http.createServer((req, res) => {
           return send(res, 200, { total: body.p_demo ? AMZ_TERMS.length : 0, rows: body.p_demo ? AMZ_TERMS : [] })
         case 'amazon_recommendations_save':
           return send(res, 200, { saved: body.p_items.length, superseded: 0 })
+        // ---- Alton Accounts --------------------------------------------------------------------------------
+        case 'accounting_status':
+          if (!accHasAny('accounts.read', 'vouchers.read', 'accounting_reports.read', 'accounting_settings.manage', 'accounting_posting.manage', 'accounting_opening.import')) return send(res, 403, accDenied('accounts.read'))
+          return send(res, 200, { initialized: true, settings: { books_start_date: ACC_START, fy_start_month: 4, currency_code: 'INR', allow_future_dates: false, backdate_limit_days: null,
+            segregation_of_duties: false, auto_posting_max_attempts: 5, initialized_at: NOW, updated_at: NOW }, current_financial_year: ACC_FY_LABEL, today: TODAY, has_postings: true,
+            has_vouchers: true, default_fy_start_month: 4 })
+        case 'accounting_dashboard':
+          return has('accounting_reports.read') ? send(res, 200, { initialized: true, books_start_date: ACC_START, financial_year: ACC_FY_LABEL, fy_from: ACC_START, today: TODAY,
+            vouchers: { draft: 1, posted: 1 + ACC.posted, reversed: 0, posted_this_fy: 1 + ACC.posted, automatic: 1, manual: ACC.posted }, books: { total_debit: '11800.00', total_credit: '11800.00' },
+            events: { POSTED: 1, NEEDS_ACCOUNT_MAPPING: 1 }, periods: { open: 12, closed: 0, current: 'current (OPEN)' }, opening: { posted: false, in_progress: 1 },
+            unmapped_payment_methods: ['UPI'], classification: { ASSET: '11800.00', INCOME: '-11800.00' } }) : send(res, 403, accDenied('accounting_reports.read'))
+        case 'accounting_chart':
+          return send(res, 200, { groups: ACC.groups, accounts: ACC.accounts })
+        case 'accounting_accounts':
+          return send(res, 200, ACC.accounts)
+        case 'accounting_parties':
+          return send(res, 200, [{ id: 'party1', party_code: 'PTY-000001', party_name: 'Mock Customer', is_customer: true, is_supplier: false, opening_balance: '2000.00', opening_balance_type: 'RECEIVABLE' }])
+        case 'accounting_voucher_list':
+          if (!has('vouchers.read')) return send(res, 403, accDenied('vouchers.read'))
+          if (body.p_filters?.voucher_type === 'JV') {
+            return send(res, 200, { total: 2, rows: [accListRow({ ...accDraft(), id: 'av3', status: 'POSTED', voucher_number: 'JV/00/000007', narration: 'Office rent accrual', posted_at: NOW }),
+              accListRow(accDraft())] })
+          }
+          return send(res, 200, { total: 2, rows: [accListRow(accVoucher()), accListRow(accDraft())] })
+        case 'accounting_voucher_get':
+          return send(res, 200, body.p_voucher_id === 'av2' ? (ACC.posted ? { ...accDraft(), status: 'POSTED', voucher_number: 'JV/00/000001', issues: [] } : accDraft()) : accVoucher())
+        case 'accounting_voucher_create':
+        case 'accounting_voucher_update':
+          if (!has('vouchers.create')) return send(res, 403, accDenied('vouchers.create'))
+          ACC.saved = body.p_voucher
+          return send(res, 200, { ...accDraft(), narration: body.p_voucher.narration, row_version: (ACC.version = (ACC.version ?? 1) + 1), issues: [] })
+        case 'accounting_voucher_validate':
+          return send(res, 200, { voucher_id: body.p_voucher_id, valid: true, issues: [], total_debit: 250, total_credit: 250, difference: 0 })
+        case 'accounting_voucher_discard':
+          return send(res, 200, { ...accDraft(), status: 'DISCARDED' })
+        case 'accounting_voucher_reverse':
+          if (!has('vouchers.reverse')) return send(res, 403, accDenied('vouchers.reverse'))
+          ACC.reversed = body
+          return send(res, 200, { original: { ...accDraft(), id: body.p_voucher_id, status: 'REVERSED' }, reversal: { ...accDraft(), id: 'av9', status: 'POSTED', voucher_number: 'REV/00/000001' } })
+        case 'accounting_voucher_post':
+          if (!has('vouchers.post')) return send(res, 403, accDenied('vouchers.post'))
+          ACC.posted++
+          return send(res, 200, { ...accDraft(), status: 'POSTED', voucher_number: 'JV/00/000001' })
+        case 'accounting_trial_balance':
+          return send(res, 200, { from: body.p_from, to: body.p_to, rows: [accTbRow(ACC.accounts[0], 0, '11800.00', '0'), accTbRow(ACC.accounts[2], 0, '0', '10000.00'), accTbRow(ACC.accounts[3], 0, '0', '1800.00')],
+            totals: { opening_debit: '0', opening_credit: '0', period_debit: '11800.00', period_credit: '11800.00', closing_debit: '11800.00', closing_credit: '11800.00' } })
+        case 'accounting_general_ledger': {
+          const a = ACC.accounts.find((x) => x.id === body.p_account_id) ?? ACC.accounts[0]
+          return send(res, 200, { account: { id: a.id, account_code: a.account_code, account_name: a.account_name, normal_balance: a.normal_balance, classification: a.classification, requires_party: a.requires_party },
+            from: body.p_from, to: body.p_to, opening_balance: '0', closing_balance: '11800.00', entries: [{ voucher_id: 'av1', voucher_number: accVoucher().voucher_number, voucher_date: TODAY,
+              voucher_type: 'SAL', status: 'POSTED', narration: 'Sales invoice INV/1', reference_number: 'INV/1', source_type: 'SALES_INVOICE', source_number: 'INV/1', party_id: null, party_name: null,
+              debit: '11800.00', credit: '0', balance: '11800.00' }] })
+        }
+        case 'accounting_day_book':
+          return send(res, 200, { from: body.p_from, to: body.p_to, vouchers: [accVoucher()], totals: { debit: '11800.00', credit: '11800.00', vouchers: 1 } })
+        case 'accounting_periods':
+          return send(res, 200, accPeriods())
+        case 'accounting_posting_rules':
+          return send(res, 200, [{ id: 'pr1', rule_key: 'SALES', match_value: '', account_id: 'acc-sales', account_code: '4100', account_name: 'Sales', account_active: true, is_active: true, updated_at: NOW }])
+        case 'accounting_cost_centres':
+          return send(res, 200, ACC_CC())
+        case 'accounting_posting_events':
+          return accHasAny('accounting_posting.manage', 'accounting_reports.read') ? send(res, 200, { counts: { POSTED: 1, NEEDS_ACCOUNT_MAPPING: 1 }, rows: accEvents(), max_attempts: 5 })
+            : send(res, 403, accDenied('accounting_posting.manage'))
+        case 'accounting_posting_run':
+          if (!has('accounting_posting.manage')) return send(res, 403, accDenied('accounting_posting.manage'))
+          ACC.runs++
+          return send(res, 200, { busy: false, queued: 2, processed: 2, results: { POSTED: 1, NEEDS_ACCOUNT_MAPPING: 1 }, remaining: 0 })
+        case 'accounting_cost_centre_save':
+          if (!has('accounts.manage')) return send(res, 403, accDenied('accounts.manage'))
+          ACC.ccSaved = body
+          return send(res, 200, { id: body.p_cost_centre_id ?? 'cc9' })
+        case 'accounting_cost_centre_delete':
+          return send(res, 200, { deleted: body.p_cost_centre_id })
+        case 'accounting_account_set_cost_centre_policy':
+          return send(res, 200, { id: body.p_account_id, cost_centre_policy: body.p_policy })
+        case 'accounting_cost_centre_summary':
+          return send(res, 200, { from: body.p_from, to: body.p_to, rows: [
+            { cost_centre_id: 'cc1', cost_centre_code: 'PROD', cost_centre_name: 'Production', parent_cost_centre_id: null, cost_centre_type: 'PRODUCTION', is_active: true, income: '6000.00',
+              expense: '64000.00', net: '-58000.00', budget: '50000.00', actual: '64000.00', variance: '-14000.00', income_budget: '0' },
+            { cost_centre_id: 'cc2', cost_centre_code: 'ADMIN', cost_centre_name: 'Administration', parent_cost_centre_id: null, cost_centre_type: 'ADMINISTRATION', is_active: true, income: '0',
+              expense: '20000.00', net: '-20000.00', budget: '0', actual: '20000.00', variance: '-20000.00', income_budget: '0' },
+            { cost_centre_id: 'cc3', cost_centre_code: 'WH', cost_centre_name: 'Warehouse', parent_cost_centre_id: 'cc2', cost_centre_type: 'WAREHOUSE', is_active: true, income: '3000.00',
+              expense: '20000.00', net: '-17000.00', budget: '0', actual: '20000.00', variance: '-20000.00', income_budget: '0' }],
+            unallocated: { income: '1000.00', expense: '500.00', net: '500.00' }, company: { income: '10000.00', expense: '104500.00' } })
+        case 'accounting_cost_centre_profitability':
+          return send(res, 200, { from: body.p_from, to: body.p_to, rows: [{ cost_centre_id: 'cc1', cost_centre_code: 'PROD', cost_centre_name: 'Production', parent_cost_centre_id: null,
+            revenue: '6000.00', direct_expenses: '4000.00', indirect_expenses: '60000.00', contribution: '2000.00', net_contribution: '-58000.00' }],
+            unallocated: { revenue: '1000.00', direct_expenses: '0', indirect_expenses: '500.00', net_contribution: '500.00' } })
+        case 'accounting_cost_centre_ledger':
+          return send(res, 200, { cost_centre: { id: 'cc1', cost_centre_code: 'PROD', cost_centre_name: 'Production' }, from: body.p_from, to: body.p_to, opening_balance: '0',
+            closing_balance: '58000.00', entries: [{ voucher_id: 'av1', voucher_number: 'JV/00/000003', voucher_date: TODAY, voucher_type: 'JV', status: 'POSTED', account_id: 'acc-gst',
+              account_code: '6500', account_name: 'Electricity', narration: 'Electricity bill', debit: '60000.00', credit: '0', balance: '60000.00' }] })
+        case 'accounting_budget_vs_actual':
+          return send(res, 200, { financial_year: body.p_financial_year, from: ACC_START, to: TODAY, upto_month: body.p_upto_month ?? 12,
+            budget: { id: 'bud1', version: 1, budget_name: 'Operating budget', approved_at: NOW }, rows: [{ cost_centre_id: 'cc1', cost_centre_code: 'PROD', cost_centre_name: 'Production',
+              account_id: 'acc-gst', account_code: '6500', account_name: 'Electricity', classification: 'EXPENSE', annual_budget: '600000.00', monthly_budget: '50000.00',
+              period_budget: '400000.00', actual: '420000.00', remaining: '180000.00', variance: '-20000.00', variance_percent: '-5.00' }] })
+        case 'accounting_budgets':
+          return send(res, 200, [{ ...accBudget(ACC.budgetStatus ?? 'DRAFT'), line_count: 1 }])
+        case 'accounting_budget_get':
+          return send(res, 200, accBudget(ACC.budgetStatus ?? 'DRAFT'))
+        case 'accounting_budget_approve':
+          if (!has('accounting_budgets.approve')) return send(res, 403, accDenied('accounting_budgets.approve'))
+          ACC.budgetStatus = 'APPROVED'
+          return send(res, 200, accBudget('APPROVED'))
+        case 'accounting_budget_create':
+        case 'accounting_budget_lines_replace':
+        case 'accounting_budget_revise':
+        case 'accounting_budget_cancel':
+          return send(res, 200, accBudget('DRAFT'))
+        case 'purchase_invoice_lookups':
+          return send(res, 200, piLookups())
+        case 'purchase_invoice_list':
+          return send(res, 200, [{ id: 'pi1', invoice_number: 'PINV-000001', supplier_id: 'sup1', supplier_name: 'Shree Ceramics', supplier_code: 'SUP1', supplier_invoice_number: 'S1/M-002',
+            supplier_invoice_date: TODAY, recorded_date: TODAY, due_date: TODAY, invoice_type: 'GOODS', status: PI.status, variance_status: PI.status === 'SUBMITTED' ? 'EXCEPTION' : 'APPROVED',
+            gst_status: PI.gst, taxable_value: '420.00', tax_total: '75.60', grand_total: '495.60', outstanding: PI.status === 'POSTED' ? (495.6 - PI.paid).toFixed(2) : null,
+            reverse_charge: false, voucher_number: null, has_grn: true, created_by_name: 'Smoke Tester' }])
+        case 'purchase_invoice_get':
+          return send(res, 200, body.p_invoice_id === 'pi1' ? piInvoice('pi1') : piInvoice(body.p_invoice_id, 'DRAFT'))
+        case 'purchase_invoice_save':
+          if (!has('purchase_invoices.create')) return send(res, 403, accDenied('purchase_invoices.create'))
+          return send(res, 200, { ...piInvoice('pi-new', 'DRAFT'), issues: [] })
+        case 'purchase_invoice_submit':
+          return send(res, 200, piInvoice(body.p_invoice_id, 'SUBMITTED'))
+        case 'purchase_invoice_approve':
+          if (!body.p_accept_variances || String(body.p_note ?? '').length < 10) return send(res, 400, { code: 'P0001', message: 'approve them explicitly' })
+          PI.status = 'APPROVED'
+          return send(res, 200, piInvoice())
+        case 'purchase_invoice_post':
+          PI.status = 'POSTED'
+          return send(res, 200, piInvoice())
+        case 'purchase_invoice_verify_gst':
+          // Gate C: a proposal only (maker-checker); the GST stays pending until another user approves it.
+          PI.proposed = body.p_status
+          return send(res, 200, { ...piInvoice(), itc_stage: 'PROPOSED' })
+        case 'gst_itc_get':
+          return send(res, 200, { invoice_id: body.p_invoice_id, gst_status: PI.status === 'POSTED' ? PI.gst : 'PENDING_VERIFICATION', stage: PI.proposed ? 'PROPOSED' : PI.gst === 'ELIGIBLE' ? 'DECIDED' : null,
+            history: PI.proposed ? [{ seq: 1, stage: 'PROPOSED', decision: PI.proposed, reason: 'Invoice and GSTIN checked against the supplier copy', by: 'Other Accountant', created_at: NOW, actor_id: 'u2' }] : [],
+            gstr2b: { match_status: 'APPROVED', outcome: 'EXACT', doc_number: 'S1/M-002', doc_date: TODAY, return_period: '2026-10', itc_availability: 'YES', needs_review: false,
+              is_current_version: true, note: 'GSTR-2B is evidence only' } })
+        case 'gst_itc_action':
+          if (body.p_action === 'APPROVE') { PI.gst = PI.proposed; PI.proposed = null } else PI.proposed = null
+          return send(res, 200, { invoice_id: body.p_invoice_id, gst_status: PI.gst, stage: body.p_action === 'APPROVE' ? 'DECIDED' : 'REJECTED', history: [], gstr2b: { match_status: 'NOT_MATCHED', note: '' } })
+        case 'gst_periods_list':
+          return send(res, 200, grPeriods())
+        case 'gst_dashboard':
+          return send(res, 200, { registration: { gstin: '27AABCA1234A1Z5', legal_name: 'Alton', state_code: '27' }, config_version_no: 1, today: TODAY, cash: { 'CGST:TAX': '500.00' },
+            challans_unpaid: 0, itc_pending: 3, gstr2b_missing_in_books: 1, note: '',
+            periods: grPeriods().map((p) => ({ id: p.id, period_code: p.period_code, status: p.status, snapshot_version: p.snapshot_version, liability: { 'OUTPUT:IGST': '50.00', 'RCM:IGST': '0' },
+              credit: { IGST: '350.00', CGST: '0', SGST: '0' }, set_off: p.id === 'gp-oct' ? 'POSTED' : null, filed: GR.filed && p.id === 'gp-oct' ? { GSTR3B: { arn: GR.filed } } : {} })) })
+        case 'gst_return_get':
+          return send(res, 200, body.p_return_type === 'GSTR1' ? grGstr1(body.p_period_id, body.p_period_id === 'gp-oct') : grGstr3b(body.p_period_id, body.p_period_id === 'gp-oct'))
+        case 'gst_register':
+          return send(res, 200, { register: body.p_register, from: '2026-11-01', to: '2026-11-30', note: 'Issued / posted documents only.', totals: { taxable: 900, igst: 162, cgst: 0, sgst: 0, cess: 0 },
+            rows: [{ kind: 'INVOICE', id: 'si1', number: 'INV-0001', doc_date: TODAY, customer_name: 'Acme', customer_gstin: '29AABCQ1234A1Z5', place_of_supply: '29', section: 'B2B', sign: 1,
+              taxable: '1000.00', igst: '180.00', cgst: '0', sgst: '0' }, { kind: 'CREDIT_NOTE', id: 'cn1', number: 'CN-0001', doc_date: TODAY, customer_name: 'Acme', customer_gstin: '29AABCQ1234A1Z5',
+              place_of_supply: '29', section: 'CDNR', sign: -1, taxable: '100.00', igst: '18.00', cgst: '0', sgst: '0' }] })
+        case 'gst_payments_view':
+          return send(res, 200, { cash_ledger: 500, challans: [{ id: 'ch1', cpin: '26112700000001', challan_date: TODAY, status: 'PAID', heads: [{ major_head: 'CGST', minor_head: 'TAX', amount: '1000.00' }],
+            payments: [{ attempt_no: 1, status: 'SUCCESS', cin: '26112700000001HDFC', voucher_number: 'GST/26-27/000003' }] }],
+            set_offs: [{ id: 'so1', period_id: 'gp-oct', period_code: '2026-10', status: 'POSTED', voucher_number: 'GST/26-27/000004', lines: [{ liability_kind: 'OUTPUT', liability_head: 'IGST', source: 'CREDIT', source_head: 'IGST', amount: '150.00' }] }] })
+        case 'gst_reconciliation_get':
+          return send(res, 200, { period: '2026-11', note: 'Documents vs ledgers.', tax_heads: [{ head: 'IGST', output_documents: '36180.00', output_ledger: '200.00', output_difference: '-35980.00', itc_documents: '0',
+            itc_ledger: '500.00', itc_difference: '500.00', rcm_documents: '0', set_off_credit: '150.00', set_off_cash: '0', open_liability: '50.00' }],
+            unexplained_vouchers: [{ voucher_number: 'JV/26-27/000012', date: TODAY, source: 'MANUAL', source_type: null, account: '2230 Output IGST', debit: '0', credit: '200.00' }] })
+        case 'gst_period_readiness':
+          return send(res, 200, { period_id: body.p_period_id, period_code: '2026-10', controls: geControls(), blockers_failed: 0, warnings_open: 1, can_close: !GR.closed,
+            lifecycle: { status: GR.closed ? 'CLOSED' : 'APPROVED', label: GR.filed ? 'FILED' : GR.closed ? 'CLOSED' : 'APPROVED', filed: GR.filed ? [{ return_type: 'GSTR3B', arn: GR.filed, filed_on: TODAY }] : [],
+              reopened_count: 1 }, note: 'Blockers must pass before closing. Warnings are never treated as passed.' })
+        case 'gst_period_transition':
+          if (body.p_action === 'CLOSE') {
+            if (!has('gst_periods.close')) return send(res, 403, accDenied('gst_periods.close'))
+            if (String(body.p_reason ?? '').length < 10) return send(res, 400, { code: '22023', message: 'Open warnings must be acknowledged before closing: source errors (2).' })
+            GR.closed = true
+          }
+          return send(res, 200, grPeriods().find((p) => p.id === body.p_period_id))
+        case 'gst_control_report':
+          return send(res, 200, { ...geHead(body.p_report), note: 'Read only.',
+            rows: body.p_report === 'TAX_LIABILITY' ? [{ head: 'IGST', documents: 36720, ledger: 200, ledger_minus_documents: -36520, gstr1_calculated: 36720, gstr3b_calculated: 36720,
+              snapshot_gstr3b: 36180, snapshot_minus_live_gstr3b: -540 }] : [],
+            unexplained_vouchers: [], summary: body.p_report === 'GSTR2B' ? { EXACT: 1, PARTIAL: 1 } : [],
+            documents: body.p_report === 'GSTR2B' ? [{ doc_number: 'S1/M-002', supplier_gstin: '27AABCP1234A1Z5', category: 'PARTIAL', outcome: 'PARTIAL', exact: false, tolerance: '1.00',
+              config_version_no: 1, match_status: 'APPROVED' }] : [], reversed_matches: [], amendments: [], duplicates: [], missing_in_2b: [] })
+        case 'gst_return_exceptions':
+          return send(res, 200, { period: '2026-11', rows: grBase('gp-nov', false).exceptions })
+        case 'gst_return_filing':
+          if (!has('gst_returns.approve')) return send(res, 403, accDenied('gst_returns.approve'))
+          if (!/^[A-Z0-9]{15}$/.test(body.p?.arn ?? '')) return send(res, 400, { code: '22023', message: 'The ARN shown by the GST portal (15 letters / digits) is required.' })
+          GR.filed = body.p.arn
+          return send(res, 200, { id: 'gf1', return_type: body.p.return_type, arn: body.p.arn, status: 'RECORDED', note_on_filing: 'Recorded by a user after filing on the GST portal; this system does not file returns.' })
+        case 'gst_2b_imports_list':
+          return send(res, 200, [g2bImport()])
+        case 'gst_2b_import_get':
+          return send(res, 200, { ...g2bImport(), preview: { new_documents: 2, amendments: 0, changed: 0, already_imported: 0, credit_debit_notes: 0 }, line_count: 3,
+            lines: [g2bLine(1, 'VALID', 'S1/M-002'), g2bLine(2, 'VALID', 'S1/M-003'), g2bLine(3, 'ERROR', 'S1/BAD', ['Supplier GSTIN "X" is not a valid GSTIN.'])] })
+        case 'gst_2b_import_commit':
+          if (!has('gst_reconciliation.manage')) return send(res, 403, accDenied('gst_reconciliation.manage'))
+          if (!body.p_accept_errors) return send(res, 400, { code: 'P0001', message: '1 row(s) have errors.' })
+          G2B.committed = true
+          return send(res, 200, g2bImport())
+        case 'gst_2b_auto_match':
+          return send(res, 200, { proposed: 1, ambiguous: 0, no_candidate: 1, by_outcome: { PARTIAL: 1 }, note: 'Auto-matching only proposes.' })
+        case 'gst_2b_report':
+          if (body.p_report === 'SUMMARY') return send(res, 200, { report: 'SUMMARY', documents: 2, invoices: 2, approved: G2B.approved ? 1 : 0, proposed: G2B.approved ? 0 : 1, missing_in_books: 1,
+            credit_debit_notes: 0, needs_review: 0, imports: 1, by_outcome: { PARTIAL: 1 }, note: 'GSTR-2B reconciliation never posts vouchers and never approves ITC.' })
+          return send(res, 200, { report: body.p_report, rows: body.p_report === 'MISSING_IN_BOOKS' ? [{ document_id: 'gd2', supplier_gstin: '27AABCP1234A1Z5', doc_number: 'S1/M-003', doc_date: TODAY,
+            return_period: '2026-10', taxable_value: '420.00', exception: 'MISSING_IN_BOOKS' }] : [{ document_id: 'gd1', doc_type: 'INVOICE', supplier_gstin: '27AABCP1234A1Z5', doc_number: 'S1/M-002',
+            doc_date: TODAY, return_period: '2026-10', version_no: 1, taxable_value: '420.00', igst: '0', cgst: '37.80', sgst: '38.30', cess: '0', match_status: G2B.approved ? 'APPROVED' : 'PROPOSED',
+            outcome: 'PARTIAL', invoice_number: 'PINV-000001', needs_review: false }] })
+        case 'gst_2b_document_get':
+          return send(res, 200, { id: 'gd1', supplier_gstin: '27AABCP1234A1Z5', doc_type: 'INVOICE', doc_number: 'S1/M-002', doc_fy: '2026-27', supplier_name: 'Shree Ceramics', version_count: 1,
+            needs_review: false, review_reason: null, versions: [{ id: 'gv1', version_no: 1, version_kind: 'ORIGINAL', return_period: '2026-10', doc_number: 'S1/M-002', doc_date: TODAY, taxable_value: '420.00',
+              igst: '0', cgst: '37.80', sgst: '38.30', cess: '0', original_row: {}, file_name: 'GSTR2B_102026.xlsx', source_row: 6 }], matches: [g2bMatch()], candidates: [] })
+        case 'gst_2b_match_decide':
+          if (!has('gst_reconciliation.approve')) return send(res, 403, accDenied('gst_reconciliation.approve'))
+          if (String(body.p_note ?? '').length < 10) return send(res, 400, { code: '22023', message: 'record why they are acceptable' })
+          G2B.approved = body.p_action === 'APPROVE'
+          return send(res, 200, g2bMatch())
+        case 'purchase_invoice_supplier_payments':
+          return send(res, 200, [{ id: 'spay1', payment_number: 'SPAY-0001', payment_date: TODAY, amount: '1000.00', payment_method: 'BANK_TRANSFER', reference: 'UTR9', unallocated: '1000.00' }])
+        case 'purchase_invoice_allocate_payment':
+          PI.paid = Number(body.p_amount)
+          return send(res, 200, piInvoice())
+        case 'purchase_invoice_matching_candidates':
+          return send(res, 200, [{ line_id: 'grl2', receipt_id: 'grn2', receipt_number: 'GRN-0002', receipt_date: TODAY, receipt_type: 'DIRECT', purchase_order_id: null, po_number: null,
+            description: 'Wash basin', unit: 'PCS', ordered_quantity: null, received_quantity: '10.000', accepted_quantity: '10.000', invoiced_quantity: '6.000',
+            posted_invoiced_quantity: '6.000', remaining_quantity: '4.000', unit_cost: '100.0000', gst_rate: '18.00', payable: '1180.00', net: '1000.00', gst: '180.00', in_books: true }])
+        case 'purchase_invoice_report':
+          if (body.p_report === 'AGEING') return send(res, 200, { report: 'AGEING', as_of: TODAY, rows: [{ supplier_id: 'sup1', supplier: 'Shree Ceramics', not_due: '495.60', d1_30: '0',
+            d31_60: '0', d61_90: '0', d90_plus: '0', total: '495.60', ledger_creditors: '2913.60' }] })
+          return send(res, 200, { report: body.p_report, rows: [{ receipt_number: 'GRN-0001', receipt_date: TODAY, supplier: 'Shree Ceramics', description: 'Wash basin',
+            accepted_quantity: 10, invoiced_quantity: 10, uninvoiced_quantity: 0, receipt_payable: '1180.00', receipt_share_invoiced: '1180.00', invoiced_amount: '1203.60',
+            difference_posted: '23.60', uninvoiced_payable: '0', state: 'FULLY_INVOICED', invoices: 'PINV-000001, PINV-000002' }] })
+        case 'bank_lookups':
+          return send(res, 200, bkLookups())
+        case 'bank_cash_account_list':
+          return send(res, 200, BK_ACCOUNTS().filter((a) => !body.p_kind || a.account_kind === body.p_kind))
+        case 'bank_cash_account_save':
+          if (!has('bank_accounts.manage')) return send(res, 403, accDenied('bank_accounts.manage'))
+          return send(res, 200, bkAcc('sbi', 'BANK', body.p_account.account_code, body.p_account.account_name))
+        case 'bank_account_reveal_number':
+          return send(res, 200, '50100012345678')
+        case 'bank_transfer_list':
+          return send(res, 200, BK.transfers)
+        case 'bank_transfer_save': {
+          const t = bkTransfer({ id: 'trf1', transfer_number: 'TRF-000001', transfer_date: body.p_transfer.transfer_date, from_account_id: body.p_transfer.from_account_id,
+            to_account_id: body.p_transfer.to_account_id, amount: body.p_transfer.amount, charges: body.p_transfer.charges, charges_account_id: null, reference: body.p_transfer.reference,
+            narration: body.p_transfer.narration, status: 'DRAFT' })
+          BK.transfers = [t]
+          return send(res, 200, t)
+        }
+        case 'bank_transfer_post':
+          BK.transfers = BK.transfers.map((t) => ({ ...t, status: 'POSTED', voucher_id: 'av-ctr1', voucher_number: 'CTR/26-27/000001', posted_at: NOW }))
+          return send(res, 200, BK.transfers[0])
+        case 'bank_statement_imports_list':
+          return send(res, 200, BK.imports)
+        case 'bank_statement_import': {
+          const n = body.p_rows.length
+          if (!body.p_commit) return send(res, 200, { preview: true, file_name: body.p_file.name, file_sha256: 'x', previously_imported_at: null, row_count: n, importable_count: n,
+            duplicate_count: 0, failed_count: 0, report: body.p_rows.map((r) => ({ row_no: r.row_no, status: 'IMPORTED', message: null })), rows: body.p_rows })
+          BK.imports = [{ id: 'imp1', bank_cash_account_id: body.p_account_id, account_code: 'HDFC-CA', account_name: 'HDFC Current', file_name: body.p_file.name, file_size: 100, row_count: n,
+            imported_count: n, duplicate_count: 0, failed_count: 0, statement_from: TODAY, statement_to: TODAY, imported_at: NOW, imported_by_name: 'Smoke Tester' }]
+          return send(res, 200, { ...BK.imports[0], preview: false, previously_imported_at: null, report: [] })
+        }
+        case 'bank_reconciliation_workspace':
+          return send(res, 200, { account: BK_ACCOUNTS()[0], ledger: bkLedger(), statement: bkStatement(), matches: BK.matched ? [{ id: 'm1', method: 'MANUAL', reason: 'transfer plus charges',
+            total: '-1025.00', effective_date: TODAY, created_at: NOW, created_by_name: 'Smoke Tester', items: [{ statement_line_id: 'st1', voucher_line_id: null, amount: '-1025.00' }] }] : [] })
+        case 'bank_reconciliation_suggestions':
+          return send(res, 200, [])
+        case 'bank_reconciliation_match':
+          BK.matched = true
+          return send(res, 200, { match_id: 'm1' })
+        case 'bank_statement_adjustment_proposal':
+          return send(res, 200, { direction: 'WITHDRAWAL', proposal: 'Dr the chosen expense ledger / Cr the bank ledger', suggested_category: 'CHARGES', possible_duplicates: [],
+            accounts: [{ id: 'acc-6600', account_code: '6600', account_name: 'Bank Charges', cost_centre_policy: 'OPTIONAL' }] })
+        case 'bank_statement_adjust':
+          BK.adjusted = true
+          return send(res, 200, { voucher_id: 'av-bnk', voucher_number: 'BNK/26-27/000001', statement_line_id: body.p_line_id })
+        case 'bank_reconciliation_statement':
+        case 'bank_reconciliation_save': {
+          const open = !(BK.matched && BK.adjusted)
+          return send(res, 200, { as_of: TODAY, ledger_balance: '196036.00', statement_balance: open ? '193916.00' : '196036.00', statement_balance_source: 'STATEMENT', outstanding_deposits: '0',
+            outstanding_payments: '0', unrecorded_credits: '0', unrecorded_debits: open ? '1084.00' : '0', adjusted_bank_balance: open ? '193916.00' : '196036.00',
+            adjusted_book_balance: open ? '194952.00' : '196036.00', difference: open ? '-1036.00' : '0', ledger_items: [], statement_items: [], last_reconciliation: null,
+            ...(fn === 'bank_reconciliation_save' ? { id: 'r1', status: 'COMPLETED' } : {}) })
+        }
+        case 'bank_reconciliation_history':
+          return send(res, 200, [])
+        case 'bank_cash_book':
+          return send(res, 200, { account: BK_ACCOUNTS().find((a) => a.id === body.p_account_id) ?? BK_ACCOUNTS()[0], from: body.p_from, to: body.p_to, opening_balance: '0',
+            closing_balance: '196036.00', total_debit: '204120.00', total_credit: '8084.00', daily: [{ date: TODAY, opening: '0', receipts: '204120.00', payments: '8084.00', closing: '196036.00' }],
+            rows: [{ line_id: 'b1', voucher_id: 'av-cq', voucher_number: 'PMT/26-27/000009', date: TODAY, txn_type: 'PAYMENT', is_reversal: false, counterparty: 'Shree Ceramics', party_id: null,
+              narration: 'Supplier payment by cheque', debit: '0', credit: '2000.00', balance: '196036.00', reference: 'CHQ-000123', payment_method: 'CHEQUE', matched: '0', reconciliation: 'UNMATCHED' }] })
+        case 'bank_report':
+          return send(res, 200, { report: body.p_report, rows: [{ account_code: 'HDFC-CA', voucher_date: TODAY, voucher_number: 'PMT/26-27/000009', counterparty: 'Shree Ceramics', reference: 'CHQ-000123',
+            remaining: '-2000.00', days: 0, category: 'OUTSTANDING_CHEQUE' }] })
+        case 'bank_payment_policies':
+          return send(res, 200, ['RECEIPT', 'PAYMENT'].flatMap((d) => ['BANK_TRANSFER', 'UPI', 'CHEQUE', 'CASH', 'CARD', 'DEMAND_DRAFT', 'OTHER'].map((m) => ({ direction: d, payment_method: m,
+            require_selection: d === 'PAYMENT' && m === 'CASH' && BK.policyCash, rule_account_id: null, rule_account_code: null, rule_account_name: null, mapped_account_id: null,
+            mapped_account_code: null, mapped_account_name: null }))))
+        case 'bank_payment_policy_save':
+          if (!has('accounting_settings.manage')) return send(res, 403, accDenied('accounting_settings.manage'))
+          if (body.p_direction === 'PAYMENT' && body.p_method === 'CASH') BK.policyCash = body.p_require_selection
+          return send(res, 200, { direction: body.p_direction, payment_method: body.p_method, require_selection: body.p_require_selection })
+        case 'bank_payment_candidates':
+          return send(res, 200, [{ source_type: 'SUPPLIER_PAYMENT', source_id: 'spay9', number: 'SPAY-000009', date: TODAY, party: 'Shree Ceramics', payment_method: 'CASH', amount: '500.00',
+            reference: 'PC-1', payment_status: 'RECORDED', event_status: 'NEEDS_ACCOUNT_MAPPING', event_message: null, voucher_number: null, posted_account_code: null, posted_ledger_code: null,
+            assigned_account_id: null, assigned_account_code: null, assignment_reason: null, require_selection: true, state: 'NEEDS_SELECTION' }])
+        case 'bank_payment_assign':
+          return send(res, 200, { assignment_id: 'as1' })
+        case 'accounting_opening_batches':
+          return send(res, 200, [{ id: 'ob1', batch_number: 'OB-0001', as_of_date: ACC_START, status: 'DRAFT', source: 'MANUAL', file_name: null, notes: null, created_at: NOW, posted_at: null,
+            voucher_number: null, line_count: 2, total_debit: '5000.00', total_credit: '5000.00' }])
+        case 'accounting_opening_batch_get':
+          return send(res, 200, accOpening())
         case 'audit_log_filters':
           return send(res, 200, { modules: ['auth', 'inventory'], actors: [{ id: MANAGER_ID, name: 'Smoke Tester' }, { id: VIEWER_ID, name: 'Viewer Tester' }] })
         default:
@@ -4564,6 +5086,39 @@ await step('BOM tools 1: the BOM list offers Create New BOM, Generate multiple a
   assert(rpcCalls('production_save_bom').every((c) => c.body.p_bom_id !== 'bom1'), 'the source BOM was saved')
 })
 
+await step('ERP search 1: the BOM list searches components on the server (debounced, one request per text), shows related matches, clears with Escape', async () => {
+  await goto('/production/boms')
+  await waitFor(bodyHas('BOM-000001'), 'BOM list')
+  const box = 'input[placeholder^="Search BOM code"]'
+  const before = rpcCalls('bom_search').length
+  // A component (not a list column): 'glaze' + 'mock' in any order, typed with extra spaces.
+  await fillNth(box, 0, '  GLAZE   mock ')
+  for (let i = 0; i < 40 && rpcCalls('bom_search').length === before; i++) await sleep(100)
+  const calls = rpcCalls('bom_search').slice(before)
+  assert(calls.length === 1 && calls[0].body.p_search === 'GLAZE mock', `one debounced, normalised request: ${JSON.stringify(calls.map((c) => c.body))}`)
+  await waitFor(bodyHas('BOM-000001'), 'BOM found through its component (not filtered away on the client)')
+  // The same text again (only spacing differs): no new request.
+  await fillNth(box, 0, 'GLAZE mock')
+  await sleep(700)
+  assert(rpcCalls('bom_search').length === before + 1, 'identical search repeated')
+  await fillNth(box, 0, 'qqqzzz')
+  await waitFor(bodyHas('Every word must appear'), 'no-results message explains the rule')
+  await press(box, 'Escape')
+  await waitFor(`document.querySelector(${JSON.stringify(box)}).value === '' && ${bodyHas('BOM-000001')}`, 'Escape clears the search')
+})
+
+await step('ERP search 2: Product Master search sends middle-of-word, multi-word filters (every word, any order, quoted values)', async () => {
+  await goto('/products')
+  await waitFor(bodyHas('MOCK-WC-1'), 'product list')
+  const before = requests.length
+  await fill('input[aria-label="Search products"]', 'loset   mock')
+  const decoded = () => requests.slice(before).filter((r) => r.path === '/rest/v1/products').map((r) => decodeURIComponent(r.query.split('+').join(' ')))
+  for (let i = 0; i < 40 && !decoded().some((x) => x.includes('%loset%')); i++) await sleep(100)
+  const q = decoded().find((x) => x.includes('%loset%')) ?? ''
+  assert(q.includes('product_name.ilike."%loset%"') && q.includes('and(or(') && q.includes('description.ilike.') && q.includes('product_name.ilike."%loset mock%"'), q)
+  await waitFor(bodyHas('MOCK-WC-1'), 'middle-of-word search finds the product')
+})
+
 await step('BOM tools 2: BOM Templates and Create Similar Product are gone: no sidebar entry (Product Master & BOM), old addresses redirect, other BOM routes work', async () => {
   await goto('/production/boms')
   await waitFor(bodyHas('BOM-000001'), 'BOM list')
@@ -5732,7 +6287,8 @@ await step('ERP settings: company profile, date format and numbering saved throu
 await step('navigation: every sidebar link opens a page (no 404, no crash)', async () => {
   const navSource = readFileSync(path.join(root, 'src', 'config', 'navigation.ts'), 'utf8')
   const paths = [...new Set([...navSource.matchAll(/^\s+path: '(\/[^']*)',/gm)].map((m) => m[1]))]
-  assert(paths.length >= 40 && paths.length <= 60, `expected the V2 navigation, found ${paths.length}`)
+  // 59 V2 entries plus the 12 Accounts pages (Phase 0 and the Phase 1 journal pages).
+  assert(paths.length >= 40 && paths.length <= 90, `expected the V2 navigation, found ${paths.length}`)
   const broken = []
   for (const p of paths) {
     await goto(p)
@@ -9465,6 +10021,617 @@ await step('Workspace layout: Unified Inbox and Support Automation off the sideb
     waChannel.status = before.wa; emailChannel.status = before.email
     WA.web = false; WA.enabled = false; WA.state = 'MIGRATION_REQUIRED'; WA.prefs = {}
     MAILBOX.web = false; MAILBOX.state = {}; GMAIL.connected = false
+  }
+})
+
+await step('Accounts: every page renders from the accounting RPCs (dashboard, chart, ledgers, register, voucher, trial balance, general ledger, day book, opening balances, posting monitor, settings); posting needs a confirmation; a user without accounting permissions sees no Accounts section', async () => {
+  const PERMS = ['accounts.read', 'accounts.manage', 'vouchers.read', 'vouchers.create', 'vouchers.post', 'vouchers.reverse', 'accounting_opening.import', 'accounting_opening.approve',
+    'accounting_period.close', 'accounting_reports.read', 'accounting_settings.manage', 'accounting_posting.manage']
+  // Without accounting permissions the section is hidden and the page is refused before any accounting RPC is called.
+  const before = requests.filter((r) => r.path.startsWith('/rest/v1/rpc/accounting_')).length
+  await goto('/accounts')
+  await waitFor(bodyHas('Access denied'), 'access denied without permission')
+  assert(!(await evaluate(`[...document.querySelectorAll('nav a')].some((a) => a.getAttribute('href') === '/accounts')`)), 'Accounts shown without permission')
+  assert(requests.filter((r) => r.path.startsWith('/rest/v1/rpc/accounting_')).length === before, 'accounting data requested without permission')
+  USERS['manager@test.invalid'].permissions.push(...PERMS)
+  try {
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+    await goto('/accounts')
+    await waitFor(bodyHasAll('Accounting Dashboard', 'Books balance', 'Balanced', 'Postings needing attention'), 'dashboard')
+    assert(await evaluate(`!!document.querySelector('[data-testid=accounting-notice]')`), 'accounting notice missing')
+    assert(await evaluate(bodyHas('Customer receipts by UPI have no cash / bank')), 'unmapped payment method warning')
+    assert(await evaluate(`[...document.querySelectorAll('nav a')].some((a) => a.getAttribute('href') === '/accounts/trial-balance')`), 'Accounts section missing in the sidebar')
+    await screenshot('accounts-01-dashboard')
+
+    await goto('/accounts/chart')
+    await waitFor(bodyHasAll('Chart of Accounts', 'Bank Accounts', 'HDFC Current A/c', '11,800.00 Dr'), 'chart tree')
+    await goto('/accounts/ledgers')
+    await waitFor(bodyHasAll('Ledger Accounts', 'Sundry Debtors (Control)', 'Automatic only', '10,000.00 Cr'), 'ledger accounts')
+
+    await goto('/accounts/vouchers')
+    await waitFor(bodyHasAll('Voucher Register', 'Sales invoice INV/1', 'Draft'), 'register')
+    assert(rpcCalls('accounting_voucher_list').length > 0, 'register not read from accounting_voucher_list')
+    await goto('/accounts/vouchers/av1')
+    await waitFor(bodyHasAll('Sundry Debtors (Control)', 'Output CGST', 'Mock Customer', 'Balanced', 'Audit history'), 'posted voucher')
+    assert(!(await evaluate(`[...document.querySelectorAll('button')].some((b) => b.innerText.trim() === 'Reverse')`)), 'automatic voucher offered a manual reversal')
+
+    // A manual draft: Post asks for confirmation; nothing is posted until confirmed.
+    await goto('/accounts/vouchers/av2')
+    await waitFor(bodyHasAll('Bank charges', 'Draft'), 'draft voucher')
+    const posts = rpcCalls('accounting_voucher_post').length
+    await click('button', 'Post')
+    await waitFor(bodyHas('Posting assigns the voucher number'), 'post confirmation')
+    assert(rpcCalls('accounting_voucher_post').length === posts, 'posted without confirmation')
+    await click('[role=dialog] button', 'Post voucher')
+    await waitFor(bodyHas('posted.'), 'posted message')
+    assert(rpcCalls('accounting_voucher_post').length === posts + 1, 'post RPC not called once')
+
+    await goto('/accounts/trial-balance')
+    await waitFor(bodyHasAll('Trial Balance', 'Debit = credit', 'HDFC Current A/c', 'Total'), 'trial balance')
+    await goto('/accounts/general-ledger?account=acc-bank')
+    await waitFor(bodyHasAll('1210 HDFC Current A/c', 'Opening balance', 'Closing balance', '11,800.00 Dr'), 'general ledger')
+    await goto('/accounts/day-book')
+    await waitFor(bodyHasAll('Day Book', 'Sundry Debtors (Control)', '1 voucher(s)'), 'day book')
+
+    await goto('/accounts/opening-balances')
+    await waitFor(bodyHasAll('OB-0001', 'Reconciliation', 'Debtors equal the ERP customer opening balances', 'Mock Customer', 'Add ERP party balances'), 'opening balances')
+    assert(await evaluate(`[...document.querySelectorAll('button')].find((b) => b.innerText.trim() === 'Approve')?.disabled === true`), 'approve enabled without an acknowledgement')
+
+    await goto('/accounts/posting-monitor')
+    await waitFor(bodyHasAll('Posting Monitor', 'RCPT/1', 'Needs account mapping'), 'posting monitor')
+    await click('button', 'Run posting now')
+    await waitFor(bodyHas('2 new document event(s) found; 2 processed'), 'posting run result')
+
+    await goto('/accounts/settings')
+    await waitFor(bodyHasAll('Accounting Settings', 'Books start date', 'Segregation of duties'), 'settings: books')
+    await goto('/accounts/settings?tab=periods')
+    await waitFor(bodyHasAll('Accounting periods', 'Close'), 'settings: periods')
+    await goto('/accounts/settings?tab=rules')
+    await waitFor(bodyHasAll('Automatic posting accounts', 'Cash and bank accounts by payment method', 'Not mapped — never guessed'), 'settings: rules')
+    await goto('/accounts/settings?tab=cost-centres')
+    await waitFor(bodyHasAll('Cost centres', 'Production'), 'settings: cost centres')
+    await screenshot('accounts-02-settings')
+    assert(!requests.some((r) => /^\/rest\/v1\/(accounting_|accounts|account_groups)/.test(r.path)), 'an accounting table was queried directly')
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+    await signOut().catch(() => {})
+    await login('manager@test.invalid').catch(() => {})
+  }
+})
+
+await step('Journal Entry and Register: searchable accounts (no control accounts), live totals and Balanced / Unbalanced, Save draft, Validate, Post only after confirmation; register filters, view, edit draft and reversal with a reason', async () => {
+  const PERMS = ['accounts.read', 'vouchers.read', 'vouchers.create', 'vouchers.post', 'vouchers.reverse', 'accounting_reports.read']
+  USERS['manager@test.invalid'].permissions.push(...PERMS)
+  try {
+    await goto('/')
+    await waitFor(bodyHas('Smoke Tester'), 'signed-in layout')
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+    await goto('/accounts/journals/new')
+    await waitFor(bodyHasAll('New journal voucher', 'Voucher number', 'Save draft', 'Validate', 'Unbalanced'), 'journal entry form')
+    assert(await evaluate(`document.querySelector('#jv-number')?.value === 'Assigned automatically on posting'`), 'voucher number is not automatic')
+    // Line 1: searchable account picker; the Debtors control account is not offered.
+    await click('#jv-acc-0')
+    await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('HDFC Current A/c'))`, 'account options')
+    assert(!(await evaluate(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('Sundry Debtors'))`)), 'control account offered for a manual journal')
+    await click('[role=option]', 'HDFC Current A/c')
+    await fill('input[aria-label="Line 1 debit"]', '250')
+    await click('#jv-acc-1')
+    await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('4100'))`, 'account options 2')
+    await click('[role=option]', '4100')
+    await fill('input[aria-label="Line 2 credit"]', '200')
+    await waitFor(`document.querySelector('[data-testid=journal-totals]')?.innerText.includes('Unbalanced')`, 'unbalanced shown')
+    assert(await evaluate(`[...document.querySelectorAll('button')].find((b) => b.innerText.trim() === 'Post')?.disabled === true`), 'Post enabled while unbalanced')
+    await fill('input[aria-label="Line 2 credit"]', '250')
+    await waitFor(`document.querySelector('[data-testid=journal-totals]')?.innerText.includes('Balanced') && !document.querySelector('[data-testid=journal-totals]').innerText.includes('Unbalanced')`, 'balanced shown')
+    await fill('#jv-narr', 'Bank charges for the month')
+    const creates = rpcCalls('accounting_voucher_create').length
+    await click('button', 'Save draft')
+    await waitFor(bodyHas('Draft saved.'), 'draft saved')
+    const sent = rpcCalls('accounting_voucher_create').at(-1)?.body?.p_voucher
+    assert(rpcCalls('accounting_voucher_create').length === creates + 1 && sent?.voucher_type === 'JV' && sent.lines.length === 2 && sent.lines[0].debit === '250'
+      && sent.lines[0].credit === null && sent.lines[1].credit === '250' && sent.narration === 'Bank charges for the month', JSON.stringify(sent))
+    await click('button', 'Validate')
+    await waitFor(bodyHas('The journal is valid and can be posted.'), 'validated')
+    const posts = rpcCalls('accounting_voucher_post').length
+    await click('button', 'Post')
+    await waitFor(bodyHas('A posted journal can never'), 'post confirmation')
+    assert(rpcCalls('accounting_voucher_post').length === posts, 'posted before confirmation')
+    await click('[role=dialog] button', 'Post journal')
+    await waitFor(`location.pathname === '/accounts/vouchers/av2'`, 'opened the posted journal')
+    assert(rpcCalls('accounting_voucher_post').length === posts + 1, 'post not called once')
+    await screenshot('accounts-03-journal-posted')
+
+    await goto('/accounts/journals')
+    await waitFor(bodyHasAll('Journal Register', 'JV/00/000007', 'Office rent accrual', 'Created by', 'Voucher number'), 'journal register')
+    assert(rpcCalls('accounting_voucher_list').at(-1)?.body?.p_filters?.voucher_type === 'JV', 'register did not ask for journal vouchers')
+    assert(await evaluate(`[...document.querySelectorAll('a')].some((a) => a.getAttribute('href') === '/accounts/journals/av2/edit')`), 'no edit link for the draft')
+    await click('button', 'Reverse')
+    await waitFor(bodyHas('A linked reversal voucher'), 'reverse dialog')
+    const reversals = rpcCalls('accounting_voucher_reverse').length
+    await click('[role=dialog] button', 'Reverse journal')
+    await waitFor(bodyHas('Enter at least 5 characters.'), 'reason required')
+    assert(rpcCalls('accounting_voucher_reverse').length === reversals, 'reversal sent without a reason')
+    await fill('[role=dialog] textarea', 'Rent booked to the wrong month')
+    await click('[role=dialog] button', 'Reverse journal')
+    await waitFor(bodyHas('reversed by REV/00/000001'), 'reversed')
+    assert(rpcCalls('accounting_voucher_reverse').at(-1)?.body?.p_reason === 'Rent booked to the wrong month', 'reason not sent')
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+    await signOut().catch(() => {})
+    await login('manager@test.invalid').catch(() => {})
+  }
+})
+
+await step('Cost centres (Phase 2): master with hierarchy and types; a journal line split over cost centres; budgets with approval; summary, ledger, profitability and budget vs actual with unallocated shown apart; cost-centre filter on the general ledger', async () => {
+  const PERMS = ['accounts.read', 'accounts.manage', 'vouchers.read', 'vouchers.create', 'vouchers.post', 'accounting_reports.read', 'accounting_budgets.read', 'accounting_budgets.manage',
+    'accounting_budgets.approve']
+  USERS['manager@test.invalid'].permissions.push(...PERMS)
+  try {
+    await goto('/')
+    await waitFor(bodyHas('Smoke Tester'), 'signed-in layout')
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+    await goto('/accounts/cost-centres')
+    await waitFor(bodyHasAllCI('Cost Centres', 'Production', 'Administration', 'Warehouse', '3 posted'), 'cost centre master')
+    assert(!(await evaluate(`[...document.querySelectorAll('tr')].find((r) => r.innerText.includes('Production'))?.innerText.includes('Delete')`)), 'a used cost centre offered for deletion')
+    await click('button', 'New cost centre')
+    await waitFor(bodyHas('The code is fixed once created'), 'new cost centre dialog')
+    await fill('#ccd-code', 'RD')
+    await fill('#ccd-name', 'Research')
+    await fill('#ccd-from', '2026-04-01')
+    await click('[role=dialog] button', 'Save')
+    await waitFor(bodyHas('RD created.'), 'cost centre saved')
+    const saved = rpcCalls('accounting_cost_centre_save').at(-1)?.body?.p_cost_centre
+    assert(saved?.cost_centre_code === 'RD' && saved.cost_centre_type === 'DEPARTMENT' && saved.effective_from === '2026-04-01', JSON.stringify(saved))
+
+    // Journal line split over two cost centres.
+    await goto('/accounts/journals/new')
+    await waitFor(bodyHasAllCI('New journal voucher', 'Cost centres'), 'journal form')
+    await click('#jv-acc-0')
+    await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('4100'))`, 'options')
+    await click('[role=option]', '4100')
+    await fill('input[aria-label="Line 1 debit"]', '1000')
+    await click('[data-testid=jv-split-0]')
+    await waitFor(bodyHas('Split the debit of 1,000.00'), 'split dialog')
+    await click('#alloc-cc-0')
+    await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('PROD'))`, 'cc options')
+    await click('[role=option]', 'PROD')
+    await fill('input[aria-label="Allocation 1 amount"]', '600')
+    await click('[role=dialog] button', 'Add cost centre')
+    await click('#alloc-cc-1')
+    await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('ADMIN'))`, 'cc options 2')
+    await click('[role=option]', 'ADMIN')
+    await fill('input[aria-label="Allocation 2 amount"]', '300')
+    await waitFor(`document.querySelector('[data-testid=allocation-remaining]')?.innerText.includes('remaining 100.00')`, 'remaining shown')
+    await click('[role=dialog] button', 'Put the remaining')
+    await waitFor(`document.querySelector('[data-testid=allocation-remaining]')?.innerText.includes('remaining 0.00')`, 'fully allocated')
+    await click('[role=dialog] button', 'Apply split')
+    await waitFor(`document.querySelector('[data-testid=jv-split-0]')?.innerText.includes('2 cost centres')`, 'split applied')
+    await click('#jv-acc-1')
+    await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('2210'))`, 'options 2')
+    await click('[role=option]', '2210')
+    await fill('input[aria-label="Line 2 credit"]', '1000')
+    await click('button', 'Save draft')
+    await waitFor(bodyHas('Draft saved.'), 'draft saved')
+    const sent = rpcCalls('accounting_voucher_create').at(-1)?.body?.p_voucher
+    assert(JSON.stringify(sent?.lines[0].allocations) === JSON.stringify([{ cost_centre_id: 'cc1', amount: '600' }, { cost_centre_id: 'cc2', amount: '400.00' }]), JSON.stringify(sent?.lines))
+
+    // Budgets: draft with lines and history; approval needs a confirmation.
+    await goto('/accounts/cost-centres/budgets')
+    await waitFor(bodyHasAllCI('Operating budget', 'version 1', 'budget.xlsx', 'Approval history', 'imported'), 'budget page')
+    const approvals = rpcCalls('accounting_budget_approve').length
+    await click('button', 'Approve')
+    await waitFor(bodyHas('The approved budget is used by the budget versus actual reports'), 'approve dialog')
+    assert(rpcCalls('accounting_budget_approve').length === approvals, 'approved without confirmation')
+    await click('[role=dialog] button', 'Approve budget')
+    await waitFor(bodyHas('Version 1 approved.'), 'approved')
+
+    // Reports.
+    await goto('/accounts/cost-centres/reports')
+    await waitFor(bodyHasAllCI('Cost centre summary', 'Production', 'Unallocated (no cost centre)', 'Company total', 'Allocated + unallocated = company totals'), 'summary report')
+    assert(await evaluate(`document.querySelectorAll('[data-testid=cc-summary-row]').length === 3`), 'summary rows')
+    await goto('/accounts/cost-centres/reports?tab=ledger&cc=cc1')
+    await waitFor(bodyHasAllCI('PROD Production', 'Electricity bill', 'Closing balance', '58,000.00 Dr'), 'cost centre ledger')
+    await goto('/accounts/cost-centres/reports?tab=profitability')
+    await waitFor(bodyHasAllCI('Direct expenses', 'Indirect expenses', 'Net contribution', '-58,000.00'), 'profitability')
+    await goto('/accounts/cost-centres/reports?tab=budget')
+    await waitFor(bodyHasAllCI('Budget vs actual', 'Approved budget version 1', '6,00,000.00', '-5.00%'), 'budget vs actual')
+    await goto('/accounts/general-ledger?account=acc-gst&cc=cc1')
+    await waitFor(bodyHas('allocated share of one cost centre'), 'general ledger cost-centre filter')
+    assert(rpcCalls('accounting_general_ledger').at(-1)?.body?.p_cost_centre_id === 'cc1', 'cost centre not sent to the general ledger')
+    await screenshot('accounts-04-cost-centres')
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+    ACC.budgetStatus = 'DRAFT'
+    await signOut().catch(() => {})
+    await login('manager@test.invalid').catch(() => {})
+  }
+})
+
+await step('Supplier invoices (Phase 3): register; GRN matching starts an invoice with receipt lines plus a direct line split over cost centres; a price variance approved with a reason; posting; GST verified with the checks; a payment allocated; GRN reconciliation and ageing reports', async () => {
+  const PERMS = ['purchase_invoices.read', 'purchase_invoices.create', 'purchase_invoices.approve', 'purchase_invoices.post', 'purchase_invoices.verify_gst',
+    'purchase_invoices.reverse', 'supplier_payment.manage']
+  USERS['manager@test.invalid'].permissions.push(...PERMS)
+  try {
+    await goto('/')
+    await waitFor(bodyHas('Smoke Tester'), 'signed-in layout')
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+    await goto('/purchases/invoices')
+    await waitFor(bodyHasAllCI('Supplier Invoices', 'PINV-000001', 'S1/M-002', 'Variance — needs approval', '495.60'), 'invoice register')
+
+    // GRN matching → new invoice with the receipt line; add a direct line split over cost centres; save the draft.
+    await goto('/purchases/invoices/matching?supplier=sup1')
+    await waitFor(bodyHasAllCI('GRN Matching', 'GRN-0002', 'Partly invoiced', '1,180.00'), 'matching candidates')
+    await click('button[role=checkbox][aria-label^="Select GRN-0002"]')
+    await click('button', 'Invoice 1 selected')
+    await waitFor(bodyHasAllCI('New supplier invoice', 'GRN-0002', 'Uninvoiced 4'), 'invoice form with the receipt line')
+    await waitFor(`document.querySelector('[data-testid=pi-grand-total]')?.innerText === '472.00'`, 'receipt line preview 400 + 72')
+    await fill('#pi-number', 'S1/NEW-9')
+    await click('button', 'Add direct line')
+    await click('#pi-acc-1')
+    await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('6500'))`, 'account options')
+    await click('[role=option]', '6500')
+    await fill('input[aria-label="Line 2 unit price"]', '10000')
+    await waitFor(`document.querySelector('[data-testid=pi-grand-total]')?.innerText === '12,272.00'`, 'total with the direct line')
+    await fill('#pi-stated', '12272.00')
+    await click('button', 'Save and submit')
+    await waitFor(bodyHas('this account needs a cost-centre split'), 'cost-centre split required before submitting')
+    assert(rpcCalls('purchase_invoice_save').length === 0, 'saved without the required split')
+    await click('button[aria-label="Line 2 cost centres"]')
+    await waitFor(bodyHas('Split the debit of 10,000.00'), 'split dialog')
+    await click('#alloc-cc-0')
+    await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('PROD'))`, 'cc options')
+    await click('[role=option]', 'PROD')
+    await fill('input[aria-label="Allocation 1 amount"]', '10000')
+    await click('[role=dialog] button', 'Apply split')
+    await waitFor(`document.querySelector('[data-testid=pi-line-split]')?.innerText.includes('PROD')`, 'split applied')
+    await click('button', 'Save draft')
+    await waitFor(`location.pathname === '/purchases/invoices/pi-new/edit'`, 'draft saved and reopened for editing')
+    const sent = rpcCalls('purchase_invoice_save').at(-1)?.body
+    assert(sent?.p_invoice_id === null && sent.p_invoice.supplier_id === 'sup1' && sent.p_invoice.supplier_stated_total === '12272.00'
+      && JSON.stringify(sent.p_invoice.lines[0]) === JSON.stringify({ kind: 'GRN', goods_receipt_line_id: 'grl2', description: 'Wash basin', quantity: '4', unit_price: '100', discount: '0', gst_rate: '18', cess: '0' })
+      && sent.p_invoice.lines[1].account_id === 'acc-6500' && JSON.stringify(sent.p_invoice.lines[1].allocations) === JSON.stringify([{ cost_centre_id: 'cc1', amount: '10000' }]), JSON.stringify(sent))
+
+    // Approval of a price variance needs the explicit acceptance and a reason; then post.
+    await goto('/purchases/invoices/pi1')
+    await waitFor(bodyHasAllCI('PINV-000001', 'Variances against the goods receipts', 'outside the tolerance', 'Attachments'), 'submitted invoice with a variance')
+    await click('button', 'Approve')
+    await waitFor(bodyHas('I accept these variances'), 'approve dialog')
+    assert(await evaluate(`[...document.querySelectorAll('[role=dialog] button')].find((b) => b.innerText.trim() === 'Approve')?.disabled === true`), 'approve enabled without acceptance')
+    await click('[role=dialog] button[role=checkbox]')
+    await fill('#pi-approve-note', 'Supplier price revision agreed by purchase')
+    await click('[role=dialog] button', 'Approve')
+    await waitFor(bodyHas('Invoice approved.'), 'approved')
+    assert(rpcCalls('purchase_invoice_approve').at(-1)?.body?.p_accept_variances === true, 'variances not accepted explicitly')
+    await click('button', 'Post')
+    await waitFor(bodyHas('Matched receipt lines post only their differences'), 'post confirmation')
+    await click('[role=dialog] button', 'Post to the accounts')
+    await waitFor(bodyHasAllCI('Posted as voucher PIN/26-27/000001', 'Reconciliation with the goods receipts', 'No duplicate payable', '23.60'), 'posted and reconciled')
+
+    // GST decision (Gate C maker-checker): the three checks and a reason are required for eligible credit; the proposal is approved by another user.
+    await click('button', 'Propose GST decision')
+    await waitFor(bodyHas('only after another user approves this proposal (maker-checker)'), 'GST dialog')
+    assert(await evaluate(`[...document.querySelectorAll('[role=dialog] button')].find((b) => b.innerText.includes('Propose decision'))?.disabled === true`), 'GST proposable without checks')
+    await evaluate(`document.querySelectorAll('[role=dialog] button[role=checkbox]').forEach((b) => b.click())`)
+    await fill('#pi-gst-reason', 'Invoice and GSTIN checked against the supplier copy')
+    await click('[role=dialog] button', 'Propose decision')
+    await waitFor(bodyHasAllCI('ITC decision proposed (eligible)', 'ITC proposal (awaiting approval)', 'Matched: S1/M-002 (2026-10)'), 'GST proposed with the GSTR-2B evidence')
+    assert(!(await evaluate(`document.body.innerText.includes('PIN/26-27/000002')`)), 'no GST voucher before approval')
+    await click('button', 'Approve GST decision')
+    await waitFor(bodyHas('the person who proposed it cannot approve it'), 'approve dialog')
+    await click('[role=dialog] button', 'Approve and post')
+    await waitFor(bodyHasAllCI('ITC decision approved — GST eligible.', 'PIN/26-27/000002'), 'GST approved and posted')
+    assert(rpcCalls('gst_itc_action').at(-1)?.body?.p_action === 'APPROVE', 'approval through gst_itc_action')
+    const gst = rpcCalls('purchase_invoice_verify_gst').at(-1)?.body
+    assert(gst?.p_status === 'ELIGIBLE' && gst.p_checks.invoice_verified && gst.p_checks.goods_services_received && gst.p_checks.gstin_valid, JSON.stringify(gst))
+
+    // Allocate a payment.
+    await click('button', 'Allocate payment')
+    await waitFor(bodyHas('Payments are recorded in the Ledger'), 'payment dialog')
+    await click('#pi-pay')
+    await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('SPAY-0001'))`, 'payment options')
+    await click('[role=option]', 'SPAY-0001')
+    await waitFor(`document.querySelector('#pi-pay-amount')?.value === '495.60'`, 'amount defaults to the outstanding')
+    await click('[role=dialog] button', 'Allocate')
+    await waitFor(bodyHasAllCI('Payment allocated.', 'SPAY-0001'), 'payment allocated')
+    assert(rpcCalls('purchase_invoice_allocate_payment').at(-1)?.body?.p_amount === '495.60', 'allocation amount')
+
+    // Reports.
+    await goto('/purchases/invoices/reconciliation')
+    await waitFor(bodyHasAllCI('Supplier Invoice Reports', 'GRN-0001', 'Difference posted', '23.60', 'FULLY INVOICED'), 'GRN vs invoice report')
+    await goto('/purchases/invoices/reconciliation?report=AGEING')
+    await waitFor(bodyHasAllCI('Creditors ledger balance', '2,913.60', 'Not due'), 'AP ageing')
+    await screenshot('accounts-05-supplier-invoices')
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+    Object.assign(PI, { status: 'SUBMITTED', gst: 'PENDING_VERIFICATION', paid: 0, proposed: null })
+    await signOut().catch(() => {})
+    await login('manager@test.invalid').catch(() => {})
+  }
+})
+
+await step('GSTR-2B (Phase 5, Gate C): import preview with the server checksum and row errors; import only valid rows; matching with a partial outcome approved with a note; exception reports', async () => {
+  const PERMS = ['gst_reconciliation.read', 'gst_reconciliation.manage', 'gst_reconciliation.approve']
+  USERS['manager@test.invalid'].permissions.push(...PERMS)
+  try {
+    await goto('/')
+    await waitFor(bodyHas('Smoke Tester'), 'signed-in layout')
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+    await goto('/accounts/gst/gstr-2b')
+    await waitFor(bodyHasAllCI('GSTR-2B Matching', 'there is no direct portal connection', 'never post vouchers and never approve ITC', 'GSTR2B_102026.xlsx', 'Upload and verify'), 'imports')
+    await click('td', 'GSTR2B_102026.xlsx')
+    await waitFor(bodyHasAllCI('Server SHA-256', 'Import would add', '2 new', 'Skipped sheets', 'ISD', 'is not a valid GSTIN'), 'preview')
+    assert(await evaluate(`document.querySelector('[data-testid=g2b-commit]')?.disabled === true`), 'import with errors needs the acknowledgement')
+    await click('label', 'Import only the valid rows')
+    await waitFor(`document.querySelector('[data-testid=g2b-commit]')?.disabled === false`, 'import enabled after the acknowledgement')
+    await click('[data-testid=g2b-commit]')
+    await waitFor(bodyHas('No voucher is posted and no ITC is decided.'), 'import confirmation')
+    await click('[role=dialog] button', 'Import valid rows')
+    await waitFor(bodyHas('Imported: 2 new, 0 amendments, 0 changed.'), 'imported')
+    assert(rpcCalls('gst_2b_import_commit').at(-1)?.body?.p_accept_errors === true, 'commit accepted errors explicitly')
+
+    await click('[role=tab]', 'Matching')
+    await waitFor(bodyHasAllCI('S1/M-002', 'Awaiting approval', 'Partial (within tolerance)'), 'documents')
+    await click('button', 'Propose matches')
+    await waitFor(bodyHas('Each proposal needs approval by another user.'), 'auto-match proposes only')
+    await click('td', 'S1/M-002')
+    await waitFor(bodyHasAllCI('Versions', 'sgst GSTR-2B 38.3 / books 37.8', 'Other Accountant', 'Tolerance applied', '(configuration v1)', 'not exact: approval needs a note'), 'document panel')
+    await click('button', 'Approve')
+    await waitFor(bodyHasAllCI('you cannot approve a match you proposed', 'Why the differences are acceptable'), 'approve dialog')
+    await fill('#action-note', 'Supplier rounding of 50 paise on SGST')
+    await click('[role=dialog] button', 'Approve match')
+    await waitFor(bodyHas('Match approved.'), 'match approved')
+    assert(rpcCalls('gst_2b_match_decide').at(-1)?.body?.p_note === 'Supplier rounding of 50 paise on SGST', 'approval note')
+
+    await click('[role=tab]', 'Exceptions & reports')
+    await waitFor(bodyHasAllCI('never posts vouchers and never approves ITC', 'missing in books'), 'summary')
+    await goto('/accounts/gst/gstr-2b?tab=reports&report=MISSING_IN_BOOKS')
+    await waitFor(bodyHasAllCI('S1/M-003', '1 row(s)'), 'missing in books')
+    await screenshot('accounts-07-gstr2b')
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+    Object.assign(G2B, { committed: false, approved: false })
+    await signOut().catch(() => {})
+    await login('manager@test.invalid').catch(() => {})
+  }
+})
+
+await step('GST returns (Phase 5, Gate D): dashboard; GSTR-1 live with a manual adjustment shown apart; GSTR-3B from the approved snapshot with historical / current credit; registers with signed credit notes; reconciliation; exceptions; working-file export; filing recorded manually', async () => {
+  const PERMS = ['gst.read', 'gst_returns.prepare', 'gst_returns.approve', 'gst_periods.close']
+  USERS['manager@test.invalid'].permissions.push(...PERMS)
+  try {
+    await goto('/')
+    await waitFor(bodyHas('Smoke Tester'), 'signed-in layout')
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+    await goto('/accounts/gst/returns')
+    await waitFor(bodyHasAllCI('GST Returns', 'This system does not file returns and has no GSTN or portal connection', 'Return periods', '2026-10', 'snapshot v1', 'GSTR-2B missing in books'), 'dashboard')
+    await goto('/accounts/gst/returns?tab=gstr1&period=gp-nov')
+    await waitFor(bodyHasAllCI('Manually adjusted', 'Live from documents', 'INV-0001', 'HSN summary', 'Excluded from the return: 2 draft / pending, 1 cancelled', 'missing hsn 1'), 'GSTR-1 live')
+    await goto('/accounts/gst/returns?tab=gstr3b&period=gp-nov')
+    await waitFor(`!!document.querySelector('[data-section="3.1(a)"][data-kind="adjusted"]') && ${bodyHasAllCI('Advance received, tax paid', '2,02,000.00', '2,01,500.00')}`, 'calculated and adjusted rows kept apart')
+    await goto('/accounts/gst/returns?tab=gstr3b&period=gp-oct')
+    await waitFor(bodyHasAllCI('Approved (snapshot)', 'Approved snapshot v1', 'Credit position', 'Available at period end', '350.00', '440.00', '6.1 Payment of tax', 'evidence only'), 'GSTR-3B from the snapshot')
+    assert(!(await evaluate(`!!document.querySelector('[data-section="3.1(a)"][data-kind="adjusted"]')`)), 'no adjusted row without an approved adjustment')
+    await click('button', 'Working file')
+    await click('[role=menuitem]', 'Excel')
+    await waitFor(`true`, 'export started')
+    // Filing: recorded by the user after filing on the portal.
+    await fill('#arn-GSTR3B', 'aa2710261234567')
+    await fill('#filed-GSTR3B', TODAY)
+    await click('button', 'Record filing')
+    await waitFor(bodyHasAllCI('GSTR3B filing recorded (ARN AA2710261234567).', 'Filed (recorded)', 'ARN AA2710261234567'), 'filing recorded')
+    assert(rpcCalls('gst_return_filing').at(-1)?.body?.p?.arn === 'AA2710261234567', 'ARN normalised')
+    await goto('/accounts/gst/returns?tab=registers&period=gp-nov')
+    await waitFor(bodyHasAllCI('Sales register', 'INV-0001', 'CN-0001', '-100.00'), 'register with a signed credit note')
+    await goto('/accounts/gst/returns?tab=reconciliation&period=gp-nov')
+    await waitFor(bodyHasAllCI('Tax-head summary and ledger reconciliation', '-35,980.00', 'JV/26-27/000012'), 'reconciliation')
+    await goto('/accounts/gst/returns?tab=exceptions&period=gp-nov')
+    await waitFor(bodyHasAllCI('1 exception(s)', 'missing hsn', 'INV-0009'), 'exceptions')
+    await goto('/accounts/gst/returns?tab=payments&period=gp-oct')
+    await waitFor(bodyHasAllCI('26112700000001', 'CIN 26112700000001HDFC', 'credit IGST'), 'payments and set-offs')
+    await screenshot('accounts-08-gst-returns')
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+    GR.filed = null
+    await signOut().catch(() => {})
+    await login('manager@test.invalid').catch(() => {})
+  }
+})
+
+await step('GST period close (Phase 5, Gate E): lifecycle with filed status; blockers and warnings apart (an open warning is never passed); close needs an acknowledgement; control reports with tolerance, Excel / CSV export and a print layout with header and page numbers', async () => {
+  const PERMS = ['gst.read', 'gst_returns.prepare', 'gst_returns.approve', 'gst_periods.close']
+  USERS['manager@test.invalid'].permissions.push(...PERMS)
+  try {
+    await goto('/')
+    await waitFor(bodyHas('Smoke Tester'), 'signed-in layout')
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+    GR.filed = 'AA2710261234567'
+    await goto('/accounts/gst/returns?tab=close&period=gp-oct')
+    await waitFor(`document.querySelector('[data-step="FILED"]')?.dataset.state === 'current' && ${bodyHasAllCI('Mandatory close controls (blockers)', 'Warnings (never treated as passed)', 'Reopened 1×', 'filed (recorded): GSTR3B ARN AA2710261234567')}`, 'lifecycle and controls')
+    assert(await evaluate(`document.querySelector('[data-control="SOURCE_ERRORS"]').dataset.state === 'Open warning' && document.querySelector('[data-control="SET_OFF_DRAFT"]').dataset.state === 'Passed'
+      && document.querySelector('[data-control="LEDGER_UNRECONCILED"]').dataset.state === 'Clear'`), 'warning shown as open, blocker as passed')
+    assert(!(await evaluate(`[...document.querySelectorAll('button')].some((b) => b.innerText.includes('Reopen period'))`)), 'no reopen for a filed period / without the Super Admin permission')
+    await click('button', 'Close period')
+    await waitFor(bodyHas('Acknowledge the open warnings'), 'close dialog requires an acknowledgement')
+    const closeCalls = rpcCalls('gst_period_transition').length
+    await click('[role=dialog] button', 'Close period')
+    await waitFor(bodyHas('Enter at least 10 characters.'), 'acknowledgement required')
+    assert(rpcCalls('gst_period_transition').length === closeCalls, 'close sent without acknowledgement')
+    await fill('#action-note', 'Two source errors reviewed; corrected in the next return')
+    await click('[role=dialog] button', 'Close period')
+    await waitFor(bodyHas('2026-10 closed.'), 'closed')
+    assert(rpcCalls('gst_period_transition').at(-1)?.body?.p_reason === 'Two source errors reviewed; corrected in the next return', 'acknowledgement sent')
+
+    await goto('/accounts/gst/returns?tab=reports&period=gp-oct')
+    await waitFor(bodyHasAllCI('1. GST tax liability reconciliation', 'Sources:', 'Alton Hi-Tech Sanitary Ware', 'GSTIN 27AABCA1234A1Z5', 'FY 2026-27', 'snapshot v1',
+      'This document is not proof of filing with the GST Portal', '-36,520.00'), 'report 1 with header and negative difference')
+    assert(await evaluate(`[...document.querySelectorAll('[data-testid=gst-control-report] td span')].some((x) => x.innerText.includes('-36,520.00') && x.className.includes('text-red-700'))`), 'negative in red')
+    await click('#gstc-report')
+    await click('[role=option]', '3. GSTR-2B reconciliation')
+    await waitFor(bodyHasAllCI('Tolerance applied', 'Config version', 'S1/M-002', 'partial'), 'report 3 with tolerance')
+    await click('button', 'Export')
+    await waitFor(`[...document.querySelectorAll('[role=menuitem]')].some((m) => m.innerText.includes('CSV — Documents'))`, 'export menu: Excel and one CSV per table')
+    await click('[role=menuitem]', 'Excel')
+    // Print layout: the header (company, GSTIN, period, status, disclaimer) is shown and the controls are hidden.
+    await cdp('Emulation.setEmulatedMedia', { media: 'print' })
+    await waitFor(`matchMedia('print').matches`, 'print media emulated')
+    await waitFor(`getComputedStyle(document.querySelector('[data-testid=gst-print-header]')).display !== 'none'`, 'print header shown in print')
+    await waitFor(`document.querySelector('[data-testid=gst-print-header]').textContent.includes('Prepared by Alton ERP for review and working purposes')
+      && document.querySelector('[data-testid=gst-print-header]').textContent.includes('GSTIN 27AABCA1234A1Z5')`, 'print header content')
+    await waitFor(`getComputedStyle([...document.querySelectorAll('button')].find((b) => b.textContent.includes('Export')).parentElement).display === 'none'`, 'controls hidden in print')
+    assert(await evaluate(`[...document.querySelectorAll('style')].some((x) => x.textContent.includes('counter(page)') && x.textContent.includes('A4 landscape'))`), 'page numbering rule present')
+    await evaluate(`(() => { window.scrollTo(0, 0); document.querySelectorAll('main, [data-scroll-container], .overflow-y-auto').forEach((e) => { e.scrollTop = 0 }); return true })()`)
+    await waitFor(`document.querySelector('[data-testid=gst-print-header]').getBoundingClientRect().height > 0`, 'print header laid out')
+    await screenshot('accounts-09-gst-close-print')
+    await cdp('Emulation.setEmulatedMedia', { media: '' })
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+    Object.assign(GR, { filed: null, closed: false })
+    await cdp('Emulation.setEmulatedMedia', { media: '' }).catch(() => {})
+    await signOut().catch(() => {})
+    await login('manager@test.invalid').catch(() => {})
+  }
+})
+
+await step('Bank & cash (Phase 4): masked bank accounts with an audited reveal; new bank account; transfer draft and posting; statement import with column mapping and preview; manual match and a bank-charges adjustment; reconciliation saved at difference zero; payment-account assignment and the per-method policy; bank book', async () => {
+  const PERMS = ['bank_accounts.read', 'bank_accounts.manage', 'cash_accounts.read', 'cash_accounts.manage', 'bank_reconciliation.read', 'bank_reconciliation.manage',
+    'bank_reconciliation.approve', 'bank_transfers.create', 'bank_transfers.post', 'accounting_settings.manage', 'accounting_reports.read', 'accounts.read']
+  USERS['manager@test.invalid'].permissions.push(...PERMS)
+  const csvFile = path.join(outDir, 'bank-statement-test.csv')
+  writeFileSync(csvFile, 'Date,Narration,Chq./Ref.No.,Withdrawal Amt.,Deposit Amt.,Closing Balance\n05/11/26,NEFT-SBI INCL CHG,,"1,025.00",,"1,93,975.00"\n06/11/26,SMS CHARGES QTR,,59.00,,"1,93,916.00"\n')
+  try {
+    await goto('/')
+    await waitFor(bodyHas('Smoke Tester'), 'signed-in layout')
+    await signOut().catch(() => {})
+    await login('manager@test.invalid')
+    await waitFor(`location.pathname !== '/login'`, 'signed in')
+
+    // Bank account master: masked number, reveal on request, new account.
+    await goto('/accounts/bank-accounts')
+    await waitFor(bodyHasAllCI('Bank Accounts', 'HDFC-CA', 'XXXXXXXXXX5678', 'HDFC0001234'), 'bank accounts (masked)')
+    assert(!(await evaluate(bodyHas('50100012345678'))), 'full number shown without a request')
+    await click('button[aria-label="Show the full number of HDFC-CA"]')
+    await waitFor(bodyHas('50100012345678'), 'number revealed on request')
+    await click('button', 'New bank account')
+    await waitFor(bodyHas('Never enter internet-banking passwords'), 'new bank account dialog')
+    await fill('#ma-code', 'sbi-ca')
+    await fill('#ma-name', 'SBI Current')
+    await click('#ma-ledger')
+    await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('1240'))`, 'unlinked bank ledgers offered')
+    assert(!(await evaluate(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('1230'))`)), 'a linked ledger offered again')
+    await click('[role=option]', '1240')
+    await fill('#ma-bank', 'State Bank of India')
+    await fill('#ma-holder', 'Alton E2E')
+    await fill('#ma-number', '3012 3456 789')
+    await fill('#ma-ifsc', 'sbin0000456')
+    await waitFor(bodyHas('Shown as XXXXXXX6789'), 'masked preview')
+    await click('[role=dialog] button', 'Save')
+    await waitFor(bodyHas('SBI-CA saved.'), 'bank account saved')
+    const acc = rpcCalls('bank_cash_account_save').at(-1)?.body?.p_account
+    assert(acc?.account_number === '30123456789' && acc.ifsc === 'SBIN0000456' && acc.account_code === 'SBI-CA' && acc.ledger_account_id === 'l-sbi', JSON.stringify(acc))
+
+    // Transfer: draft, then post.
+    await goto('/accounts/transfers')
+    await waitFor(bodyHasAllCI('Bank & Cash Transfers', 'No transfers'), 'transfers page')
+    await click('button', 'New transfer')
+    await waitFor(bodyHas('creates one contra voucher'), 'transfer dialog')
+    await fill('#tr-amount', '1000')
+    await click('#tr-from')
+    await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('HDFC-CA'))`, 'from options')
+    await click('[role=option]', 'HDFC-CA')
+    await click('#tr-to')
+    await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('PETTY'))`, 'to options')
+    await click('[role=option]', 'PETTY')
+    await fill('#tr-ref', 'CASH WDL')
+    await click('[role=dialog] button', 'Save draft')
+    await waitFor(bodyHasAll('Draft TRF-000001 saved.', 'TRF-000001'), 'draft transfer')
+    await click('button', 'Post')
+    await waitFor(bodyHas('One contra voucher: Dr Petty Cash'), 'post confirmation')
+    await click('[role=dialog] button', 'Post transfer')
+    await waitFor(bodyHas('TRF-000001 posted as CTR/26-27/000001.'), 'transfer posted')
+
+    // Statement import: mapping guessed from the header, preview, import.
+    await goto('/accounts/bank-reconciliation/import?account=hdfc')
+    await waitFor(`document.querySelector('input[type=file]')`, 'statement upload')
+    const { root: doc } = await cdp('DOM.getDocument')
+    const { nodeId } = await cdp('DOM.querySelector', { nodeId: doc.nodeId, selector: 'input[type=file]' })
+    await cdp('DOM.setFileInputFiles', { nodeId, files: [csvFile] })
+    await waitFor(bodyHasAll('2. Columns', 'header found on row 1'), 'column mapping')
+    await click('button', 'Preview')
+    await waitFor(bodyHasAll('3. Preview', '2 to import'), 'preview')
+    const pre = rpcCalls('bank_statement_import').at(-1)?.body
+    assert(pre?.p_commit === false && pre.p_rows.length === 2 && pre.p_rows[0].debit === '1025.00' && pre.p_rows[0].credit === '' && pre.p_rows[0].txn_date === '2026-11-05'
+      && pre.p_rows[1].running_balance === '193916.00' && pre.p_file.content_base64.length > 20, JSON.stringify(pre?.p_rows))
+    await click('button', 'Import 2 row(s)')
+    await waitFor(bodyHasAll('Imported', 'bank-statement-test.csv'), 'imported, in the history')
+    assert(rpcCalls('bank_statement_import').at(-1)?.body?.p_commit === true, 'not committed')
+
+    // Reconciliation: one statement line against two ledger entries, then a charges adjustment, then save.
+    await goto('/accounts/bank-reconciliation?account=hdfc')
+    await waitFor(bodyHasAllCI('Books (posted ledger entries)', 'NEFT-SBI INCL CHG', 'SMS CHARGES QTR', 'Difference -1,036.00'), 'workspace and BRS')
+    await click('button[aria-label="Select statement NEFT-SBI INCL CHG"]')
+    await evaluate(`document.querySelectorAll('[data-testid=br-ledger] button[role=checkbox]').forEach((b) => b.click())`)
+    await waitFor(`document.querySelector('[data-testid=br-selection]')?.innerText.includes('Difference 0.00')`, 'balanced selection')
+    await click('button', 'Match selected')
+    await waitFor(bodyHas('A manual match needs a reason'), 'match dialog')
+    await fill('[role=dialog] textarea', 'transfer plus its charges')
+    await click('[role=dialog] button', 'Match')
+    await waitFor(bodyHas('Matched.'), 'matched')
+    const mb = rpcCalls('bank_reconciliation_match').at(-1)?.body
+    assert(mb?.p_items.length === 3 && mb.p_items.filter((i) => i.voucher_line_id).length === 2 && mb.p_reason === 'transfer plus its charges', JSON.stringify(mb))
+    await click('button', 'Post adjustment')
+    await waitFor(bodyHas('Dr the chosen expense ledger / Cr the bank ledger'), 'adjustment dialog')
+    await click('#adj-ledger')
+    await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('6600'))`, 'expense ledgers')
+    await click('[role=option]', '6600')
+    await click('[role=dialog] button', 'Post adjustment')
+    await waitFor(bodyHas('Adjustment BNK/26-27/000001 posted and matched.'), 'adjustment posted')
+    await waitFor(`document.querySelector('[data-testid=brs-difference]')?.innerText.includes('Difference 0.00')`, 'reconciled')
+    await click('button', 'Save reconciliation')
+    await waitFor(bodyHas('Reconciliation saved: complete.'), 'reconciliation saved')
+
+    // Payment accounts: the per-method policy (Accounting Settings) and the assignment of a waiting payment.
+    await goto('/accounts/settings?tab=rules')
+    await waitFor(bodyHas('Bank / cash account per payment'), 'policy card')
+    await click('button[aria-label="Payments by Cash: choose the account per payment"]')
+    await waitFor(bodyHas('Choose per payment'), 'policy shown')
+    assert(rpcCalls('bank_payment_policy_save').at(-1)?.body?.p_require_selection === true, 'policy not saved')
+    await goto('/accounts/payment-accounts')
+    await waitFor(bodyHasAllCI('Payment Accounts', 'SPAY-000009', 'Choose the account'), 'waiting payment')
+    await click('button', 'Assign account')
+    await waitFor(bodyHas('Record how you verified the account'), 'assign dialog')
+    await click('#pa-account')
+    await waitFor(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('PETTY'))`, 'cash accounts only')
+    assert(!(await evaluate(`[...document.querySelectorAll('[role=option]')].some((o) => o.innerText.includes('HDFC-CA'))`)), 'a bank account offered for a cash payment')
+    await click('[role=option]', 'PETTY')
+    await fill('#pa-reason', 'petty cash voucher PC-1')
+    await click('[role=dialog] button', 'Assign')
+    await waitFor(bodyHas('SPAY-000009 assigned.'), 'assigned')
+    const asg = rpcCalls('bank_payment_assign').at(-1)?.body
+    assert(asg?.p_account_id === 'petty' && asg.p_source_type === 'SUPPLIER_PAYMENT' && asg.p_reason === 'petty cash voucher PC-1', JSON.stringify(asg))
+
+    // Bank book.
+    await goto('/accounts/bank-book?account=hdfc')
+    await waitFor(bodyHasAllCI('Bank Book', 'PMT/26-27/000009', 'CHQ-000123', 'Closing balance', '1,96,036.00 Dr', 'Unmatched'), 'bank book')
+    await screenshot('accounts-06-bank-cash')
+  } finally {
+    USERS['manager@test.invalid'].permissions = USERS['manager@test.invalid'].permissions.filter((x) => !PERMS.includes(x))
+    Object.assign(BK, { transfers: [], imports: [], matched: false, adjusted: false, policyCash: false })
+    await signOut().catch(() => {})
+    await login('manager@test.invalid').catch(() => {})
   }
 })
 

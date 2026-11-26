@@ -25,9 +25,11 @@ export default function ProductionOrdersPage() {
   // Kept in the address, so Back from a record returns to the same tab.
   const [filter, setFilter] = useUrlEnum<Filter>('status', ['OPEN', 'PENDING_APPROVAL', 'RUNNING', 'ON_HOLD', 'COMPLETED', 'CANCELLED', 'ALL'], 'OPEN')
   const [creating, setCreating] = useState(false)
+  // Search runs on the server too (number, product, BOM, warehouses, components, batches, receipts), beyond the loaded 2,000 orders.
+  const [serverSearch, setServerSearch] = useState('')
   const orders = useAsync(
-    () => fetchProductionOrders(filter === 'ALL' || filter === 'RUNNING' ? (filter === 'RUNNING' ? 'OPEN' : null) : filter),
-    [filter],
+    () => fetchProductionOrders(filter === 'ALL' || filter === 'RUNNING' ? (filter === 'RUNNING' ? 'OPEN' : null) : filter, serverSearch),
+    [filter, serverSearch],
   )
   const rows = (orders.data ?? []).filter((o) => filter !== 'RUNNING' || o.status === 'IN_PROGRESS' || o.status === 'PARTIALLY_COMPLETED')
 
@@ -59,12 +61,15 @@ export default function ProductionOrdersPage() {
         columns={columns}
         data={rows}
         getRowId={(o) => o.id}
-        loading={orders.loading}
+        loading={orders.loading && !serverSearch}
         error={orders.error ? new Error(describeDataError(orders.error)) : null}
         onRetry={orders.reload}
         onRowClick={(o) => navigate(`/production/orders/${o.id}`)}
         pageSize={20}
-        searchPlaceholder="Search order, SKU or product…"
+        searchPlaceholder="Search order, SKU, product, BOM, component or batch…"
+        onQueryChange={setServerSearch}
+        serverQuery={orders.loading ? undefined : serverSearch}
+        searching={orders.loading && Boolean(serverSearch)}
         toolbar={
           <FilterTabs<Filter>
             label="Order status"

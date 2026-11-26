@@ -25,7 +25,9 @@ export default function OutsourcedReceiptsPage() {
   const navigate = useNavigate()
   const [range, setRange] = useState<DateRangeValue>(() => getPresetRange('this_month'))
   const [orderId, setOrderId] = useState('')
-  const rows = useAsync(() => fetchOutsourcingReceipts({ from: toIsoDate(range.from), to: toIsoDate(range.to) }), [range])
+  // Search runs on the server too (all fields of the period, not only the loaded rows).
+  const [serverSearch, setServerSearch] = useState('')
+  const rows = useAsync(() => fetchOutsourcingReceipts({ from: toIsoDate(range.from), to: toIsoDate(range.to), search: serverSearch }), [range, serverSearch])
   const canReceive = has('outsourcing_receipt.create')
   const receivable = useAsync(
     () => (canReceive ? fetchOutsourcingOrders('OPEN').then((r) => r.filter((o) => ['APPROVED', 'MATERIALS_DISPATCHED', 'PARTIALLY_RECEIVED'].includes(o.status))) : Promise.resolve([])),
@@ -70,7 +72,10 @@ export default function OutsourcedReceiptsPage() {
         columns={columns}
         data={rows.data ?? []}
         getRowId={(r) => r.id}
-        loading={rows.loading}
+        loading={rows.loading && !serverSearch}
+        onQueryChange={setServerSearch}
+        serverQuery={rows.loading ? undefined : serverSearch}
+        searching={rows.loading && Boolean(serverSearch)}
         error={rows.error ? new Error(describeDataError(rows.error)) : null}
         onRetry={rows.reload}
         pageSize={25}

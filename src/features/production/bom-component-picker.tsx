@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { formatQty } from '@/features/inventory/inventory-model'
 import { useDebouncedValue } from '@/hooks/use-debounced-value'
+import { normalizeSearch } from '@/lib/search'
 import { describeDataError } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import { findBomComponentByCode, searchBomComponents, type BomComponentOption } from '@/services/bom-components'
@@ -49,7 +50,7 @@ export function BomComponentPicker({
   const [active, setActive] = useState(0)
   const [message, setMessage] = useState<string | null>(null)
   const [costs, setCosts] = useState<Map<string, number | null>>(new Map())
-  const term = useDebouncedValue(text, 200)
+  const term = useDebouncedValue(normalizeSearch(text), 250)
   const listRef = useRef<HTMLUListElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 

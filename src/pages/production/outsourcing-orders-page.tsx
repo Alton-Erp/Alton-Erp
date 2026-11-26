@@ -25,7 +25,9 @@ export default function OutsourcingOrdersPage() {
   const [filter, setFilter] = useState<Filter>('OPEN')
   const [creating, setCreating] = useState(false)
   const [today] = useState(() => toIsoDate(new Date()))
-  const orders = useAsync(() => fetchOutsourcingOrders(filter === 'ALL' ? null : filter), [filter])
+  // Search runs on the server too (number, vendor code / name, references, product, materials, receipts / challans, batches).
+  const [serverSearch, setServerSearch] = useState('')
+  const orders = useAsync(() => fetchOutsourcingOrders(filter === 'ALL' ? null : filter, serverSearch), [filter, serverSearch])
   const overdue = (o: OutsourcingOrderListRow) => !['COMPLETED', 'CANCELLED'].includes(o.status) && o.expected_return_date < today
 
   const columns: DataTableColumn<OutsourcingOrderListRow>[] = [
@@ -48,7 +50,10 @@ export default function OutsourcingOrdersPage() {
         columns={columns}
         data={orders.data ?? []}
         getRowId={(o) => o.id}
-        loading={orders.loading}
+        loading={orders.loading && !serverSearch}
+        onQueryChange={setServerSearch}
+        serverQuery={orders.loading ? undefined : serverSearch}
+        searching={orders.loading && Boolean(serverSearch)}
         error={orders.error ? new Error(describeDataError(orders.error)) : null}
         onRetry={orders.reload}
         onRowClick={(o) => navigate(`/production/outsourcing/${o.id}`)}

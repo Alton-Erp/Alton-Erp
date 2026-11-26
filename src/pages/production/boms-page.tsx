@@ -48,7 +48,9 @@ function BomMasterTab({ tabs }: { tabs: ReactNode }) {
   const [groupFilter, setGroupFilter] = useState('all')
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
-  const boms = useAsync(() => fetchBoms(filter === 'ALL' ? null : filter), [filter])
+  // Search runs on the server too (code, version, finished product and every component), so BOMs beyond the loaded list are found.
+  const [serverSearch, setServerSearch] = useState('')
+  const boms = useAsync(() => fetchBoms(filter === 'ALL' ? null : filter, serverSearch), [filter, serverSearch])
   const all = boms.data ?? []
   // Cost columns (migration 20261208090000); an empty map before it: the columns then show dashes.
   const [costRefresh, setCostRefresh] = useState(0)
@@ -198,11 +200,14 @@ function BomMasterTab({ tabs }: { tabs: ReactNode }) {
         columns={columns}
         data={rows}
         getRowId={(b) => b.id}
-        loading={boms.loading}
+        loading={boms.loading && !serverSearch}
         error={boms.error ? new Error(describeDataError(boms.error)) : null}
         onRetry={boms.reload}
         onRowClick={(b) => navigate(`/production/boms/${b.id}`)}
-        searchPlaceholder="Search BOM code, SKU, product or group head…"
+        searchPlaceholder="Search BOM code, SKU, product, group head or component…"
+        onQueryChange={setServerSearch}
+        serverQuery={boms.loading ? undefined : serverSearch}
+        searching={boms.loading && Boolean(serverSearch)}
         pageSize={20}
         toolbar={
           <>
