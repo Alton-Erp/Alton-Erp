@@ -5270,9 +5270,20 @@ await step('BOM tools 3c: Generate multiple — Add Components from Existing BOM
   await click('[data-testid=gen2-tpl-replace]')
   await waitFor(`document.querySelector('[data-testid=gen2-tpl-ref]')?.innerText.includes('BOM-000001 v1') && document.querySelector('#gen2-qty-1')?.value === '2.5'`, 'product 2 copied')
   assert(await evaluate(`document.querySelector('#gen1-qty-1').value === '3' && document.querySelector('input[aria-label="Remarks line 1"]').value === 'Thicker body'`), 'product 1 edits changed by product 2')
+  // Add to the components: the same BOM again merges by increasing Required Qty (no new rows); a second click adds again (decimals exact).
+  await fill('#gen2-tpl-search', 'closet mock')
+  await waitFor(`${opts2}.some((o) => o.innerText.includes('BOM-000001 v1'))`, 'search again')
+  await click('[data-testid=gen2-tpl-list] [role=option]', 'v1')
+  await waitFor(`!!document.querySelector('[data-testid=gen2-tpl-add]')`, 'preview with Add')
+  await click('[data-testid=gen2-tpl-add]')
+  await waitFor(`document.querySelector('#gen2-qty-1')?.value === '5' && document.querySelector('#gen2-qty-2')?.value === '0.4' && !document.querySelector('#gen2-qty-3')`, 'quantities merged (2.5 + 2.5, 0.2 + 0.2)')
+  assert(await evaluate(`document.querySelector('[data-testid=gen2-tpl-notice]').innerText.includes('Required Qty increased for MOCK-CLAY, MOCK-GLZ')`), 'merge notice')
+  await click('[data-testid=gen2-tpl-add]')
+  await waitFor(`document.querySelector('#gen2-qty-1')?.value === '7.5' && document.querySelector('#gen2-qty-2')?.value === '0.6' && !document.querySelector('#gen2-qty-3')`, 'second click adds again (0.6, not 0.6000000000000001)')
+  assert(await evaluate(`document.querySelector('#gen1-qty-1').value === '3' && !document.querySelector('#gen1-qty-3')`), 'product 1 changed by product 2 merge')
   // Remove product 2's template reference: its components stay.
   await click('[data-testid=gen2-tpl-clear]')
-  await waitFor(`!document.querySelector('[data-testid=gen2-tpl-ref]') && document.querySelector('#gen2-qty-1')?.value === '2.5'`, 'reference removed, components kept')
+  await waitFor(`!document.querySelector('[data-testid=gen2-tpl-ref]') && document.querySelector('#gen2-qty-1')?.value === '7.5'`, 'reference removed, components kept')
   assert(await evaluate(`document.querySelector('[data-testid=gen-summary-1]').innerText.includes('from BOM-000001 v2')`), 'summary shows the template')
   await screenshot('208-generate-multiple-template')
   await click('[data-testid=gen-save]')
@@ -5282,7 +5293,8 @@ await step('BOM tools 3c: Generate multiple — Add Components from Existing BOM
   await waitFor(`document.querySelector('[data-testid=gen-result]')?.innerText.includes('2 draft BOMs created')`, 'saved')
   const c = rpcCalls('bom_generate_multiple').at(-1).body
   assert(c.p_entries[0].template_bom_id === 'bom2' && c.p_entries[0].items[0].component_product_id === 'p3' && c.p_entries[0].items[0].quantity_required === 3
-    && c.p_entries[0].items[0].notes === 'Thicker body' && !('template_bom_id' in c.p_entries[1]) && c.p_entries[1].items[0].quantity_required === 2.5, JSON.stringify(c))
+    && c.p_entries[0].items[0].notes === 'Thicker body' && !('template_bom_id' in c.p_entries[1]) && c.p_entries[1].items.length === 2
+    && c.p_entries[1].items[0].quantity_required === 7.5 && c.p_entries[1].items[1].quantity_required === 0.6, JSON.stringify(c))
   // The templates were only read: no BOM write of any kind, mock BOM data unchanged.
   const writes = requests.slice(reqBefore).filter((r) => (r.method !== 'GET' && r.method !== 'HEAD' && !r.path.startsWith('/rest/v1/rpc/'))
     || /rpc\/(production_save_bom|production_bom_|bom_change|bom_version_details_save|inventory_)/.test(r.path))

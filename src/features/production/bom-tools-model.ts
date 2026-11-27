@@ -132,19 +132,81 @@ export interface TemplateRef {
 }
 
 /**
- * Copies a template BOM's component lines into a product's own editable list. The copies are new objects with new keys (nothing is
- * shared with the source lines, so editing them cannot change the template). 'replace' = the template's lines only; 'add' = the current
- * lines plus the template's components that are not already in the list (`skipped` lists the SKUs left out).
+ * Exact sum of two non-negative decimal quantities as text (no floating-point error: 0.1 + 0.2 = "0.3"). A blank value counts as 0.
+ * Null when either value is not a plain non-negative number.
  */
-export function applyTemplateLines(current: EditorLine[], template: EditorLine[], mode: 'replace' | 'add'): { lines: EditorLine[]; skipped: string[] } {
-  const copies = template.filter((l) => l.product).map((l) => ({ ...l, key: crypto.randomUUID(), product: { ...l.product! } }))
-  if (mode === 'replace') return { lines: copies, skipped: [] }
-  const kept = filledLines(current)
-  const have = new Set(kept.filter((l) => l.product).map((l) => l.product!.product_id))
-  return {
-    lines: [...kept, ...copies.filter((l) => !have.has(l.product.product_id))],
-    skipped: copies.filter((l) => have.has(l.product.product_id)).map((l) => l.product.sku),
+export function addQuantities(a: string, b: string): string | null {
+  const plain = (v: string): string | null => {
+    const t = v.trim()
+    if (t === '') return '0'
+    if (/^\d+(\.\d+)?$/.test(t)) return t
+    if (/^\d*\.\d+$/.test(t)) return `0${t}`
+    // Values from the database may come as numbers in exponent form (e.g. "1e-7"): BOM quantities have at most 6 decimals.
+    const n = Number(t)
+    return Number.isFinite(n) && n >= 0 && /e/i.test(t) ? n.toFixed(6) : null
   }
+  const x = plain(a)
+  const y = plain(b)
+  if (x === null || y === null) return null
+  const scale = Math.max((x.split('.')[1] ?? '').length, (y.split('.')[1] ?? '').length)
+  const big = (v: string) => BigInt((v.split('.')[0] ?? '0') + (v.split('.')[1] ?? '').padEnd(scale, '0'))
+  const sum = (big(x) + big(y)).toString().padStart(scale + 1, '0')
+  if (scale === 0) return sum
+  const out = `${sum.slice(0, -scale)}.${sum.slice(-scale)}`.replace(/0+$/, '').replace(/\.$/, '')
+  return out
+}
+
+/** The result of copying a template BOM into a product's component list. */
+export interface TemplateApplyResult {
+  lines: EditorLine[]
+  /** SKUs whose Required Qty was increased (add). */
+  merged: string[]
+  /** SKUs appended as new lines. */
+  added: string[]
+  /** Why nothing was changed (add: different inventory unit, invalid quantity); null when applied. */
+  error: string | null
+}
+
+const sameComponent = (a: ComponentRef, b: ComponentRef) =>
+  a.product_id === b.product_id || (a.sku.trim() !== '' && a.sku.trim().toLowerCase() === b.sku.trim().toLowerCase())
+
+/**
+ * Copies a template BOM's component lines into a product's own editable list. The copies are new objects with new keys (nothing is
+ * shared with the source lines, so editing them cannot change the template).
+ *  - 'replace': the template's lines only.
+ *  - 'add': merge. A template component already in the list (same product id or SKU) increases that line's Required Qty by the
+ *    template quantity (exact decimal sum; the line keeps its wastage, remarks, source and supplier); others are appended. Running it
+ *    again adds the quantities again. All or nothing: a different inventory unit (no unit conversion exists) or an invalid quantity on
+ *    the existing line changes nothing and returns `error`.
+ */
+export function applyTemplateLines(current: EditorLine[], template: EditorLine[], mode: 'replace' | 'add'): TemplateApplyResult {
+  const copies = template.filter((l) => l.product).map((l) => ({ ...l, key: crypto.randomUUID(), product: { ...l.product! } }))
+  if (mode === 'replace') return { lines: copies, merged: [], added: copies.map((l) => l.product.sku), error: null }
+  const lines = filledLines(current).map((l) => ({ ...l }))
+  const merged: string[] = []
+  const added: string[] = []
+  for (const t of copies) {
+    const i = lines.findIndex((l) => l.product && sameComponent(l.product, t.product))
+    if (i < 0) {
+      lines.push(t)
+      added.push(t.product.sku)
+      continue
+    }
+    const existing = lines[i]
+    const unitA = existing.product!.base_unit.trim().toUpperCase()
+    const unitB = t.product.base_unit.trim().toUpperCase()
+    if (unitA !== unitB) {
+      return { lines: current, merged: [], added: [], error: `${t.product.sku}: the list has it in ${existing.product!.base_unit || '?'} but the template in ${t.product.base_unit || '?'}. ` +
+        'Quantities in different units cannot be added (no unit conversion is set up). Nothing was changed; adjust the line by hand.' }
+    }
+    const q = addQuantities(existing.quantity, t.quantity)
+    if (q === null) {
+      return { lines: current, merged: [], added: [], error: `${existing.product!.sku}: enter a valid Required Qty on its line before adding (now “${existing.quantity}”). Nothing was changed.` }
+    }
+    lines[i] = { ...existing, quantity: q }
+    merged.push(t.product.sku)
+  }
+  return { lines, merged, added, error: null }
 }
 
 /** Lines that hold something (a component or a quantity). */

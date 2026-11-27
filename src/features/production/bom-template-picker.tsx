@@ -50,6 +50,7 @@ export function BomTemplateSection({ idPrefix, label, lines, output, outputUnit,
   const [loadingId, setLoadingId] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [applyError, setApplyError] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -73,6 +74,7 @@ export function BomTemplateSection({ idPrefix, label, lines, output, outputUnit,
     setNotice(null)
     setLoadError(null)
     setLoaded(null)
+    setApplyError(null)
     setLoadingId(bom.id)
     try {
       // The template's component lines, read through the existing BOM views (row-level security applies). Read only.
@@ -89,13 +91,17 @@ export function BomTemplateSection({ idPrefix, label, lines, output, outputUnit,
     if (!loaded) return
     const r = applyTemplateLines(lines, loaded.lines, mode)
     const b = loaded.bom
+    setApplyError(r.error)
+    if (r.error) return
     onApply(r.lines, { bom_id: b.id, bom_code: b.bom_code, version: b.version, sku: b.sku, product_name: b.product_name, components: loaded.lines.length })
     const scale = Number(b.output_quantity) !== Number(output)
       ? ` Quantities are copied as in ${b.bom_code} (per ${formatQty(b.output_quantity, b.output_unit)}); this product's output is ${output || '?'} ${outputUnit}.` : ''
     setNotice(mode === 'replace'
       ? `${loaded.lines.length} components copied from ${b.bom_code} v${b.version}.${scale}`
-      : `${loaded.lines.length - r.skipped.length} components added from ${b.bom_code} v${b.version}${r.skipped.length ? `; already in the list: ${r.skipped.join(', ')}` : ''}.${scale}`)
-    setLoaded(null)
+      : `From ${b.bom_code} v${b.version}: ${[r.merged.length && `Required Qty increased for ${r.merged.join(', ')}`, r.added.length && `added ${r.added.join(', ')}`].filter(Boolean).join('; ')}. `
+        + `Click “Add to the components” again to add the quantities once more.${scale}`)
+    // Replace closes the preview; Add keeps it open, so a further click intentionally adds the quantities again.
+    if (mode === 'replace') setLoaded(null)
   }
 
   const current = found.term === term && term !== ''
@@ -195,8 +201,9 @@ export function BomTemplateSection({ idPrefix, label, lines, output, outputUnit,
                 <CopyPlus /> Add to the components
               </Button>
             )}
-            <Button type="button" size="sm" variant="ghost" onClick={() => { setLoaded(null); inputRef.current?.focus() }}>Cancel</Button>
+            <Button type="button" size="sm" variant="ghost" onClick={() => { setLoaded(null); setApplyError(null); inputRef.current?.focus() }}>{notice ? 'Done' : 'Cancel'}</Button>
           </div>
+          {applyError && <p role="alert" className="mt-2 text-sm text-shortage" data-testid={`${idPrefix}-tpl-error`}>{applyError}</p>}
         </div>
       )}
       {notice && <p role="status" className="mt-2 text-xs text-muted-foreground" data-testid={`${idPrefix}-tpl-notice`}>{notice}</p>}

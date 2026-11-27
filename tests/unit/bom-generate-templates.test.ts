@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs'
 import { describe, it } from 'node:test'
 
 import {
-  applyTemplateLines, bomCost, clearLineComponent, componentProblem, itemsFromLines, linesFromItems, newLine, type EditorLine,
+  addQuantities, applyTemplateLines, bomCost, clearLineComponent, componentProblem, itemsFromLines, linesFromItems, newLine, type EditorLine,
 } from '../../src/features/production/bom-tools-model.ts'
 
 // A saved template BOM's component rows, as the bom_item_list view returns them.
@@ -61,20 +61,107 @@ describe('copying a template BOM into a product', () => {
     // Copying again gives the original values.
     assert.equal(itemsFromLines(applyTemplateLines([], source, 'replace').lines)[0].quantity_required, 3)
   })
-  it('replace: the template components only; add: appended, components already in the list are skipped and named', () => {
+  it('replace: the template components only (unchanged behaviour)', () => {
     const current = linesFromItems([{ ...templateItems[1], quantity_required: 9 }, { ...templateItems[0], component_product_id: 'c9', sku: 'OWN' }])
     const r = applyTemplateLines(current, source, 'replace')
-    assert.deepEqual(r.lines.map((l) => l.product!.product_id), ['c1', 'c2', 'c3'])
-    const a = applyTemplateLines(current, source, 'add')
-    assert.deepEqual(a.lines.map((l) => l.product!.product_id), ['c2', 'c9', 'c1', 'c3'])
-    assert.equal(a.lines[0].quantity, '9', 'the existing line keeps its quantity')
-    assert.deepEqual(a.skipped, ['CMP-TAP'])
-    assert.equal(componentProblem(a.lines), null, 'no component twice after adding')
+    assert.deepEqual(r.lines.map((l) => [l.product!.product_id, l.quantity]), [['c1', '3'], ['c2', '2'], ['c3', '1']])
+    assert.equal(r.error, null)
+    assert.ok(r.lines.every((l) => !current.some((c) => c.key === l.key)))
   })
   it('empty lines in the current list are dropped when adding; a template without components copies nothing', () => {
     const a = applyTemplateLines([newLine(), newLine()], source, 'add')
     assert.equal(a.lines.length, 3)
     assert.deepEqual(applyTemplateLines([newLine()], [], 'replace').lines, [])
+  })
+})
+
+describe('Add to the components: merge by increasing Required Qty', () => {
+  const tpl = (rows: { id: string; sku: string; qty: number | string; unit?: string; wastage?: number; notes?: string | null }[]) =>
+    linesFromItems(rows.map((r) => ({ component_product_id: r.id, sku: r.sku, product_name: r.sku, inventory_unit: r.unit ?? 'PCS', unit: r.unit ?? 'PCS',
+      quantity_required: r.qty, wastage_percentage: r.wastage ?? 0, notes: r.notes ?? null })))
+  const qty = (lines: EditorLine[]) => lines.map((l) => [l.product!.sku, l.quantity])
+
+  it('existing component: Required Qty 2 + template 1 = 3, no new row, its own settings kept', () => {
+    const current = tpl([{ id: 'c1', sku: 'A', qty: 2, wastage: 4, notes: 'Keep me' }])
+    current[0].source = 'PURCHASED'
+    current[0].supplierId = 's9'
+    const r = applyTemplateLines(current, tpl([{ id: 'c1', sku: 'A', qty: 1, wastage: 9, notes: 'template note' }]), 'add')
+    assert.equal(r.error, null)
+    assert.deepEqual(qty(r.lines), [['A', '3']])
+    assert.deepEqual([r.lines[0].wastage, r.lines[0].notes, r.lines[0].source, r.lines[0].supplierId, r.lines[0].key], ['4', 'Keep me', 'PURCHASED', 's9', current[0].key])
+    assert.deepEqual([r.merged, r.added], [['A'], []])
+    assert.equal(current[0].quantity, '2', 'the current list object is not mutated (a new list is returned)')
+  })
+  it('several matching components all increase', () => {
+    const r = applyTemplateLines(tpl([{ id: 'c1', sku: 'A', qty: 2 }, { id: 'c2', sku: 'B', qty: 5 }, { id: 'c3', sku: 'C', qty: 1 }]),
+      tpl([{ id: 'c1', sku: 'A', qty: 1 }, { id: 'c3', sku: 'C', qty: 4 }]), 'add')
+    assert.deepEqual(qty(r.lines), [['A', '3'], ['B', '5'], ['C', '5']])
+    assert.deepEqual(r.merged, ['A', 'C'])
+  })
+  it('missing component: appended with the template quantity and details', () => {
+    const r = applyTemplateLines(tpl([{ id: 'c1', sku: 'A', qty: 2 }]), tpl([{ id: 'c7', sku: 'G', qty: 1.25, unit: 'KG', wastage: 3, notes: 'Glaze' }]), 'add')
+    assert.deepEqual(qty(r.lines), [['A', '2'], ['G', '1.25']])
+    assert.deepEqual([r.lines[1].wastage, r.lines[1].notes, r.lines[1].product!.base_unit], ['3', 'Glaze', 'KG'])
+    assert.deepEqual([r.merged, r.added], [[], ['G']])
+  })
+  it('mixed: existing increased and missing added in one click', () => {
+    const r = applyTemplateLines(tpl([{ id: 'c1', sku: 'A', qty: 2 }, { id: 'c2', sku: 'B', qty: 1 }]),
+      tpl([{ id: 'c2', sku: 'B', qty: 2 }, { id: 'c5', sku: 'E', qty: 6 }]), 'add')
+    assert.deepEqual(qty(r.lines), [['A', '2'], ['B', '3'], ['E', '6']])
+    assert.deepEqual([r.merged, r.added], [['B'], ['E']])
+    assert.equal(componentProblem(r.lines), null, 'no component twice')
+  })
+  it('matches on the SKU too (case-insensitive) when the id differs', () => {
+    const r = applyTemplateLines(tpl([{ id: 'c1', sku: 'Rm-Clay', qty: 2 }]), tpl([{ id: 'other-id', sku: 'RM-CLAY', qty: 1 }]), 'add')
+    assert.deepEqual(qty(r.lines), [['Rm-Clay', '3']])
+  })
+  it('different inventory units: nothing changes and a clear error is returned', () => {
+    const current = tpl([{ id: 'c1', sku: 'A', qty: 2, unit: 'KG' }, { id: 'c2', sku: 'B', qty: 1 }])
+    const r = applyTemplateLines(current, tpl([{ id: 'c2', sku: 'B', qty: 1 }, { id: 'c1', sku: 'A', qty: 500, unit: 'G' }]), 'add')
+    assert.match(r.error ?? '', /A: the list has it in KG but the template in G. Quantities in different units cannot be added/)
+    assert.equal(r.lines, current, 'all or nothing: B was not increased either')
+    assert.deepEqual([r.merged, r.added], [[], []])
+    // Unit case / spacing alone is not a difference.
+    assert.equal(applyTemplateLines(tpl([{ id: 'c1', sku: 'A', qty: 2, unit: 'kg' }]), tpl([{ id: 'c1', sku: 'A', qty: 1, unit: 'KG ' }]), 'add').error, null)
+  })
+  it('an invalid quantity on the existing line is refused; a blank one counts as 0', () => {
+    const bad = tpl([{ id: 'c1', sku: 'A', qty: 2 }])
+    bad[0].quantity = 'abc'
+    assert.match(applyTemplateLines(bad, tpl([{ id: 'c1', sku: 'A', qty: 1 }]), 'add').error ?? '', /A: enter a valid Required Qty/)
+    const blank = tpl([{ id: 'c1', sku: 'A', qty: 2 }])
+    blank[0].quantity = ''
+    assert.deepEqual(qty(applyTemplateLines(blank, tpl([{ id: 'c1', sku: 'A', qty: 1.5 }]), 'add').lines), [['A', '1.5']])
+  })
+  it('decimal quantities are exact (no floating-point error)', () => {
+    assert.equal(0.1 + 0.2 === 0.3, false, 'plain number addition would be wrong')
+    assert.equal(addQuantities('0.1', '0.2'), '0.3')
+    assert.equal(addQuantities('2.5', '0.5'), '3')
+    assert.equal(addQuantities('1.005', '2.0049'), '3.0099')
+    assert.equal(addQuantities('0.000001', '0.000002'), '0.000003')
+    assert.equal(addQuantities('123456789.123456', '0.876544'), '123456790')
+    assert.equal(addQuantities('.5', '1'), '1.5')
+    assert.equal(addQuantities('', '2'), '2')
+    assert.equal(addQuantities('1e-7', '1'), '1')
+    assert.equal(addQuantities('-1', '2'), null)
+    assert.equal(addQuantities('1,5', '2'), null)
+    const r = applyTemplateLines(tpl([{ id: 'g', sku: 'GLZ', qty: 0.1, unit: 'KG' }]), tpl([{ id: 'g', sku: 'GLZ', qty: 0.2, unit: 'KG' }]), 'add')
+    assert.deepEqual(qty(r.lines), [['GLZ', '0.3']])
+  })
+  it('repeated clicks add the quantities again', () => {
+    const t = tpl([{ id: 'c1', sku: 'A', qty: 1 }, { id: 'g', sku: 'GLZ', qty: 0.2, unit: 'KG' }])
+    let lines = tpl([{ id: 'c1', sku: 'A', qty: 2 }])
+    for (let i = 0; i < 3; i++) lines = applyTemplateLines(lines, t, 'add').lines
+    assert.deepEqual(qty(lines), [['A', '5'], ['GLZ', '0.6']])
+  })
+  it('the template and other products are never changed; costs follow the merged quantities', () => {
+    const t = tpl([{ id: 'c1', sku: 'A', qty: 1 }])
+    const before = JSON.stringify(t)
+    const productA = tpl([{ id: 'c1', sku: 'A', qty: 2 }])
+    const productB = tpl([{ id: 'c1', sku: 'A', qty: 2 }])
+    const r = applyTemplateLines(productA, t, 'add')
+    assert.equal(JSON.stringify(t), before)
+    assert.deepEqual(qty(productB), [['A', '2']])
+    assert.equal(bomCost(r.lines.map((l) => ({ quantity: l.quantity, wastage: 0, unitCost: 10 })), 1).total, 30)
   })
 })
 
