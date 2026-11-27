@@ -58,7 +58,10 @@ export interface GeneratedBom extends Omit<SimilarProductResult, 'status'> {
  * { product_id } (new draft BOM for that product) or { product } (new product, as createSimilarProducts), in one
  * transaction. Nothing is activated; no stock moves.
  */
-export type GenerateEntry = Omit<SimilarProductInput, 'product'> & ({ product_id: string } | { product: Record<string, unknown> })
+export type GenerateEntry = Omit<SimilarProductInput, 'product'> & ({ product_id: string } | { product: Record<string, unknown> }) & {
+  /** Saved BOM whose components were copied into this entry's items (migration 20261231091000): provenance only, never changed. */
+  template_bom_id?: string
+}
 export const generateMultipleBoms = (sourceBomId: string, entries: GenerateEntry[], key: string) =>
   rpc<{ created: number; products: GeneratedBom[] }>('bom_generate_multiple', { p_source: { bom_id: sourceBomId }, p_entries: entries, p_idempotency_key: key })
 

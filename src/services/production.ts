@@ -48,9 +48,9 @@ async function rpc<T = Json>(fn: string, args: Record<string, unknown>): Promise
  * BOMs match on code / version / finished product / any component; orders on number, product, BOM, warehouses, components, batches, vendor…
  * The functions return the view rows as one JSON array, already filtered by status (null = all) and capped at 2,000.
  */
-async function searchRpc<R>(fn: 'bom_search' | 'production_order_search' | 'outsourcing_order_search', search: string, status: string | null): Promise<R[]> {
+async function searchRpc<R>(fn: 'bom_search' | 'production_order_search' | 'outsourcing_order_search', search: string, status: string | null, limit = 2000): Promise<R[]> {
   const client = requireSupabase() as unknown as { rpc(f: string, a: Record<string, unknown>): PromiseLike<{ data: unknown; error: unknown }> }
-  const { data, error } = await client.rpc(fn, { p_search: search, p_status: status, p_limit: 2000 })
+  const { data, error } = await client.rpc(fn, { p_search: search, p_status: status, p_limit: limit })
   if (error) throw error
   return Array.isArray(data) ? (data as R[]) : []
 }
@@ -80,6 +80,17 @@ export async function fetchEffectiveBoms(today: string, productId?: string | nul
   const { data, error } = await query
   if (error) throw error
   return data ?? []
+}
+
+/**
+ * Saved BOMs offered as component templates (Generate Multiple → Add Components from Existing BOM): non-archived BOM records of the
+ * company only (never Product Master products or unsaved form drafts), matched on BOM number, finished product name or SKU and their
+ * components (any part of any word, every word). Read only, under row-level security.
+ */
+export async function searchBomTemplates(search: string, limit = 20): Promise<BomListRow[]> {
+  const q = normalizeSearch(search)
+  if (!q) return []
+  return searchRpc<BomListRow>('bom_search', q, 'ACTIVE', limit)
 }
 
 export async function fetchBom(id: string): Promise<{ bom: BomListRow; items: BomItemListRow[]; versions: BomListRow[] }> {

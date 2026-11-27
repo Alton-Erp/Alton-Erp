@@ -5232,6 +5232,64 @@ await step('BOM tools 3b: Generate multiple — Product Name searches the Produc
   }
 })
 
+await step('BOM tools 3c: Generate multiple — Add Components from Existing BOM: each product copies a saved BOM (search by number / product), edits stay in the copy, reference clears without removing components, template saved only as provenance', async () => {
+  const itemsBefore = JSON.stringify(tables.bom_item_list)
+  const bomsBefore = JSON.stringify(tables.bom_list_v2)
+  const reqBefore = requests.length
+  await goto('/production/boms/generate?source=bom1')
+  await waitFor(`!!document.querySelector('#gen-name-1') && !!document.querySelector('#gen-name-2')`, 'rows')
+  await fill('#gen-name-1', 'Basin from template')
+  await fill('#gen-sku-1', 'BT-1')
+  await fill('#gen-name-2', 'Basin two')
+  await fill('#gen-sku-2', 'BT-2')
+  // Product 1: the section follows the component editor; search by the middle of the BOM number.
+  await click('[data-testid=gen-edit-1]')
+  await waitFor(`!!document.querySelector('#gen1-tpl-search') && document.querySelector('#gen1-qty-1')?.value === '2.5'`, 'section shown under the components')
+  const opts1 = `[...document.querySelectorAll('[data-testid=gen1-tpl-list] [role=option]')]`
+  await fill('#gen1-tpl-search', 'zzz-no-bom')
+  await waitFor(`!!document.querySelector('[data-testid=gen1-tpl-empty]')`, 'no-results state')
+  await fill('#gen1-tpl-search', '00001')
+  await waitFor(`${opts1}.length === 2 && ${opts1}.every((o) => o.innerText.includes('BOM-000001') && o.innerText.includes('Mock Closet 1') && o.innerText.includes('2 components'))`, 'saved BOMs listed with product and component count')
+  const searched = rpcCalls('bom_search').at(-1).body
+  assert(searched.p_search === '00001' && searched.p_status === 'ACTIVE', JSON.stringify(searched))
+  await click('[data-testid=gen1-tpl-list] [role=option]', 'v2')
+  await waitFor(`!!document.querySelector('[data-testid=gen1-tpl-preview]') && document.querySelector('[data-testid=gen1-tpl-preview]').innerText.includes('BOM-000001 v2')`, 'template preview')
+  await click('[data-testid=gen1-tpl-replace]')
+  await waitFor(`document.querySelector('#gen1-qty-1')?.value === '2.4' && document.querySelector('[data-testid=gen1-tpl-ref]')?.innerText.includes('BOM-000001 v2')`, 'components copied, reference shown')
+  // Edit the copy: quantity and remarks.
+  await fill('#gen1-qty-1', '3')
+  await fill('input[aria-label="Remarks line 1"]', 'Thicker body')
+  // Product 2: a different template (search by product name), copied unchanged.
+  await click('[data-testid=gen-edit-2]')
+  await waitFor(`!!document.querySelector('#gen2-tpl-search')`, 'section for product 2')
+  await fill('#gen2-tpl-search', 'closet mock')
+  const opts2 = `[...document.querySelectorAll('[data-testid=gen2-tpl-list] [role=option]')]`
+  await waitFor(`${opts2}.some((o) => o.innerText.includes('BOM-000001 v1'))`, 'search by product name, words in any order')
+  await click('[data-testid=gen2-tpl-list] [role=option]', 'v1')
+  await waitFor(`!!document.querySelector('[data-testid=gen2-tpl-replace]')`, 'preview 2')
+  await click('[data-testid=gen2-tpl-replace]')
+  await waitFor(`document.querySelector('[data-testid=gen2-tpl-ref]')?.innerText.includes('BOM-000001 v1') && document.querySelector('#gen2-qty-1')?.value === '2.5'`, 'product 2 copied')
+  assert(await evaluate(`document.querySelector('#gen1-qty-1').value === '3' && document.querySelector('input[aria-label="Remarks line 1"]').value === 'Thicker body'`), 'product 1 edits changed by product 2')
+  // Remove product 2's template reference: its components stay.
+  await click('[data-testid=gen2-tpl-clear]')
+  await waitFor(`!document.querySelector('[data-testid=gen2-tpl-ref]') && document.querySelector('#gen2-qty-1')?.value === '2.5'`, 'reference removed, components kept')
+  assert(await evaluate(`document.querySelector('[data-testid=gen-summary-1]').innerText.includes('from BOM-000001 v2')`), 'summary shows the template')
+  await screenshot('208-generate-multiple-template')
+  await click('[data-testid=gen-save]')
+  await waitFor(`!!document.querySelector('[data-testid=gen-confirm]')`, 'confirmation')
+  assert(await evaluate(`document.querySelector('[data-testid=gen-confirm]').innerText.includes('(from BOM-000001 v2)')`), 'confirmation shows the template')
+  await click('[data-testid=gen-confirm-save]')
+  await waitFor(`document.querySelector('[data-testid=gen-result]')?.innerText.includes('2 draft BOMs created')`, 'saved')
+  const c = rpcCalls('bom_generate_multiple').at(-1).body
+  assert(c.p_entries[0].template_bom_id === 'bom2' && c.p_entries[0].items[0].component_product_id === 'p3' && c.p_entries[0].items[0].quantity_required === 3
+    && c.p_entries[0].items[0].notes === 'Thicker body' && !('template_bom_id' in c.p_entries[1]) && c.p_entries[1].items[0].quantity_required === 2.5, JSON.stringify(c))
+  // The templates were only read: no BOM write of any kind, mock BOM data unchanged.
+  const writes = requests.slice(reqBefore).filter((r) => (r.method !== 'GET' && r.method !== 'HEAD' && !r.path.startsWith('/rest/v1/rpc/'))
+    || /rpc\/(production_save_bom|production_bom_|bom_change|bom_version_details_save|inventory_)/.test(r.path))
+  assert(writes.length === 0, JSON.stringify(writes.map((w) => w.method + ' ' + w.path)))
+  assert(JSON.stringify(tables.bom_item_list) === itemsBefore && JSON.stringify(tables.bom_list_v2) === bomsBefore, 'source BOM data changed')
+})
+
 await step('Charts: Inventory by Category with 5, 15, 30, 50 and 100 categories, long names, large and small values, desktop and phone widths; no overlap, Show all, table view, drill-down; GST-exclusive wording', async () => {
   const longName = 'Premium Rimless Wall-Hung Water Closets with Soft-Close Seat Covers'
   const rowsFor = (n) => Array.from({ length: n }, (_, i) => ({ category: i % 7 === 0 ? `${longName} ${i + 1}` : `Category ${String(i + 1).padStart(3, '0')}`, unit: 'PCS',

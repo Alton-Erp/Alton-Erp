@@ -158,6 +158,7 @@ describe('services use the shared rule', () => {
   it('BOM, production and outsourcing lists search on the server with related records', () => {
     const s = read('src/services/production.ts')
     for (const fn of ['bom_search', 'production_order_search', 'outsourcing_order_search']) assert.match(s, new RegExp(`searchRpc<[A-Za-z]+>\\('${fn}', q, status\\)`))
-    assert.match(s, /p_search: search, p_status: status, p_limit: 2000/)
+    assert.ok(s.includes('p_search: search, p_status: status, p_limit: limit }'))
+    assert.ok(s.includes('status: string | null, limit = 2000)'), 'lists default to 2,000 rows')
   })
 })

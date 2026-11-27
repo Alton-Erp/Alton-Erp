@@ -29,6 +29,7 @@
     "test:db:grn-hsn": "node tests/db/grn-hsn-check.mjs",
     "test:db:opening-import-additive": "node tests/db/opening-import-additive-check.mjs",
     "test:db:bom-generate": "node tests/db/bom-generate-check.mjs",
+    "test:db:bom-generate-template": "node tests/db/bom-generate-template-check.mjs",
     "test:db:product-cost": "node tests/db/product-cost-intelligence-check.mjs",
     "test:db:gst-exclusive": "node tests/db/gst-exclusive-reporting-check.mjs",
     "test:db:support": "node tests/db/support-centre-check.mjs",

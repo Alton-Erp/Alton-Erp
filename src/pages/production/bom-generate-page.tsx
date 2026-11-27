@@ -20,8 +20,9 @@ import { productToFormValues, validateProduct, type ProductFormValues } from '@/
 import { BomComponentEditor } from '@/features/production/bom-component-editor'
 import { BomProductNamePicker, type PickedProduct } from '@/features/production/bom-product-name-picker'
 import { linesCost, useComponentInfo } from '@/features/production/bom-component-info'
+import { BomTemplateSection } from '@/features/production/bom-template-picker'
 import {
-  componentProblem, costDifference, filledLines, itemsFromLines, lineChanges, linesFromItems, productPayload, similarProductValues, type EditorLine,
+  componentProblem, costDifference, filledLines, itemsFromLines, lineChanges, linesFromItems, productPayload, similarProductValues, type EditorLine, type TemplateRef,
 } from '@/features/production/bom-tools-model'
 import { useAsync } from '@/hooks/use-async'
 import { useRequestKey } from '@/hooks/use-request-key'
@@ -41,6 +42,8 @@ interface Row {
   output: string
   lines: EditorLine[]
   open: boolean
+  /** Saved BOM whose components were copied into this row (Add Components from Existing BOM); provenance only. */
+  template: TemplateRef | null
 }
 
 const copyLines = (lines: EditorLine[]) => lines.map((l) => ({ ...l, key: crypto.randomUUID() }))
@@ -69,7 +72,7 @@ export default function BomGeneratePage() {
   const [error, setError] = useState<string | null>(null)
   const [created, setCreated] = useState<(Omit<GeneratedBom, 'existing_product'> & { existing_product?: boolean })[] | null>(null)
 
-  const newRow = (b = base.data): Row => ({ key: crypto.randomUUID(), product: null, name: '', sku: '', description: '', output: b ? String(Number(b.bom.output_quantity)) : '1', lines: copyLines(b?.lines ?? []), open: false })
+  const newRow = (b = base.data): Row => ({ key: crypto.randomUUID(), product: null, name: '', sku: '', description: '', output: b ? String(Number(b.bom.output_quantity)) : '1', lines: copyLines(b?.lines ?? []), open: false, template: null })
   useEffect(() => {
     const b = base.data
     if (!b) return
@@ -125,10 +128,11 @@ export default function BomGeneratePage() {
     setBusy(true)
     setError(null)
     try {
-      const bomOf = (row: Row) => ({ bom: { output_quantity: parseUnitQty(row.output, unit)! }, items: itemsFromLines(row.lines) })
+      const bomOf = (row: Row) => ({ bom: { output_quantity: parseUnitQty(row.output, unit)! }, items: itemsFromLines(row.lines),
+        ...(row.template ? { template_bom_id: row.template.bom_id } : {}) })
       // Only new products: the existing function (works on databases without 20261207090000). Any existing
       // product: the combined function, still one transaction.
-      const r = rows.every((row) => !row.product)
+      const r = rows.every((row) => !row.product && !row.template)
         ? await createSimilarProducts({ bom_id: sourceId }, rows.map((row) => ({ product: productPayload(productOf(row).input!), ...bomOf(row) })), key)
         : await generateMultipleBoms(sourceId, rows.map((row) => (row.product
           ? { product_id: row.product.product_id, ...bomOf(row) }
@@ -241,6 +245,7 @@ export default function BomGeneratePage() {
                     {r.open ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />} Components ({filledLines(r.lines).length})
                   </button>
                   <span className="text-muted-foreground" data-testid={`gen-summary-${n}`}>
+                    {r.template && `from ${r.template.bom_code} v${r.template.version} · `}
                     {[ch.added.length && `+${ch.added.length} added`, ch.removed.length && `${ch.removed.length} removed`, ch.changed.length && `${ch.changed.length} changed`].filter(Boolean).join(', ') || 'same components as the base'}
                     {' · '}{cost.none ? 'no component cost' : `${formatCost(cost.perUnit)} per unit${cost.complete ? '' : ' (incomplete)'}`}
                     {cost.complete && baseCost?.complete && diff.amount ? ` (${diff.amount > 0 ? '+' : '−'}${formatCost(Math.abs(diff.amount))})` : ''}
@@ -251,6 +256,8 @@ export default function BomGeneratePage() {
                     <BomComponentEditor lines={r.lines} onChange={(ls) => update(r.key, { lines: ls })} output={r.output} outputUnit={unit} idPrefix={`gen${n}`} info={info}
                       outputProductId={r.product?.product_id ?? null}
                       defaultWastage={String(prefs?.['production.default_wastage_percent'] ?? 0)} />
+                    <BomTemplateSection idPrefix={`gen${n}`} label={`product ${n}`} lines={r.lines} output={r.output} outputUnit={unit} template={r.template}
+                      onApply={(lines, template) => update(r.key, { lines, template })} onClearReference={() => update(r.key, { template: null })} />
                   </div>
                 )}
                 {problems.length > 0 && <p className="mt-2 text-xs text-shortage">{problems.join(' ')}</p>}
@@ -267,6 +274,7 @@ export default function BomGeneratePage() {
           {rows.map((r, i) => (
             <div key={r.key} className="rounded-md border p-3 text-sm">
               <p className="font-medium">{i + 1}. {rowName(r) || 'Unnamed'} <span className="text-muted-foreground">{r.product ? `${r.product.sku} (existing product)` : r.sku.trim() || '(automatic SKU)'}</span></p>
+              {r.template && <p className="text-xs text-muted-foreground">Components from {r.template.bom_code} v{r.template.version} — {r.template.sku} {r.template.product_name} (copy; the source BOM is not changed)</p>}
               <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
                 {filledLines(r.lines).filter((l) => l.product).map((l) => <li key={l.key}>{l.product!.sku} × {l.quantity || '?'} {l.product!.base_unit}{Number(l.wastage) ? ` (+${l.wastage}% wastage)` : ''}</li>)}
               </ul>
@@ -285,10 +293,10 @@ export default function BomGeneratePage() {
         <DialogContent className="sm:max-w-lg" data-testid="gen-confirm">
           <DialogHeader>
             <DialogTitle>Generate {rows.length} draft BOMs?</DialogTitle>
-            <DialogDescription>All or nothing: each existing product gets a new draft BOM and each new product is added to the Product Master with its own draft BOM. None is activated; {b.bom_code} v{b.version} and the existing products are not changed and no stock moves.</DialogDescription>
+            <DialogDescription>All or nothing: each existing product gets a new draft BOM and each new product is added to the Product Master with its own draft BOM. None is activated; {b.bom_code} v{b.version}, any BOM whose components were copied, and the existing products are not changed and no stock moves.</DialogDescription>
           </DialogHeader>
           <ul className="max-h-60 space-y-1 overflow-y-auto text-sm">
-            {rows.map((r, i) => <li key={r.key}>{i + 1}. {rowName(r)} — {r.product ? `${r.product.sku} (existing)` : r.sku.trim() || 'automatic SKU'} · {itemsFromLines(r.lines).length} components</li>)}
+            {rows.map((r, i) => <li key={r.key}>{i + 1}. {rowName(r)} — {r.product ? `${r.product.sku} (existing)` : r.sku.trim() || 'automatic SKU'} · {itemsFromLines(r.lines).length} components{r.template ? ` (from ${r.template.bom_code} v${r.template.version})` : ''}</li>)}
           </ul>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirming(false)} disabled={busy}>Back</Button>

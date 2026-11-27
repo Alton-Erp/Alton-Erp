@@ -121,6 +121,32 @@ export function linesFromItems(items: {
   }))
 }
 
+/** A saved BOM whose components were copied into a generated product (provenance only; it is never changed). */
+export interface TemplateRef {
+  bom_id: string
+  bom_code: string
+  version: number
+  sku: string
+  product_name: string
+  components: number
+}
+
+/**
+ * Copies a template BOM's component lines into a product's own editable list. The copies are new objects with new keys (nothing is
+ * shared with the source lines, so editing them cannot change the template). 'replace' = the template's lines only; 'add' = the current
+ * lines plus the template's components that are not already in the list (`skipped` lists the SKUs left out).
+ */
+export function applyTemplateLines(current: EditorLine[], template: EditorLine[], mode: 'replace' | 'add'): { lines: EditorLine[]; skipped: string[] } {
+  const copies = template.filter((l) => l.product).map((l) => ({ ...l, key: crypto.randomUUID(), product: { ...l.product! } }))
+  if (mode === 'replace') return { lines: copies, skipped: [] }
+  const kept = filledLines(current)
+  const have = new Set(kept.filter((l) => l.product).map((l) => l.product!.product_id))
+  return {
+    lines: [...kept, ...copies.filter((l) => !have.has(l.product.product_id))],
+    skipped: copies.filter((l) => have.has(l.product.product_id)).map((l) => l.product.sku),
+  }
+}
+
 /** Lines that hold something (a component or a quantity). */
 export const filledLines = (lines: EditorLine[]) => lines.filter((l) => l.product || l.quantity.trim() !== '')
 
